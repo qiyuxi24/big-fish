@@ -1,0 +1,19 @@
+{
+  "name": "@bigfish/ops-bundle",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "BigFish 产品 bundle：把运营插件装进 DSH profile 的配置层。",
+  "exports": {
+    ".": "./index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@bigfish/plugin-ops": "workspace:*"
+  }
+}

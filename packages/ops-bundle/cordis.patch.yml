@@ -1,0 +1,9 @@
+# BigFish 产品 bundle 的配置层：把 @bigfish/plugin-ops 插入到 profile 里。
+# cordis.patch.yml 的每一行都是「整段替换 config」，覆盖已有行必须重述全部 key。
+- insert:
+    - id: bigfish-ops
+      name: "@bigfish/plugin-ops"
+      config:
+        # 显式写出产品默认值：daemon 默认监听本机 47001，token 由 daemon 首次启动生成。
+        daemonUrl: "http://127.0.0.1:47001"
+        writeGate: true

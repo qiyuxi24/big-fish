@@ -1,0 +1,17 @@
+{
+  "name": "@bigfish/plugin-ops",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "BigFish 运营插件（Cordis）：把 daemon 的队列与状态暴露成 xy_* 工具，并对写类工具挂审批门禁。",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

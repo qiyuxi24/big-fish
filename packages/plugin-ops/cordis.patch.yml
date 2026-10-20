@@ -1,0 +1,6 @@
+# 单独安装 @bigfish/plugin-ops 时贡献的配置层：插入本插件的一行。
+# 行的 name 是包名（Node 解析到已安装代码）；后加载的层（profile 自己的 cordis.patch.yml、
+# 家目录级 patch、--patch overlay）可以按 id 覆盖这里的 config。
+- insert:
+    - id: bigfish-ops
+      name: "@bigfish/plugin-ops"
