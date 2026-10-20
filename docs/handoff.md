@@ -6,10 +6,12 @@
 ## 1. 现在是什么状态
 
 - **P1.1 已完成并提交**：core 契约 / SQLite 队列与商品仓储 / mtop 读通道 / CDP cookie / daemon HTTP + worker + 执行器 / 运行时装配。
-- **P1.2 两步代码都已落地**：
-  1. 登录态导入入口：`npm run daemon:import-account [--account-id X] [--chrome-port 9222]` 或 `POST /accounts/import` 从本机带 `--remote-debugging-port` 的 Chrome 读 goofish cookie → 加密落盘；accountId 默认取 `unb`。GUI 按钮/扫码还没做。
-  2. CDP 发布通道：步骤机 `packages/channel-cdp/src/publish.ts`，daemon 装配 `packages/daemon/src/cdp-publish.ts`（先比对浏览器 `unb` 防发错号）。**默认 dry-run 只填表不提交**；`npm run daemon:publish -- --draft <草稿.json> [--submit] [--screenshots dir]`；队列发布需 `BF_PUBLISH_SUBMIT=1`。选择器尚未真机校准。
-- **测试**：`npm test` = 431 tests / 431 pass。5 个 TS 包 tsc --noEmit 全 0 错误（命令见 §4，`scripts/typecheck.mjs` 在本机 spawn EPERM 用不了）。
+- **P1.2 代码 + 真机校准都过了（填表链路），真提交还没跑**：
+  1. 登录态导入入口：`npm run daemon:import-account [--account-id X] [--chrome-port 9222]`、`POST /accounts/import`、插件工具 `xy_import_account` 三个入口，从带 `--remote-debugging-port` 的浏览器读 goofish cookie → 加密落盘；accountId 默认取 `unb`。本次实测导入测试小号「同州禹斋」（`2206569289277`，21 个字段）。手机扫码还没做。
+  2. CDP 发布通道：步骤机 `packages/channel-cdp/src/publish.ts`，daemon 装配 `packages/daemon/src/cdp-publish.ts`（先比对浏览器 `unb` 防发错号）。**默认 dry-run 只填表不提交**；`npm run daemon:publish -- --draft <草稿.json> [--submit] [--screenshots dir]`；队列发布需 `BF_PUBLISH_SUBMIT=1`。
+  3. 插件侧（P1.2-B）：`xy_publish_draft`（默认 dry-run 只给命令，enqueue 才入队）、`xy_import_account`、侧边栏面板刷新；共 9 个 `xy_*` 工具。
+  4. 真机校准（2026-10-21，Edge 155 + CDP 9222）：dry-run 全绿，含图片/富文本/价格/地址，`durationMs≈5.1s`；选择器表、填写原理、**地址搜索在 CDP 下不回显**的限制见 `docs/architecture.md` §13。
+- **测试**：`npm test` = 477 tests / 477 pass（core 131 / daemon 106 / mtop 53 / cdp 75 / guanjia 62 / plugin-ops 48 / integration 2）。5 个 TS 包 tsc --noEmit 全 0 错误（命令见 §4，`scripts/typecheck.mjs` 在本机 spawn EPERM 用不了）。
 - **界面插件已可热调试**：侧边栏「BigFish 闲鱼运营」面板在隔离 dev 实例里已验证（栏位渲染 + 改 `client.js` 不刷新即换文案）。
 - **插件已装进用户自己的 desktop profile**，等用户重启一次 DSH 桌面应用生效；之后改 client.js 同样热替换。
 - **daemon 未常驻**：面板是静态占位，实时数据要 P1.2 做 daemon → 插件 → client 推送。
@@ -33,9 +35,10 @@ docs/                    ADR、架构、开发说明、IM 协议、发货规则�
 ## 3. 待办（按优先级）
 
 1. **用户重启 DSH 桌面应用** → 确认侧边栏出现 🐟 栏位（`npm run dsh:install -- --uninstall` 可回滚）。
-2. **P1.2 收尾：真机校准**。代码与单测已全绿，但发布页选择器来自逆向事实、未在真实页面验证。需要用户：Chrome 带 `--remote-debugging-port=9222` 启动、登录测试小号，然后跑
-   `npm run daemon:publish -- --draft <草稿.json> --screenshots .scratch/shots`（默认 dry-run，只填表不提交），逐张看截图校准选择器；校准通过后才开 `BF_PUBLISH_SUBMIT=1` 做一次真发布。
-   **校准通过前不得声称发布成功**；登录态导入的二维码/GUI 按钮仍未做。
+2. **P1.2 收尾：真发布一次（需用户点头）**。填表链路已真机 dry-run 校准（§1.4、architecture §13），剩下只有 `submit=true` 那条路：点提交 → 成功页 → 解析 item id。跑法：先用测试小号开专用 profile
+   `Start-Process msedge.exe -ArgumentList '--remote-debugging-port=9222','--user-data-dir="D:\Github\big fish\.scratch\edge-cal\profile"','--no-first-run','about:blank'`，登录后
+   `npm run daemon:publish -- --draft <草稿.json> --submit --screenshots .scratch/shots`。
+   **没真发布成功前不得声称「发布成功」**；失败不要盲目重发（uniqueCode/itemId 幂等靠首次成功解析）。
 3. **P2**：IM 协议（`docs/im-protocol.md`）+ 发货规则引擎（`docs/delivery-rules.md`）。
 4. **用户三问还差两个**：首发主打（自动发货 vs 批量上架）、目标商家（纯个人 vs 含鱼小铺/闲管家）。第三问"运行形态"已定为 DSH 插件 + daemon 自启。
 5. **雾里 3.20 安装包未找回**（87,770,486 B）：本地已查遍 Downloads/微信缓存/D 盘/回收站，需要用户重新提供或给原链接。A（v4.8.2 自动发货助手）与 B（C 搬运助手 v2.1.9）已恢复在 `research/repos/`（不入 git）。

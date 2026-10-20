@@ -13,11 +13,13 @@ P1.0 **已完成**：组件拆解——`channel-mtop` / `channel-cdp` / `channel
 
 P1.1 **已完成**：daemon 运行时装配（`runtime.ts`）+ worker 领租约执行 + 执行器能力矩阵 + `/items` 落库 + `/status` 的 accounts/circuits/worker；`probe/polish` 已接 mtop 真实通道，`publish/deliver/reply` 显式 `UNSUPPORTED`（宁可失败不留假成功）。全仓 379 tests、5 个 TS 包类型检查 0 错误，见 `docs/architecture.md`。
 
-P1.2 **进行中**（两部分已落地，缺真机校准）：
-1. **登录态导入入口**：`npm run daemon:import-account`（或 `POST /accounts/import`）从带 `--remote-debugging-port` 的本机 Chrome 读 goofish cookie → `CredentialStore` 加密落盘；daemon 因此新增依赖 `channel-cdp`。
-2. **CDP 发布步骤机 + daemon 发布通道**：`packages/channel-cdp/src/publish.ts` 实现打开发布页 → 传图 → 文案 → 计价 → 价格/包邮/地址 → 提交校验；`packages/daemon/src/cdp-publish.ts` 把步骤机接到 daemon（先比对浏览器 `unb` 与期望账号，防发错号）。**默认 dry-run，只填表不提交**；`npm run daemon:publish -- --draft <草稿.json> [--submit] [--screenshots dir]` 供真机校准；队列任务只有 `BF_PUBLISH_SUBMIT=1` 才真提交。全仓 431 tests、5 个 TS 包类型检查 0 错误。
+P1.2 **填表链路已完成并真机校准，真提交未验证**：
+1. **登录态导入**：`npm run daemon:import-account` / `POST /accounts/import` / 插件 `xy_import_account` 从带 `--remote-debugging-port` 的浏览器读 goofish cookie → `CredentialStore` 加密落盘；accountId 默认取 `unb`。Cookie 读取按 `Storage.getCookies` → `Network.getAllCookies` 自动降级（Edge 155 已移除后者）。
+2. **CDP 发布步骤机 + daemon 发布通道**：`packages/channel-cdp/src/publish.ts`（打开发布页 → 传图 → 富文本文案 → 计价 → 价格/包邮 → 地址 → 必填预检 → 提交校验）；`packages/daemon/src/cdp-publish.ts` 接到 daemon（先比对浏览器 `unb` 与期望账号，防发错号）。**默认 dry-run，只填表不提交**；队列任务只有 `BF_PUBLISH_SUBMIT=1` 才真提交。
+3. **插件侧**：`xy_publish_draft`（默认只给命令，`mode=enqueue` 才入队）与侧边栏面板；共 9 个 `xy_*` 工具。
+4. **真机校准（2026-10-21，Edge 155 + CDP 9222）**：dry-run 全绿；选择器/填写原理/限制见 `docs/architecture.md` §13。**地址搜索在 CDP 下不回显结果**，只能从「常用地址/附近地址」匹配；类目由页面 AI 识别，工具不自动选。全仓 477 tests、5 个 TS 包类型检查 0 错误。
 
-下一步：真机 dry-run 校准选择器（Chrome 带 `--remote-debugging-port=9222` + 测试小号），然后再开 `BF_PUBLISH_SUBMIT=1`。**在真机校准通过前，不要让任何代码路径声称「发布成功」。**
+下一步：真提交跑一次（`--submit`，测试小号，需用户同意）验证「发布成功页 → item id」链路。**在真提交验证通过前，不要让任何代码路径声称「发布成功」。**
 
 ## 1. 架构不变量（违反即回退）
 
