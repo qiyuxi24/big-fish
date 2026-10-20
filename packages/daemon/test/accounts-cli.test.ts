@@ -64,7 +64,8 @@ describe('import-account 参数解析', () => {
   })
 
   it('未知子命令 / 模式串参数 / 非法 chrome 端口都是 VALIDATION', () => {
-    assert.match(parseFailure(['publish']).message, /未知子命令/)
+    assert.match(parseFailure(['nope']).message, /未知子命令/)
+    assert.match(parseFailure(['publish']).message, /--draft/)
     // serve 模式不该静默吞掉导入参数：用户很容易以为它会顺手导入。
     assert.match(parseFailure(['--account-id', 'main']).message, /只用于 import-account/)
     assert.match(parseFailure(['--chrome-port', '9222']).message, /只用于 import-account/)

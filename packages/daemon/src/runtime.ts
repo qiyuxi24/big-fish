@@ -28,6 +28,7 @@ import { createExecutors } from './executors.ts'
 import type { OperationPort } from './executors.ts'
 import type { ExecutorDeps } from './executor.ts'
 import { createOperationPort } from './operations.ts'
+import type { PublishPortOptions } from './operations.ts'
 import { startDaemon } from './server.ts'
 import type { Daemon } from './server.ts'
 import { startWorker } from './worker.ts'
@@ -40,6 +41,8 @@ export interface DaemonRuntimeOptions {
   transport?: MtopTransport
   /** 覆盖单个通道方法（集成测试用）；未覆盖的走 transport。 */
   ports?: Partial<OperationPort>
+  /** 发布通道配置；缺省时 publish 仍是 UNSUPPORTED（安全默认）。 */
+  publish?: PublishPortOptions
   /** 注入时钟（毫秒）；测试用。 */
   now?: () => number
   logger?: Logger
@@ -91,6 +94,7 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
     const basePorts = createOperationPort({
       ...(options.transport === undefined ? {} : { transport: options.transport }),
       ...(now === undefined ? {} : { now }),
+      ...(options.publish === undefined ? {} : { publish: options.publish }),
     })
     const ports: OperationPort = { ...basePorts, ...(options.ports ?? {}) }
 

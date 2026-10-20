@@ -8,6 +8,8 @@
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync } from 'node:fs'
 import { XianyuError } from '@bigfish/core'
+import { CdpConnection } from './connection.ts'
+import type { WebSocketFactory } from './connection.ts'
 
 /** fetch 返回里只用到的部分；测试的假 fetch 实现它即可。 */
 export interface FetchResponseLike {
@@ -65,6 +67,20 @@ export interface AttachChromeOptions {
   timeoutMs?: number
   /** 注入测试用 fetch（默认全局 fetch）。 */
   fetchImpl?: FetchLike
+}
+
+/** 附加 Chrome 后新建的页面 target；页面域命令连 pageWsUrl。 */
+export interface ChromePageHandle {
+  pageWsUrl: string
+  targetId: string
+  /** 关页面 target 并断开浏览器级连接；幂等。 */
+  close(): Promise<void>
+}
+
+export interface AttachChromePageOptions extends AttachChromeOptions {
+  /** 注入测试用 WebSocket 工厂（默认全局 WebSocket）。 */
+  webSocketFactory?: WebSocketFactory
+  requestTimeoutMs?: number
 }
 
 const DEFAULT_PORT = 9222
@@ -152,6 +168,63 @@ export async function attachChrome(port: number = DEFAULT_PORT, opts: AttachChro
     throw new XianyuError({ code: 'NETWORK', message: 'DevTools 响应不是 JSON：' + url, cause: error })
   }
   return { browserWsUrl: readWebSocketUrl(version), close: async (): Promise<void> => {} }
+}
+
+/**
+ * 附加到已开的 Chrome，并用 Target.createTarget 开一个新标签页。
+ *
+ * 为什么要单独一步：Browser 级连接上不能跑页面域命令（Page/Runtime/DOM 都要求 page target），
+ * 所以发布这类页面自动化必须先建 target，再连 ws://.../devtools/page/<targetId>。
+ * 只附加不启动：浏览器与登录态由用户自己准备。
+ */
+export async function attachChromePage(
+  port: number = DEFAULT_PORT,
+  opts: AttachChromePageOptions = {},
+): Promise<ChromePageHandle> {
+  const target = await attachChrome(port, opts)
+  const conn = await CdpConnection.connect(target.browserWsUrl, {
+    ...(opts.webSocketFactory === undefined ? {} : { webSocketFactory: opts.webSocketFactory }),
+    ...(opts.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: opts.requestTimeoutMs }),
+  })
+  try {
+    const created = await conn.send<{ targetId?: unknown }>('Target.createTarget', { url: 'about:blank' })
+    const targetId = created.targetId
+    if (typeof targetId !== 'string' || targetId === '') {
+      throw new XianyuError({ code: 'UNSUPPORTED', message: 'Target.createTarget 没有返回 targetId' })
+    }
+    const pageWsUrl = devtoolsPageWsUrl(target.browserWsUrl, targetId)
+    let closed = false
+    const close = async (): Promise<void> => {
+      if (closed) return
+      closed = true
+      try {
+        await conn.send('Target.closeTarget', { targetId })
+      } catch (error) {
+        // 页面可能已被用户手动关掉：closeTarget 失败不该阻断后面的连接清理。
+        void error
+      } finally {
+        await conn.close()
+        await target.close()
+      }
+    }
+    return { pageWsUrl, targetId, close }
+  } catch (error) {
+    await conn.close()
+    await target.close()
+    throw error instanceof XianyuError
+      ? error
+      : new XianyuError({ code: 'INTERNAL', message: '新建页面 target 失败', cause: error })
+  }
+}
+
+/** 由 browser 的 ws 地址拼出 page 的 ws 地址（Chrome 的路径规则：/devtools/browser/<id> → /devtools/page/<targetId>）。 */
+function devtoolsPageWsUrl(browserWsUrl: string, targetId: string): string {
+  const marker = '/devtools/browser/'
+  const index = browserWsUrl.indexOf(marker)
+  if (index === -1) {
+    throw new XianyuError({ code: 'UNSUPPORTED', message: 'DevTools 的 browser WebSocket 地址不符合预期：' + browserWsUrl })
+  }
+  return browserWsUrl.slice(0, index) + '/devtools/page/' + targetId
 }
 
 async function waitDevTools(fetchImpl: FetchLike, port: number, timeoutMs: number, pollMs: number): Promise<unknown> {

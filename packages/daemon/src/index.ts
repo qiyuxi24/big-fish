@@ -3,6 +3,7 @@
  * @module @bigfish/daemon
  */
 export * from './accounts.ts'
+export * from './cdp-publish.ts'
 export * from './config.ts'
 export * from './server.ts'
 export * from './client.ts'

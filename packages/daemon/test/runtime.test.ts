@@ -151,7 +151,8 @@ test('集成：publish 走 UNSUPPORTED 占位，进 failed 而不是假成功', 
     },
   })
   const failed = await waitForTask(client, task.id, record => record.state === 'failed')
-  assert.match(failed.lastError ?? '', /UNSUPPORTED|尚未接入/)
+  // P1.2：publish 已接 CDP，但默认 publish.submit 关闭，仍是 UNSUPPORTED（不假成功）。
+  assert.match(failed.lastError ?? '', /UNSUPPORTED|尚未接入|发布通道未开启真提交/)
   assert.equal((await client.listItems()).length, 0)
 })
 

@@ -2,9 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import { XianyuError } from '@bigfish/core'
-import { attachChrome, launchChrome, resolveChromePath } from '../src/launch.ts'
+import { attachChrome, attachChromePage, launchChrome, resolveChromePath } from '../src/launch.ts'
 import type { FetchLike } from '../src/launch.ts'
-import { jsonResponse, makeFakeFetch, makeFakeSpawn, scratchPath, writeScratch } from './harness.ts'
+import { FakeSocket, jsonResponse, makeFakeFetch, makeFakeSpawn, scratchPath, writeScratch } from './harness.ts'
 
 const WS_URL = 'ws://127.0.0.1:9333/devtools/browser/abc-123'
 
@@ -126,4 +126,83 @@ test('attachChrome：连不上与 HTTP 非 200 都是 NETWORK', async () => {
     .then(() => undefined, (error: unknown) => error)
   assert.ok(badStatus instanceof XianyuError)
   assert.equal(badStatus.code, 'NETWORK')
+})
+
+/** 建连后自动回包的假 socket：attachChromePage 的 Target.createTarget 需要结果才能继续。 */
+class AutoReplySocket extends FakeSocket {
+  #replies: Record<string, unknown | Error>
+
+  constructor(replies: Record<string, unknown | Error>) {
+    super()
+    this.#replies = replies
+  }
+
+  override send(data: string): void {
+    super.send(data)
+    const frame = JSON.parse(data) as { id: number; method: string }
+    const planned = this.#replies[frame.method]
+    queueMicrotask(() => {
+      if (planned instanceof Error) this.replyError(frame.id, planned.message)
+      else this.reply(frame.id, planned ?? {})
+    })
+  }
+}
+
+function autoReplyFactory(replies: Record<string, unknown | Error>): {
+  factory: (url: string) => FakeSocket
+  sockets: FakeSocket[]
+} {
+  const sockets: FakeSocket[] = []
+  const factory = (): FakeSocket => {
+    const socket = new AutoReplySocket(replies)
+    sockets.push(socket)
+    queueMicrotask(() => socket.open())
+    return socket
+  }
+  return { factory, sockets }
+}
+
+test('attachChromePage：建页面 target、拼 page ws 地址、close 关 target', async () => {
+  const { fetcher } = makeFakeFetch(() => jsonResponse({ webSocketDebuggerUrl: WS_URL }))
+  const { factory, sockets } = autoReplyFactory({ 'Target.createTarget': { targetId: 'page-1' } })
+  const handle = await attachChromePage(9333, { fetchImpl: fetcher, webSocketFactory: factory })
+  assert.equal(handle.pageWsUrl, 'ws://127.0.0.1:9333/devtools/page/page-1')
+  assert.equal(handle.targetId, 'page-1')
+  const socket = sockets[0]
+  assert.ok(socket !== undefined)
+  const first = JSON.parse(socket.sent[0] ?? '{}') as { method: string; params: Record<string, unknown> }
+  assert.equal(first.method, 'Target.createTarget')
+  assert.deepEqual(first.params, { url: 'about:blank' })
+
+  await handle.close()
+  await handle.close()
+  assert.ok(socket.sent.some((raw: string) => raw.includes('Target.closeTarget')))
+  assert.equal(socket.closed, true)
+})
+
+test('attachChromePage：createTarget 失败转 NETWORK，且断开连接', async () => {
+  const { fetcher } = makeFakeFetch(() => jsonResponse({ webSocketDebuggerUrl: WS_URL }))
+  const { factory, sockets } = autoReplyFactory({ 'Target.createTarget': new Error('no target') })
+  await assert.rejects(
+    attachChromePage(9333, { fetchImpl: fetcher, webSocketFactory: factory }),
+    (error: unknown) => {
+      assertNetworkError(error)
+      assert.ok((error as XianyuError).message.includes('no target'))
+      return true
+    },
+  )
+  assert.equal(sockets[0]?.closed, true)
+})
+
+test('attachChromePage：browser ws 地址不符合预期 → UNSUPPORTED', async () => {
+  const { fetcher } = makeFakeFetch(() => jsonResponse({ webSocketDebuggerUrl: 'ws://127.0.0.1:9333/cdp' }))
+  const { factory } = autoReplyFactory({ 'Target.createTarget': { targetId: 'page-1' } })
+  await assert.rejects(
+    attachChromePage(9333, { fetchImpl: fetcher, webSocketFactory: factory }),
+    (error: unknown) => {
+      assert.ok(error instanceof XianyuError)
+      assert.equal(error.code, 'UNSUPPORTED')
+      return true
+    },
+  )
 })

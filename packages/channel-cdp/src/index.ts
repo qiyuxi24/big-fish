@@ -19,7 +19,9 @@ export type {
 export { CdpPage } from './page.ts'
 export type {
   AttachChromeOptions,
+  AttachChromePageOptions,
   ChildProcessLike,
+  ChromePageHandle,
   ChromeTarget,
   FetchInitLike,
   FetchLike,
@@ -28,7 +30,7 @@ export type {
   LaunchChromeResult,
   SpawnLike,
 } from './launch.ts'
-export { attachChrome, DEFAULT_PORT, launchChrome, resolveChromePath } from './launch.ts'
+export { attachChrome, attachChromePage, DEFAULT_PORT, launchChrome, resolveChromePath } from './launch.ts'
 export type { BrowserCookie, CdpRequestConnection, CookieJar } from './cookies.ts'
 export { assertLoginCookies, CdpCookieSource, selectGoofishCookies } from './cookies.ts'
 export type {
@@ -37,3 +39,29 @@ export type {
   PublishStep,
 } from './steps.ts'
 export { runPublishSteps } from './steps.ts'
+export type { DomPage, DomWaitOptions } from './dom.ts'
+export {
+  clickByText,
+  clickSelector,
+  countElements,
+  elementExists,
+  fillField,
+  fillFieldAt,
+  findFileInputNodeIds,
+  readBodyText,
+  readLocationHref,
+  setFileInputFiles,
+  waitForCount,
+  waitForElement,
+  waitForText,
+} from './dom.ts'
+export type { PublishDraft, PublishOptions, PublishSelectors } from './publish.ts'
+export {
+  assertValidDraft,
+  createPublishSteps,
+  DEFAULT_SELECTORS,
+  extractItemId,
+  priceToYuanText,
+  publishItem,
+  PUBLISH_URL,
+} from './publish.ts'

@@ -5,8 +5,12 @@
  * - fetchItemDetail：mtop 详情接口 → core 的 ItemSummary（probe 任务用）。
  * - polishItem：mtop 擦亮接口 v2.0（写操作，已过执行器的限流与熔断）。
  *
+ * P1.2 落地的通道：
+ * - publishItem：CDP 发布步骤机（见 cdp-publish.ts）。默认仍是 UNSUPPORTED——
+ *   只有显式开启 publish.submit（BF_PUBLISH_SUBMIT=1）才允许队列任务真提交，
+ *   避免「一不小心把草稿发上线」。
+ *
  * 尚未落地的通道（显式抛 UNSUPPORTED，避免任务被静默当成功）：
- * - publishItem：CDP 发布步骤机（图片上传 + 表单填充）在 P1.2 实现。
  * - deliverOrder / sendReply：IM 协议与发货规则在 P2 实现。
  *
  * 为什么 publish 不用 mtop：发布载荷含图片上传后的 imageInfoDOList，且部分类目只支持 App，
@@ -24,6 +28,8 @@ import {
 import type { MtopHttpRequest, MtopHttpResponse, MtopTransport } from '@bigfish/channel-mtop'
 import { XianyuError, fail } from '@bigfish/core'
 
+import { publishViaCdp } from './cdp-publish.ts'
+import type { PublishViaCdpInput, PublishViaCdpResult } from './cdp-publish.ts'
 import type { DetailSnapshot, OperationPort, PublishDraft, Session } from './executors.ts'
 
 /** 基于全局 fetch 的 mtop 传输层；超时由 callMtop 合并的 AbortSignal 负责。 */
@@ -46,6 +52,17 @@ export function createFetchTransport(fetchImpl: typeof fetch = fetch): MtopTrans
   }
 }
 
+export interface PublishPortOptions {
+  /** 必须显式为 true 才允许队列任务真提交；false/缺省一律 UNSUPPORTED。 */
+  submit: boolean
+  /** Chrome DevTools 端口，默认 channel-cdp 的 DEFAULT_PORT（9222）。 */
+  chromePort?: number
+  /** 每步截图目录；真机校准时必开，便于对着截图修选择器。 */
+  screenshotsDir?: string
+  /** 发布实现；测试注入假实现，生产用 publishViaCdp。 */
+  run?: (input: PublishViaCdpInput) => Promise<PublishViaCdpResult>
+}
+
 export interface OperationPortOptions {
   /** 传输层；测试注入 fake，生产用 createFetchTransport()。 */
   transport?: MtopTransport
@@ -53,6 +70,8 @@ export interface OperationPortOptions {
   now?: () => number
   /** 未实现通道的提示前缀（写进错误信息，便于用户知道该等哪个版本）。 */
   pendingHint?: string
+  /** 发布通道配置；缺省时 publish 仍是 UNSUPPORTED（安全默认）。 */
+  publish?: PublishPortOptions
 }
 
 /**
@@ -88,8 +107,24 @@ export function createOperationPort(options: OperationPortOptions = {}): Operati
     },
 
     async publishItem(input: { session: Session; draft: PublishDraft; signal: AbortSignal }): Promise<{ itemId?: string }> {
-      void input
-      fail('UNSUPPORTED', '发布通道尚未接入：' + hint + '（CDP 发布步骤：图片上传 → 类目属性 → 价格地址 → 提交）')
+      const publish = options.publish
+      if (publish === undefined || !publish.submit) {
+        fail(
+          'UNSUPPORTED',
+          '发布通道未开启真提交：' + hint + '（先用 npm run daemon:publish -- --draft <草稿.json> 做 dry-run 校准；确认后设 BF_PUBLISH_SUBMIT=1 重启 daemon 才会真发布）',
+        )
+      }
+      const runner = publish.run ?? publishViaCdp
+      const result = await runner({
+        draft: input.draft,
+        accountId: input.session.accountId,
+        submit: true,
+        ...(publish.chromePort === undefined ? {} : { chromePort: publish.chromePort }),
+        ...(publish.screenshotsDir === undefined ? {} : { screenshotsDir: publish.screenshotsDir }),
+        signal: input.signal,
+      })
+      if (result.itemId === undefined) fail('INTERNAL', 'CDP 发布返回成功但没有 itemId，按失败处理')
+      return { itemId: result.itemId }
     },
 
     async deliverOrder(): Promise<{ delivered: boolean }> {

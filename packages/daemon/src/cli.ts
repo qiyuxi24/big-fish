@@ -6,7 +6,7 @@
  * @module @bigfish/daemon/cli
  */
 import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { CredentialStore, createLogger, fail, loadDaemonConfig, toXianyuError } from '@bigfish/core'
@@ -14,12 +14,15 @@ import type { DaemonConfig, EnvLike, Logger } from '@bigfish/core'
 
 import { importAccountFromChrome } from './accounts.ts'
 import type { ImportAccountDeps, ImportAccountInput, ImportedAccount } from './accounts.ts'
+import { parsePublishDraftFile, publishViaCdp } from './cdp-publish.ts'
+import type { PublishViaCdpInput, PublishViaCdpResult } from './cdp-publish.ts'
 import { isLoopbackHost } from './config.ts'
+import type { PublishPortOptions } from './operations.ts'
 import { startDaemonRuntime } from './runtime.ts'
 import type { DaemonRuntime } from './runtime.ts'
 
-/** 子命令：默认 serve（起 daemon）；import-account 只做登录态导入后退出。 */
-export type CliCommand = 'serve' | 'import-account'
+/** 子命令：默认 serve（起 daemon）；import-account 导入登录态；publish 做发布 dry-run/真提交。 */
+export type CliCommand = 'serve' | 'import-account' | 'publish'
 
 /** 命令行解析结果。 */
 export interface CliOptions {
@@ -30,8 +33,14 @@ export interface CliOptions {
   tokenPath?: string
   /** import-account：覆盖默认账号 id（默认取 unb）。 */
   accountId?: string
-  /** import-account：Chrome DevTools 端口，默认 9222。 */
+  /** import-account / publish：Chrome DevTools 端口，默认 9222。 */
   chromePort?: number
+  /** publish：草稿 JSON 文件路径（必填）。 */
+  draft?: string
+  /** publish：每步截图目录（真机校准时必开）。 */
+  screenshots?: string
+  /** publish：默认 false = dry-run，只填表不提交。 */
+  submit?: boolean
   printConfig: boolean
   help: boolean
 }
@@ -59,11 +68,14 @@ const VALUE_FLAGS: ReadonlySet<string> = new Set([
   '--port',
   '--account-id',
   '--chrome-port',
+  '--draft',
+  '--screenshots',
 ])
 
 const USAGE_HINT = [
   '用法：bigfish-daemon [--data-dir DIR] [--port PORT] [--host HOST] [--token-path FILE] [--print-config] [--help]',
   '      bigfish-daemon import-account [--data-dir DIR] [--account-id ID] [--chrome-port PORT]',
+  '      bigfish-daemon publish --draft FILE [--account-id ID] [--chrome-port PORT] [--screenshots DIR] [--submit]',
 ].join('\n')
 
 const HELP_TEXT = [
@@ -86,7 +98,17 @@ const HELP_TEXT = [
   '  --account-id ID    账号 id，默认取 unb cookie（闲鱼 userId）',
   '  --chrome-port PORT DevTools 端口，默认 9222',
   '',
+  '子命令 publish：',
+  '  用 CDP 在网页发布页填表；默认 dry-run（只填表、不点提交），便于先校准选择器。',
+  '  前置：Chrome 带 --remote-debugging-port 启动，且已登录要发布的那个闲鱼账号。',
+  '  --draft FILE       草稿 JSON（title/desc/priceCents/images 必填，可选 pricingMode/shipping/address）',
+  '  --account-id ID    期望账号，会与浏览器登录账号比对（不一致直接拒绝）',
+  '  --chrome-port PORT DevTools 端口，默认 9222',
+  '  --screenshots DIR  每步截图到该目录（真机校准必开）',
+  '  --submit           真提交；不加就是 dry-run（默认）',
+  '',
   '环境变量：BF_DATA_DIR / BF_HOST / BF_PORT / BF_LOG_LEVEL / BF_LEASE_TTL_MS / BF_POLL_INTERVAL_MS',
+  '          BF_PUBLISH_SUBMIT=1 允许队列发布真提交（默认关闭）/ BF_CHROME_PORT / BF_PUBLISH_SCREENSHOTS',
 ].join('\n')
 
 /** 解析命令行；未知参数、缺取值、非法端口一律 VALIDATION（runCli 转成退出码 2）。 */
@@ -94,8 +116,8 @@ export function parseArgs(argv: readonly string[]): CliOptions {
   const options: CliOptions = { command: 'serve', printConfig: false, help: false }
   let index = 0
   const command = argv[0]
-  if (command === 'import-account') {
-    options.command = 'import-account'
+  if (command === 'import-account' || command === 'publish') {
+    options.command = command
     index = 1
   } else if (command !== undefined && !command.startsWith('-')) {
     fail('VALIDATION', '未知子命令：' + command)
@@ -117,6 +139,11 @@ export function parseArgs(argv: readonly string[]): CliOptions {
       index += 1
       continue
     }
+    if (parts.flag === '--submit') {
+      options.submit = true
+      index += 1
+      continue
+    }
     if (!VALUE_FLAGS.has(parts.flag)) fail('VALIDATION', '未知参数：' + raw)
     const value = takeValue(argv, index, parts)
     if (parts.flag === '--data-dir') options.dataDir = value
@@ -124,6 +151,8 @@ export function parseArgs(argv: readonly string[]): CliOptions {
     else if (parts.flag === '--token-path') options.tokenPath = value
     else if (parts.flag === '--account-id') options.accountId = value
     else if (parts.flag === '--chrome-port') options.chromePort = parsePortFlag(value, '--chrome-port', false)
+    else if (parts.flag === '--draft') options.draft = value
+    else if (parts.flag === '--screenshots') options.screenshots = value
     else options.port = parsePortFlag(value, '--port', true)
     index += parts.inline === undefined ? 2 : 1
   }
@@ -131,17 +160,36 @@ export function parseArgs(argv: readonly string[]): CliOptions {
   return options
 }
 
-/** 子命令与参数交叉校验：免得用户以为 serve 模式会顺手导入账号。 */
+/** 子命令与参数交叉校验：免得用户以为 serve 模式会顺手导入账号或发布。 */
 function validateCommandFlags(options: CliOptions): void {
   if (options.command === 'serve') {
     if (options.accountId !== undefined || options.chromePort !== undefined) {
-      fail('VALIDATION', '--account-id / --chrome-port 只用于 import-account 子命令')
+      fail('VALIDATION', '--account-id / --chrome-port 只用于 import-account / publish 子命令')
     }
+    if (options.draft !== undefined || options.screenshots !== undefined || options.submit === true) {
+      fail('VALIDATION', '--draft / --screenshots / --submit 只用于 publish 子命令')
+    }
+    return
+  }
+  if (options.command === 'publish') {
+    if (options.printConfig) fail('VALIDATION', 'publish 不支持 --print-config')
+    if (
+      options.host !== undefined ||
+      options.port !== undefined ||
+      options.tokenPath !== undefined ||
+      options.dataDir !== undefined
+    ) {
+      fail('VALIDATION', 'publish 只接受 --draft / --account-id / --chrome-port / --screenshots / --submit / --help')
+    }
+    if (options.draft === undefined) fail('VALIDATION', 'publish 子命令必须用 --draft 指定草稿 JSON 文件')
     return
   }
   if (options.printConfig) fail('VALIDATION', 'import-account 不支持 --print-config')
   if (options.host !== undefined || options.port !== undefined || options.tokenPath !== undefined) {
     fail('VALIDATION', 'import-account 只接受 --data-dir / --account-id / --chrome-port / --help')
+  }
+  if (options.draft !== undefined || options.screenshots !== undefined || options.submit === true) {
+    fail('VALIDATION', '--draft / --screenshots / --submit 只用于 publish 子命令')
   }
 }
 
@@ -196,9 +244,11 @@ export function toConfigOverrides(options: CliOptions): Partial<DaemonConfig> {
   return overrides
 }
 
-/** runCli 的可注入依赖；测试用假导入器避免真连 Chrome（本机沙箱禁 spawn）。 */
+/** runCli 的可注入依赖；测试用假实现避免真连 Chrome（本机沙箱禁 spawn）。 */
 export interface RunCliDeps {
   importAccount?: (deps: ImportAccountDeps & ImportAccountInput) => Promise<ImportedAccount>
+  /** publish 实现；默认 publishViaCdp（连真 Chrome）。 */
+  publish?: (input: PublishViaCdpInput) => Promise<PublishViaCdpResult>
 }
 
 /**
@@ -226,6 +276,7 @@ export async function runCli(
     io.stdout(HELP_TEXT)
     return 0
   }
+  if (options.command === 'publish') return await runPublish(options, io, deps)
   try {
     const config = loadDaemonConfig(env, toConfigOverrides(options))
     // core 的配置不校验回环：daemon 侧必须自己挡住，避免把控制面暴露到局域网。
@@ -237,7 +288,7 @@ export async function runCli(
       io.stdout(JSON.stringify(config, null, 2))
       return 0
     }
-    return await runServer(config, io)
+    return await runServer(config, env, io)
   } catch (error) {
     io.stderr('daemon 无法启动：' + toXianyuError(error).message)
     return 1
@@ -273,12 +324,87 @@ async function runImportAccount(
   }
 }
 
+/**
+ * publish 子命令：读草稿 → 跑 CDP 发布；默认 dry-run。
+ * 不走 loadDaemonConfig：发布不依赖 daemon 数据目录，也不该因为配置缺失而拒绝校准。
+ */
+async function runPublish(options: CliOptions, io: CliIo, deps: RunCliDeps): Promise<number> {
+  const draftPath = options.draft
+  if (draftPath === undefined) {
+    io.stderr('publish 子命令必须用 --draft 指定草稿 JSON 文件')
+    io.stderr(USAGE_HINT)
+    return 2
+  }
+  try {
+    const draft = parsePublishDraftFile(await readDraftJson(draftPath))
+    const publisher = deps.publish ?? publishViaCdp
+    const result = await publisher({
+      draft,
+      submit: options.submit === true,
+      ...(options.accountId === undefined ? {} : { accountId: options.accountId }),
+      ...(options.chromePort === undefined ? {} : { chromePort: options.chromePort }),
+      ...(options.screenshots === undefined ? {} : { screenshotsDir: options.screenshots }),
+      onLog: (step: string, message: string): void => {
+        io.stdout('[' + step + '] ' + message)
+      },
+    })
+    io.stdout(JSON.stringify(result, null, 2))
+    if (result.dryRun) {
+      io.stdout(
+        'dry-run 完成：表单已填但**没有点提交**（账号 ' + result.accountId + '，URL ' + result.href + '）。',
+      )
+      io.stdout('对着截图确认页面没问题后，加 --submit 才会真发布；发布不可自动重试，失败要人工到闲鱼后台确认。')
+    } else {
+      io.stdout('已发布：itemId ' + (result.itemId ?? '未知') + '（账号 ' + result.accountId + '）。')
+    }
+    return 0
+  } catch (error) {
+    io.stderr('发布失败：' + toXianyuError(error).message)
+    return 1
+  }
+}
+
+/** 读草稿文件；读不到 / 不是 JSON 都转 VALIDATION，文案指向具体文件。 */
+async function readDraftJson(path: string): Promise<unknown> {
+  let text: string
+  try {
+    text = await readFile(path, 'utf8')
+  } catch (error) {
+    fail('VALIDATION', '读不到草稿文件：' + path + '（' + toXianyuError(error).message + '）')
+  }
+  try {
+    return JSON.parse(text) as unknown
+  } catch (error) {
+    fail('VALIDATION', '草稿文件不是合法 JSON：' + path)
+  }
+}
+
+/**
+ * 从环境变量读队列发布配置：只有 BF_PUBLISH_SUBMIT=1/true 才开启（默认关闭）。
+ * 截图目录默认 <data-dir>/publish-shots：真发布出问题时截图是唯一现场证据。
+ */
+export function publishOptionsFromEnv(env: EnvLike, config: DaemonConfig): PublishPortOptions | undefined {
+  const submit = (env['BF_PUBLISH_SUBMIT'] ?? '').trim().toLowerCase()
+  if (submit !== '1' && submit !== 'true') return undefined
+  const chromePortRaw = (env['BF_CHROME_PORT'] ?? '').trim()
+  const chromePort = chromePortRaw === '' ? undefined : parsePortFlag(chromePortRaw, 'BF_CHROME_PORT', false)
+  const screenshotsRaw = (env['BF_PUBLISH_SCREENSHOTS'] ?? '').trim()
+  const screenshotsDir = screenshotsRaw === '' ? join(dirname(config.dbPath), 'publish-shots') : screenshotsRaw
+  return { submit: true, screenshotsDir, ...(chromePort === undefined ? {} : { chromePort }) }
+}
+
 /** 起队列 + worker + HTTP 服务，然后阻塞等 SIGINT/SIGTERM；启动失败返回 1。 */
-async function runServer(config: DaemonConfig, io: CliIo): Promise<number> {
+async function runServer(config: DaemonConfig, env: EnvLike, io: CliIo): Promise<number> {
   const logger = createLogger({ level: config.logLevel, name: 'bigfish-daemon' })
   let runtime: DaemonRuntime | undefined
   try {
-    runtime = await startDaemonRuntime({ config, logger, version: await readVersion() })
+    const publish = publishOptionsFromEnv(env, config)
+    runtime = await startDaemonRuntime({
+      config,
+      logger,
+      version: await readVersion(),
+      ...(publish === undefined ? {} : { publish }),
+    })
     logger.info('daemon 已启动', {
       url: runtime.daemon.url,
       port: runtime.daemon.port,

@@ -112,6 +112,12 @@ export class CdpPage {
     return response.result?.value as T
   }
 
+  /** 直通一条 CDP 命令：DOM 域（文件上传）等页面级命令需要它。 */
+  async command<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+    this.#ensureOpen()
+    return this.#conn.send<T>(method, params)
+  }
+
   /** 轮询表达式直到返回真值；超时抛 NETWORK（带最后结果，便于定位）。 */
   async waitFor(expression: string, opts: WaitForOptions = {}): Promise<void> {
     this.#ensureOpen()
