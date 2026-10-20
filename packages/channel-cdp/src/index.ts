@@ -43,18 +43,24 @@ export type { DomPage, DomWaitOptions } from './dom.ts'
 export {
   clickByText,
   clickSelector,
+  clickSelectorAt,
   countElements,
   elementExists,
   fillField,
   fillFieldAt,
+  fillRichText,
+  fillText,
   findFileInputNodeIds,
   readBodyText,
   readLocationHref,
+  readSelectorTexts,
   setFileInputFiles,
+  typeInto,
   waitForCount,
   waitForElement,
   waitForText,
 } from './dom.ts'
+export { pickAddressOption } from './address.ts'
 export type { PublishDraft, PublishOptions, PublishSelectors } from './publish.ts'
 export {
   assertValidDraft,

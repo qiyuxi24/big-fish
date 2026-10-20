@@ -5,8 +5,9 @@
  * 且成功判定只有两条：URL 出现 item id，或页面出现「发布成功」。
  * 提交后没看到这两条一律按失败处理（禁止自动重试：重放可能重复上架，AGENTS §1.2）。
  *
- * 选择器来自逆向事实（research/notes/A-cores.md §上架六步），但**未经真机校准**：
- * 首次联调请用测试小号 + dryRun，按截图校准 PublishOptions.selectors。
+ * 选择器来自逆向事实（research/notes/A-cores.md §上架六步），并已用测试小号在真机校准
+ * （Edge 155 + CDP，2026-10-21）：dry-run 全绿，选择器表见 docs/architecture.md §13。
+ * 页面改版后按截图重新校准 PublishOptions.selectors。
  * @module @bigfish/channel-cdp/publish
  */
 import { XianyuError } from '@bigfish/core'
@@ -15,15 +16,18 @@ import {
   clickSelector,
   countElements,
   elementExists,
-  fillField,
   fillFieldAt,
+  fillText,
   readBodyText,
   readLocationHref,
   setFileInputFiles,
+  typeInto,
   waitForCount,
   waitForElement,
   waitForText,
 } from './dom.ts'
+import { pickAddressOption } from './address.ts'
+import { readFormFieldText, waitFormFieldText } from './form.ts'
 import type { DomPage } from './dom.ts'
 import type { CdpPage } from './page.ts'
 import { runPublishSteps } from './steps.ts'
@@ -34,7 +38,7 @@ export const PUBLISH_URL = 'https://www.goofish.com/publish'
 
 /** 页面锚点。默认值是按逆向事实猜的，真机校准后可通过 options.selectors 覆盖。 */
 export interface PublishSelectors {
-  /** 描述输入框；网页版发布页通常只有这一个文案框（标题并入描述）。 */
+  /** 描述框；真机是 contenteditable 富文本（textarea 兜底），标题并入描述。 */
   description: string
   /** 独立标题输入框；没有就不填，标题与描述合并写进描述框。 */
   title: string | undefined
@@ -52,21 +56,21 @@ export interface PublishSelectors {
   addressContainer: string
   /** 地点搜索输入框。 */
   addressSearchInput: string
-  /** 地点候选条目。 */
+  /** 地点候选条目（真机是 div[class*="addressItem--"]）。 */
   addressOption: string
 }
 
 export const DEFAULT_SELECTORS: PublishSelectors = {
-  description: 'textarea[placeholder*="描述"], textarea',
+  description: 'div[contenteditable="true"], textarea[placeholder*="描述"], textarea',
   title: undefined,
   fileInput: 'input[type=file]',
   addImageText: '添加首图',
-  previewImage: 'img[src^="blob:"], [class*="upload"] img',
+  previewImage: 'div[class*="preview-container"]',
   priceInput: 'input[placeholder="0.00"]',
   submitButton: 'button[class*="publish-button"]',
-  addressContainer: '[class*="address--"]',
+  addressContainer: 'div[class*="addressWrap--"]',
   addressSearchInput: 'input[placeholder*="搜索地点"]',
-  addressOption: '[class*="auto-item"]',
+  addressOption: 'div[class*="addressItem--"]',
 }
 
 /** 一次发布的输入（图片是本机绝对路径，由 Chrome 进程读取）。 */
@@ -162,6 +166,7 @@ export function createPublishSteps(draft: PublishDraft, options: PublishOptions 
     steps.push({ name: '填写地址', run: (page, ctx) => stepAddress(page, ctx, draft.address ?? '', selectors, options) })
   }
   if (options.dryRun === false) {
+    steps.push({ name: '必填项预检', run: (page, ctx) => stepCheckRequired(page, ctx, options) })
     steps.push({ name: '提交并验证', run: (page, ctx) => stepSubmitAndVerify(page, ctx, selectors, options) })
   } else {
     steps.push({ name: 'dry-run 收尾', run: (page, ctx) => stepDryRun(page, ctx, options) })
@@ -224,13 +229,13 @@ async function stepFillText(
   options: PublishOptions,
 ): Promise<void> {
   if (selectors.title !== undefined && (await elementExists(page, selectors.title))) {
-    await fillField(page, selectors.title, draft.title, '标题')
-    await fillField(page, selectors.description, draft.desc, '描述')
+    await fillText(page, selectors.title, draft.title, '标题')
+    await fillText(page, selectors.description, draft.desc, '描述')
     ctx.log('填写文案', '标题与描述分开填写')
   } else {
     // 网页版只有一个文案框：标题与描述同段文案（A 笔记 §上架六步）。
     const merged = draft.title.trim() === '' ? draft.desc : draft.title + '\n' + draft.desc
-    await fillField(page, selectors.description, merged, '描述')
+    await fillText(page, selectors.description, merged, '描述')
     ctx.log('填写文案', '标题并入描述（网页版单文案框）')
   }
   await shot(page, options, '03-text')
@@ -277,10 +282,16 @@ async function stepAddress(
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   await clickSelector(page, selectors.addressContainer, '地址容器')
   await waitForElement(page, selectors.addressSearchInput, { timeoutMs, label: '地点搜索框' })
-  await fillField(page, selectors.addressSearchInput, address, '地点搜索')
-  await waitForElement(page, selectors.addressOption, { timeoutMs, label: '地点候选' })
-  await clickSelector(page, selectors.addressOption, '地点候选')
-  ctx.log('填写地址', address)
+  // 联想是接口驱动的：必须走真实键盘输入，改 value 不触发搜索。
+  await typeInto(page, selectors.addressSearchInput, address, '地点搜索')
+  // 按文本挑候选：第一个候选经常不是目标地址（搜「广州大学城」首条曾是垃圾分类驿站）。
+  const chosen = await pickAddressOption(page, selectors.addressOption, address, timeoutMs)
+  // 点候选后地址会写回表单项；回读校验实际地址，防止点错候选却静默成功。
+  const picked = await waitFormFieldText(page, '宝贝所在地', timeoutMs)
+  if (picked === '' || picked === '请选择地址') {
+    throw new XianyuError({ code: 'VALIDATION', message: '点了地点候选但地址没写回表单：' + address })
+  }
+  ctx.log('填写地址', '目标「' + address + '」→ 候选「' + chosen + '」→ 表单「' + picked + '」')
   await shot(page, options, '06-address')
 }
 
@@ -320,9 +331,27 @@ async function stepSubmitAndVerify(
   })
 }
 
+/**
+ * 真发布前的必填项预检。
+ * 「分类」由页面按图片/文案自动识别，代码不去选类目；为空说明识别失败，点提交也只会被拦。
+ */
+async function stepCheckRequired(page: CdpPage, ctx: PublishContext, options: PublishOptions): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const category = await waitFormFieldText(page, '分类', timeoutMs)
+  if (category === '') {
+    throw new XianyuError({ code: 'VALIDATION', message: '分类为空：页面没识别出类目，本工具不自动选类目，需人工先选好分类再发布' })
+  }
+  const address = await waitFormFieldText(page, '宝贝所在地', timeoutMs)
+  if (address === '') throw new XianyuError({ code: 'VALIDATION', message: '宝贝所在地为空，提交会被闲鱼拦下' })
+  ctx.log('必填项预检', '分类「' + category + '」，所在地「' + address + '」')
+  await shot(page, options, '05b-required')
+}
+
 async function stepDryRun(page: CdpPage, ctx: PublishContext, options: PublishOptions): Promise<void> {
   const href = await readLocationHref(page)
-  ctx.log('dry-run 收尾', '表单已填完但**没有点提交**；当前 URL ' + href)
+  const category = await readFormFieldText(page, '分类')
+  const address = await readFormFieldText(page, '宝贝所在地')
+  ctx.log('dry-run 收尾', '表单已填完但**没有点提交**；分类「' + category + '」、所在地「' + address + '」；当前 URL ' + href)
   await shot(page, options, '99-dry-run')
 }
 

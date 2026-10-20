@@ -27,11 +27,42 @@ class FakePage implements DomPage {
   submitHref = ''
   /** 哪些选择器算提交按钮（改选择器时同步改这里）。 */
   submitClickIncludes = ['publish-button']
+  /** Input.insertText 打进去的文本（typeInto 用）。 */
+  typed = ''
+  /** typeInto 回读时返回的输入框值。 */
+  readbackValue = ''
+  /** antd 表单项当前显示的文本（readFormFieldText 用，键是 label）。 */
+  formFields: Record<string, string> = { 分类: '其他服务', 宝贝所在地: '请选择地址' }
+  /** 点地址候选后是否把地点写回表单项（假页面用它模拟「没写回」的异常分支）。 */
+  addressWritesBack = true
+  /** 地址候选文本（readSelectorTexts 用）。 */
+  optionTexts: Record<string, string[]> = {}
 
   async evaluate<T = unknown>(expression: string): Promise<T> {
     const quoted = extractQuoted(expression)
     const selector = quoted[0] ?? ''
     if (expression.includes('location.href')) return this.href as T
+    // readSelectorTexts：候选文本列表。
+    if (expression.includes('nodes.map')) {
+      const list = this.optionTexts[selector] ?? (this.selectors.has(selector) ? ['广州大学城'] : [])
+      return list as T
+    }
+    // clickSelectorAt：点候选列表里的第 N 条。
+    if (expression.includes('nodes.length <=')) {
+      this.clicked.push(selector)
+      if (selector.includes('addressItem--') && this.addressWritesBack) {
+        this.formFields['宝贝所在地'] = this.typed || '广东省广州市'
+      }
+      return 'ok' as T
+    }
+    // readFormFieldText 脚本：按 label 返回表单项当前文本。
+    if (expression.includes('.ant-form-item')) {
+      const matched = /const want = "([^"]*)"/.exec(expression)
+      return (this.formFields[matched?.[1] ?? ''] ?? '') as T
+    }
+    // typeInto 的聚焦脚本（内部也含 el.value === undefined，必须在回读分支之前判）
+    if (expression.includes('selectNodeContents') || expression.includes('setSelectionRange')) return 'ok' as T
+    if (expression.includes('el.value === undefined')) return this.readbackValue as T
     if (expression.includes('innerText')) return this.bodyText as T
     if (expression.includes('const want')) {
       return (this.texts.has(selector) ? 'ok' : 'missing') as T
@@ -46,8 +77,14 @@ class FakePage implements DomPage {
     if (expression.includes('querySelectorAll(')) {
       return ((this.counts[selector] ?? 0) > 0 ? 'ok' : 'missing') as T
     }
+    // 发布页真机是富文本，但假页面默认按普通输入框回放（需要富文本的用例自己起 RichPage）。
+    if (expression.includes('isContentEditable')) return false as T
     if (expression.includes('.click()')) {
       this.clicked.push(selector)
+      // 点地址候选后闲鱼会把地点写回「宝贝所在地」表单项。
+      if (selector.includes('addressItem--') && this.addressWritesBack) {
+        this.formFields['宝贝所在地'] = this.typed || '广东省广州市'
+      }
       const isSubmit = this.submitClickIncludes.some((marker) => selector.includes(marker))
       if (isSubmit && this.submitHref !== '') this.href = this.submitHref
       return (this.selectors.has(selector) ? 'ok' : 'missing') as T
@@ -67,6 +104,11 @@ class FakePage implements DomPage {
 
   async command<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     this.commands.push({ method, params })
+    if (method === 'Input.insertText') {
+      this.typed = String(params.text ?? '')
+      this.readbackValue = this.typed
+      return {} as T
+    }
     if (method === 'DOM.getDocument') return { root: { nodeId: 1 } } as T
     if (method === 'DOM.querySelectorAll') return { nodeIds: this.fileInputs } as T
     return {} as T
@@ -122,13 +164,16 @@ const DRAFT: PublishDraft = {
 
 function readyPage(overrides: Partial<FakePage> = {}): FakePage {
   const page = new FakePage()
-  page.selectors.add('textarea[placeholder*="描述"], textarea')
+  page.selectors.add('div[contenteditable="true"], textarea[placeholder*="描述"], textarea')
   page.selectors.add('input[type=file]')
   page.selectors.add('button[class*="publish-button"]')
   page.selectors.add('input[placeholder="0.00"]')
-  page.counts['img[src^="blob:"], [class*="upload"] img'] = 3
+  page.counts['div[class*="preview-container"]'] = 3
   page.counts['input[placeholder="0.00"]'] = 3
   page.texts.add('包邮')
+  // 真发布前会预检「分类」「宝贝所在地」是否有值（页面上这两项由系统预填）。
+  page.texts.add('分类')
+  page.texts.add('宝贝所在地')
   Object.assign(page, overrides)
   return page
 }
@@ -164,7 +209,7 @@ test('createPublishSteps：dryRun 默认不提交，提交步只在 dryRun:false
   const dry = createPublishSteps(DRAFT).map((step) => step.name)
   assert.deepEqual(dry, ['打开发布页', '上传图片', '填写文案', '填写价格', 'dry-run 收尾'])
   const real = createPublishSteps(DRAFT, { dryRun: false }).map((step) => step.name)
-  assert.deepEqual(real, ['打开发布页', '上传图片', '填写文案', '填写价格', '提交并验证'])
+  assert.deepEqual(real, ['打开发布页', '上传图片', '填写文案', '填写价格', '必填项预检', '提交并验证'])
   const full = createPublishSteps(
     { ...DRAFT, pricingMode: '元/次', address: '广州大学城' },
     { dryRun: false },
@@ -237,9 +282,37 @@ test('selectors 可覆盖：自定义提交按钮与价格框生效', async () =
   page.counts['img.preview'] = 1
   page.counts['input.price'] = 1
   page.texts.add('包邮')
+  page.texts.add('分类')
+  page.texts.add('宝贝所在地')
   page.submitHref = 'https://www.goofish.com/item/99887766'
   page.submitClickIncludes.push('button#go')
   const result = await publishItem(asPage(page), DRAFT, makeCtx(), { dryRun: false, selectors, successTimeoutMs: 200 })
   assert.deepEqual(result, { ok: true, itemId: '99887766' })
   assert.ok(page.clicked.includes('button#go'))
 })
+
+test('填写地址：走真实输入触发联想，点候选后回读地址', async () => {
+  const page = readyPage()
+  page.selectors.add('div[class*="addressWrap--"]')
+  page.selectors.add('input[placeholder*="搜索地点"]')
+  page.selectors.add('div[class*="addressItem--"]')
+  const result = await publishItem(asPage(page), { ...DRAFT, address: '广州大学城' }, makeCtx(), { dryRun: true })
+  assert.deepEqual(result, { ok: true })
+  assert.ok(page.commands.some((call) => call.method === 'Input.insertText'))
+  assert.equal(page.typed, '广州大学城')
+})
+
+test('填写地址：点了候选但地址没写回表单 → 停在「填写地址」', async () => {
+  const page = readyPage()
+  page.selectors.add('div[class*="addressWrap--"]')
+  page.selectors.add('input[placeholder*="搜索地点"]')
+  page.selectors.add('div[class*="addressItem--"]')
+  page.addressWritesBack = false
+  page.formFields['宝贝所在地'] = '请选择地址'
+  const result = await publishItem(asPage(page), { ...DRAFT, address: '广州大学城' }, makeCtx(), { dryRun: true, timeoutMs: 60 })
+  assert.equal(result.ok, false)
+  if (result.ok) return
+  assert.equal(result.step, '填写地址')
+  assert.match(result.error, /地址没写回表单/)
+})
+
