@@ -1,0 +1,16 @@
+{
+  "name": "bigfish",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "test": "node scripts/test-all.mjs",
+    "typecheck": "node scripts/typecheck.mjs",
+    "daemon": "node packages/daemon/src/cli.ts",
+    "dsh:dump": "node scripts/dsh-dump.mjs"
+  }
+}

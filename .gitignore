@@ -1,5 +1,6 @@
 # 临时脚本与中间产物
 .scratch/
+.pnpm-store/
 research/tmp/
 node_modules/
 *.log

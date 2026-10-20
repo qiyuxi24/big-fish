@@ -1,0 +1,29 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .: {}
+
+  packages/core: {}
+
+  packages/daemon:
+    dependencies:
+      '@bigfish/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/ops-bundle:
+    dependencies:
+      '@bigfish/plugin-ops':
+        specifier: workspace:*
+        version: link:../plugin-ops
+
+  packages/plugin-ops:
+    dependencies:
+      '@bigfish/core':
+        specifier: workspace:*
+        version: link:../core
