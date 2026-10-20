@@ -29,6 +29,8 @@ export type {
   SpawnLike,
 } from './launch.ts'
 export { attachChrome, DEFAULT_PORT, launchChrome, resolveChromePath } from './launch.ts'
+export type { BrowserCookie, CdpRequestConnection, CookieJar } from './cookies.ts'
+export { assertLoginCookies, CdpCookieSource, selectGoofishCookies } from './cookies.ts'
 export type {
   PublishContext,
   PublishRunResult,
