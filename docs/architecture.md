@@ -86,11 +86,18 @@ openStore({path: config.dbPath})
 | --- | --- | --- | --- |
 | `probe` | read | mtop 详情 | ✅ 已通，成功后 `items.upsert` |
 | `polish` | write | mtop 擦亮 2.0 | ✅ 已通 |
-| `publish` | write | CDP/mtop 发布 | ⛔ `UNSUPPORTED`（P1.2）；执行器已做策略校验与落库占位 |
+| `publish` | write | CDP 发布步骤机（`channel-cdp`） | ⚠️ 默认 `UNSUPPORTED`；`BF_PUBLISH_SUBMIT=1` 才真提交（P1.2，缺真机校准） |
 | `deliver` | write | IM/闲管家 | ⛔ `UNSUPPORTED`（P2） |
 | `reply` | write | IM | ⛔ `UNSUPPORTED`（P2） |
 
 `publish` 入口先跑 `checkListing`（`packages/core/src/policy.ts`：标题/描述长度、价格区间、违禁词 38 条、违禁类目 20 条、首图方形、图片数量），`error` 级问题直接 `VALIDATION` + `details.issues`，不消耗通道预算。**刻意的 `UNSUPPORTED` 不是 bug**：宁可失败也不留「假成功」的已发布假象。
+
+### 6.1 发布通道（P1.2）
+
+- 步骤机在 `packages/channel-cdp/src/publish.ts`：打开发布页 → 上传图片（`DOM.setFileInputFiles`，等价用户选文件）→ 文案（React 受控 input 用原生 setter + `input` 事件）→ 计价方式 → 价格/包邮/地址 → 提交并验证（URL 含 item id 或页面出现「发布成功」，超时按失败处理且**不自动重试**）。
+- 装配在 `packages/daemon/src/cdp-publish.ts`：先读浏览器 `unb` 与期望账号比对（防发错号）→ 开空白页跑步骤机 → 返回 `{accountId,dryRun,itemId?,href,durationMs}`。
+- 安全默认：`submit=false` 只填表不点提交；CLI `npm run daemon:publish -- --draft <草稿.json> [--account-id X] [--chrome-port 9222] [--screenshots dir] [--submit]`，daemon 队列发布要 `BF_PUBLISH_SUBMIT=1`（另支持 `BF_CHROME_PORT`、`BF_PUBLISH_SCREENSHOTS`，截图默认 `<data-dir>/publish-shots`）。
+- 选择器来自逆向事实、**尚未真机校准**；真机 dry-run 前不得声称发布成功。
 
 ## 7. IPC 契约
 
@@ -148,7 +155,7 @@ queued ──lease──► leased ──ack──► done
 
 ## 11. 现在明确未实现（不要当 bug）
 
-- **publish 未接通道**：`UNSUPPORTED`，等 P1.2（CDP 发布步骤：图片上传 → 类目属性 → 价格地址 → 提交）。
+- **publish 已接 CDP，但缺真机校准**：步骤机与 daemon 通道都在（见 §6.1），默认 dry-run；真提交需 `BF_PUBLISH_SUBMIT=1`。选择器未在真实发布页验证，先用测试小号跑 dry-run 对截图。
 - **IM 与发货未实现**：`deliver/reply` 是 `UNSUPPORTED`；协议与规则已写进 [im-protocol.md](im-protocol.md)、[delivery-rules.md](delivery-rules.md)。
 - **登录态导入已有 CLI/HTTP 入口，缺 GUI 与扫码**：`npm run daemon:import-account`（或 `POST /accounts/import`）从带 `--remote-debugging-port=9222` 的 Chrome 读 cookie 写入 `CredentialStore`（AES-256-GCM）；accountId 默认取 cookie 里的 `unb`。插件侧按钮与手机扫码登录还没做。
 - **没有打包**：Electron/headless 分发形态待用户决策。
@@ -158,10 +165,10 @@ queued ──lease──► leased ──ack──► done
 
 | 层 | 数量 | 说明 |
 | --- | --- | --- |
-| 全仓 | 396 tests / 396 pass | `node scripts/test-all.mjs` |
+| 全仓 | 431 tests / 431 pass | `node scripts/test-all.mjs` |
 | core | 112 | 队列、仓储、策略、限流熔断、凭据、脱敏、配置 |
-| daemon | 86 | HTTP、CLI、客户端、执行器、worker、路由、账号导入（含 5 条 `runtime.test.ts` 全链路集成：真 HTTP + 真 SQLite + 假 mtop transport） |
-| channel-mtop / channel-cdp / channel-guanjia | 53 / 49 / 62 | 纯函数与假连接 |
+| daemon | 106 | HTTP、CLI、客户端、执行器、worker、路由、账号导入、CDP 发布通道（含 5 条 `runtime.test.ts` 全链路集成：真 HTTP + 真 SQLite + 假 mtop transport） |
+| channel-mtop / channel-cdp / channel-guanjia | 53 / 64 / 62 | 纯函数、假连接与假页面 |
 | plugin-ops | 32 | 插件契约与门禁 |
 | integration | 2 | 插件 client ↔ 真 daemon 的跨层端到端 |
 | 类型检查 | 5 个 TS 包 0 错误 | 借 DSH checkout 的 `tsc --noEmit` |

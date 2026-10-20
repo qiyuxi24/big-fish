@@ -6,8 +6,10 @@
 ## 1. 现在是什么状态
 
 - **P1.1 已完成并提交**：core 契约 / SQLite 队列与商品仓储 / mtop 读通道 / CDP cookie / daemon HTTP + worker + 执行器 / 运行时装配。
-- **P1.2 第一步已完成（登录态导入入口）**：`npm run daemon:import-account [--account-id X] [--chrome-port 9222]` 或 `POST /accounts/import` 从本机带 `--remote-debugging-port` 的 Chrome 读 goofish cookie → 加密落盘；accountId 默认取 `unb`。GUI 按钮/扫码还没做；CDP 发布步骤未开始。
-- **测试**：`npm test` = 396 tests / 396 pass。5 个 TS 包 tsc --noEmit 全 0 错误（命令见 §4，`scripts/typecheck.mjs` 在本机 spawn EPERM 用不了）。
+- **P1.2 两步代码都已落地**：
+  1. 登录态导入入口：`npm run daemon:import-account [--account-id X] [--chrome-port 9222]` 或 `POST /accounts/import` 从本机带 `--remote-debugging-port` 的 Chrome 读 goofish cookie → 加密落盘；accountId 默认取 `unb`。GUI 按钮/扫码还没做。
+  2. CDP 发布通道：步骤机 `packages/channel-cdp/src/publish.ts`，daemon 装配 `packages/daemon/src/cdp-publish.ts`（先比对浏览器 `unb` 防发错号）。**默认 dry-run 只填表不提交**；`npm run daemon:publish -- --draft <草稿.json> [--submit] [--screenshots dir]`；队列发布需 `BF_PUBLISH_SUBMIT=1`。选择器尚未真机校准。
+- **测试**：`npm test` = 431 tests / 431 pass。5 个 TS 包 tsc --noEmit 全 0 错误（命令见 §4，`scripts/typecheck.mjs` 在本机 spawn EPERM 用不了）。
 - **界面插件已可热调试**：侧边栏「BigFish 闲鱼运营」面板在隔离 dev 实例里已验证（栏位渲染 + 改 `client.js` 不刷新即换文案）。
 - **插件已装进用户自己的 desktop profile**，等用户重启一次 DSH 桌面应用生效；之后改 client.js 同样热替换。
 - **daemon 未常驻**：面板是静态占位，实时数据要 P1.2 做 daemon → 插件 → client 推送。
@@ -17,8 +19,9 @@
 ```
 packages/core            契约：types/errors/risk/policy/items/data(store,queue)/runtime(redact,logger,limiter,circuit,credentials,config)
 packages/channel-mtop    只读 mtop：sign、callMtop、detail/polish 的 data 构造与解析
-packages/channel-cdp     真 Chrome cookie 读取 + 登录态校验（发布步骤尚未实现）
-packages/daemon/src/accounts.ts  登录态导入（CDP 读 cookie → CredentialStore），已挂 CLI 与 POST /accounts/import
+packages/channel-cdp     真 Chrome cookie 读取 + 登录态校验 + 发布步骤机（publish.ts）
+packages/daemon/src/accounts.ts     登录态导入（CDP 读 cookie → CredentialStore），已挂 CLI 与 POST /accounts/import
+packages/daemon/src/cdp-publish.ts  daemon 发布通道（草稿文件 → 步骤机，默认 dry-run），已挂 CLI publish 与 publishItem 执行器
 packages/channel-guanjia 闲管家开放平台客户端（MIT，附 LICENSE）
 packages/daemon          HTTP + worker + executors + operations + runtime + cli
 packages/plugin-ops      DSH 插件（纯 ESM JS）：7 个 xy_* 工具 + 写操作审批门禁 + client.js 面板
@@ -30,8 +33,9 @@ docs/                    ADR、架构、开发说明、IM 协议、发货规则�
 ## 3. 待办（按优先级）
 
 1. **用户重启 DSH 桌面应用** → 确认侧边栏出现 🐟 栏位（`npm run dsh:install -- --uninstall` 可回滚）。
-2. **P1.2**：CDP 发布步骤（`channel-cdp` 的 `PublishStep`）+ 图片上传；登录态导入入口（cookie）已完成，二维码/GUI 按钮未做。
-   完成后 `executors.publishItem` 才能从 `UNSUPPORTED` 变成真发布。真机验证需要用户：Chrome 带 `--remote-debugging-port=9222` 启动、登录测试小号。
+2. **P1.2 收尾：真机校准**。代码与单测已全绿，但发布页选择器来自逆向事实、未在真实页面验证。需要用户：Chrome 带 `--remote-debugging-port=9222` 启动、登录测试小号，然后跑
+   `npm run daemon:publish -- --draft <草稿.json> --screenshots .scratch/shots`（默认 dry-run，只填表不提交），逐张看截图校准选择器；校准通过后才开 `BF_PUBLISH_SUBMIT=1` 做一次真发布。
+   **校准通过前不得声称发布成功**；登录态导入的二维码/GUI 按钮仍未做。
 3. **P2**：IM 协议（`docs/im-protocol.md`）+ 发货规则引擎（`docs/delivery-rules.md`）。
 4. **用户三问还差两个**：首发主打（自动发货 vs 批量上架）、目标商家（纯个人 vs 含鱼小铺/闲管家）。第三问"运行形态"已定为 DSH 插件 + daemon 自启。
 5. **雾里 3.20 安装包未找回**（87,770,486 B）：本地已查遍 Downloads/微信缓存/D 盘/回收站，需要用户重新提供或给原链接。A（v4.8.2 自动发货助手）与 B（C 搬运助手 v2.1.9）已恢复在 `research/repos/`（不入 git）。
@@ -41,12 +45,14 @@ docs/                    ADR、架构、开发说明、IM 协议、发货规则�
 ## 4. 常用命令
 
 ```bash
-npm test                                   # 396 tests（单进程顺序跑，不能 spawn）
+npm test                                   # 431 tests（单进程顺序跑，不能 spawn）
 node 'C:/Users/34239/Documents/GitHub/deepseek-harness/node_modules/typescript/bin/tsc' \
   --noEmit --pretty false -p packages/<pkg>/tsconfig.json \
   --typeRoots 'C:/Users/34239/Documents/GitHub/deepseek-harness/node_modules/@types'
 
 npm run daemon                             # 起 daemon（默认 127.0.0.1:47001）
+npm run daemon:import-account -- --chrome-port 9222   # 从本机 Chrome 导入登录态
+npm run daemon:publish -- --draft .scratch/draft.json --screenshots .scratch/shots  # 发布 dry-run（加 --submit 才真提交）
 npm run dsh:dev -- --fresh                 # 隔离 dev DSH 实例（127.0.0.1:47080，打印带 token URL）
 npm run dsh:shot                           # headless 截图 + 断言面板
 npm run dsh:shot -- --hmr                  # 断言热更新生效（改 client.js → 不刷新换文案）
