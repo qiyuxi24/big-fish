@@ -1,0 +1,15 @@
+{
+  "name": "@bigfish/daemon",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "bigfish-daemon": "./src/cli.ts"
+  },
+  "dependencies": {
+    "@bigfish/core": "workspace:*"
+  }
+}

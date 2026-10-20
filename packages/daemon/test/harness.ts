@@ -1,0 +1,147 @@
+/**
+ * daemon HTTP 测试夹具：临时数据目录 + 真实 HTTP 服务 + 客户端 + 原始请求助手。
+ *
+ * 为什么起真服务而不是 mock：鉴权头、Content-Type、413、404 这些行为只在真实
+ * node:http 生命周期里成立。每个用例 after 里 close 服务并删临时目录。
+ * @module @bigfish/daemon/test/harness
+ */
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+import { loadDaemonConfig } from '@bigfish/core'
+import type { DaemonConfig } from '@bigfish/core'
+
+import { DaemonClient } from '../src/client.ts'
+import { startDaemon } from '../src/server.ts'
+import type { Daemon } from '../src/server.ts'
+import { FakeQueue } from './fake-queue.ts'
+
+/** 临时目录根：.scratch 已 gitignore，仓库根下便于排查残留。 */
+const SCRATCH_ROOT = fileURLToPath(new URL('../../../.scratch/daemon-http/', import.meta.url))
+
+/** 原始请求参数；token 缺省读 token 文件，null 表示不带 Authorization。 */
+export interface RawRequest {
+  method: string
+  path: string
+  token?: string | null
+  headers?: Record<string, string>
+  body?: string | Uint8Array
+  contentType?: string
+}
+
+/** 原始响应。 */
+export interface RawResponse {
+  status: number
+  contentType: string
+  text: string
+  body: unknown
+}
+
+/** 夹具对象。 */
+export interface DaemonHarness {
+  readonly daemon: Daemon
+  readonly client: DaemonClient
+  readonly config: DaemonConfig
+  readonly queue: FakeQueue
+  readonly baseUrl: string
+  readonly tokenPath: string
+  now(): number
+  setNow(value: number): void
+  token(): Promise<string>
+  rawRequest(input: RawRequest): Promise<RawResponse>
+}
+
+export interface HarnessOptions {
+  version?: string
+}
+
+/** 建夹具；t.after 负责关服务与清理目录。 */
+export async function createHarness(t: { after(fn: () => Promise<void>): void }, options: HarnessOptions = {}): Promise<DaemonHarness> {
+  await mkdir(SCRATCH_ROOT, { recursive: true })
+  const dir = await mkdtemp(join(SCRATCH_ROOT, 'run-'))
+  const loaded = loadDaemonConfig({}, {
+    dbPath: join(dir, 'bigfish.db'),
+    credentialsDir: join(dir, 'credentials'),
+    circuitPath: join(dir, 'circuits.json'),
+    tokenPath: join(dir, 'daemon.token'),
+  })
+  // port=0：由系统分配，避免并行测试抢 47001；core 的配置校验不接受 0，所以这里覆盖。
+  const config: DaemonConfig = { ...loaded, port: 0 }
+  let nowMs = 1_700_000_000_000
+  const queue = new FakeQueue({ now: (): number => nowMs })
+  const daemon = await startDaemon({ config, queue, now: (): number => nowMs, version: options.version ?? '9.9.9' })
+  const client = new DaemonClient({ baseUrl: daemon.url, tokenPath: config.tokenPath })
+  const baseUrl = daemon.url
+  const tokenPath = config.tokenPath
+
+  const token = async (): Promise<string> => (await readFile(tokenPath, 'utf8')).trim()
+
+  const rawRequest = async (input: RawRequest): Promise<RawResponse> => {
+    const headers: Record<string, string> = { accept: 'application/json', ...input.headers }
+    if (input.contentType !== undefined) headers['content-type'] = input.contentType
+    else if (input.body !== undefined) headers['content-type'] = 'application/json'
+    const bearer = input.token === undefined ? await token() : input.token
+    if (bearer !== null) headers.authorization = 'Bearer ' + bearer
+    const init: RequestInit = { method: input.method, headers }
+    if (input.body !== undefined) init.body = input.body
+    const response = await fetch(baseUrl + input.path, init)
+    const text = await response.text()
+    return { status: response.status, contentType: response.headers.get('content-type') ?? '', text, body: parseJson(text) }
+  }
+
+  t.after(async (): Promise<void> => {
+    await daemon.close()
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  return {
+    daemon,
+    client,
+    config,
+    queue,
+    baseUrl,
+    tokenPath,
+    now: (): number => nowMs,
+    setNow: (value: number): void => {
+      nowMs = value
+    },
+    token,
+    rawRequest,
+  }
+}
+
+/** 收窄成对象，失败即断言错误（测试专用）。 */
+export function asRecord(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new TypeError('期望 JSON 对象，实际为：' + JSON.stringify(value))
+  }
+  return value as Record<string, unknown>
+}
+
+/** 取成功信封里的 data；断言 ok:true。 */
+export function dataOf(response: RawResponse): unknown {
+  const envelope = asRecord(response.body)
+  if (envelope.ok !== true) throw new TypeError('期望成功信封，实际为：' + response.text)
+  return envelope.data
+}
+
+/** 取失败信封里的 error；断言 ok:false。 */
+export function errorOf(response: RawResponse): { code: string; message: string; retryable: boolean } {
+  const envelope = asRecord(response.body)
+  if (envelope.ok !== false) throw new TypeError('期望失败信封，实际为：' + response.text)
+  const error = asRecord(envelope.error)
+  return {
+    code: typeof error.code === 'string' ? error.code : '',
+    message: typeof error.message === 'string' ? error.message : '',
+    retryable: error.retryable === true,
+  }
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    return undefined
+  }
+}
