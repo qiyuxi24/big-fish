@@ -13,7 +13,9 @@ P1.0 **已完成**：组件拆解——`channel-mtop` / `channel-cdp` / `channel
 
 P1.1 **已完成**：daemon 运行时装配（`runtime.ts`）+ worker 领租约执行 + 执行器能力矩阵 + `/items` 落库 + `/status` 的 accounts/circuits/worker；`probe/polish` 已接 mtop 真实通道，`publish/deliver/reply` 显式 `UNSUPPORTED`（宁可失败不留假成功）。全仓 379 tests、5 个 TS 包类型检查 0 错误，见 `docs/architecture.md`。
 
-下一步是 P1.2：发布接 CDP 通道（图片上传 → 类目属性 → 价格地址 → 提交）+ 登录态导入入口。**在 publish 落地前，不要让任何代码路径声称「发布成功」。**
+P1.2 **进行中**：登录态导入入口已落地——`npm run daemon:import-account`（或 `POST /accounts/import`）从带 `--remote-debugging-port` 的本机 Chrome 读 goofish cookie → `CredentialStore` 加密落盘；daemon 因此新增依赖 `channel-cdp`。全仓 396 tests、5 个 TS 包类型检查 0 错误。
+
+下一步仍是 P1.2 主体：发布接 CDP 通道（图片上传 → 类目属性 → 价格地址 → 提交）。**在 publish 落地前，不要让任何代码路径声称「发布成功」。**
 
 ## 1. 架构不变量（违反即回退）
 
@@ -29,7 +31,7 @@ P1.1 **已完成**：daemon 运行时装配（`runtime.ts`）+ worker 领租约�
 | 包 | 形态 | 允许依赖 |
 | --- | --- | --- |
 | `packages/core` | 纯 TS 库 | 无内部依赖；不得 import electron / playwright / dsh |
-| `packages/daemon` | 独立 Node 进程 | `core`、`channel-mtop`（执行器调读接口） |
+| `packages/daemon` | 独立 Node 进程 | `core`、`channel-mtop`（执行器调读接口）、`channel-cdp`（登录态导入） |
 | `packages/plugin-ops` | Cordis 插件（**纯 ESM JS**） | 无第三方依赖；不 import `@bigfish/core`（自带最小 client 与错误映射） |
 | `packages/ops-bundle` | 声明 `dsh.bundle.patch` 的包 | 只声明发布物组合，无业务逻辑 |
 | `packages/channel-mtop` | TS 库（纯函数） | `core`；mtop 签名/信封/cookie 归一/ret 分类，不发请求 |

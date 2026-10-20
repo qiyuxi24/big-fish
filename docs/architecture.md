@@ -103,6 +103,7 @@ openStore({path: config.dbPath})
 | --- | --- | --- |
 | GET | `/health` | 免鉴权：`{version,pid,uptimeMs}` |
 | GET | `/status` | 队列五态计数、`accounts`、`circuits`（账号→原因）、`worker` 计数 |
+| POST | `/accounts/import` | 从本机 Chrome（CDP，默认 9222）读 goofish cookie 并加密落盘：`{accountId?, port?}` → `{accountId, savedFieldCount, updatedAt, source}`；未注入导入能力时 `UNSUPPORTED` |
 | GET | `/tasks?state&kind&limit` | 列表（缺省 50、上限 500） |
 | GET | `/tasks/:id` | 单条 |
 | POST | `/tasks` | 入队，201；幂等键去重 |
@@ -149,7 +150,7 @@ queued ──lease──► leased ──ack──► done
 
 - **publish 未接通道**：`UNSUPPORTED`，等 P1.2（CDP 发布步骤：图片上传 → 类目属性 → 价格地址 → 提交）。
 - **IM 与发货未实现**：`deliver/reply` 是 `UNSUPPORTED`；协议与规则已写进 [im-protocol.md](im-protocol.md)、[delivery-rules.md](delivery-rules.md)。
-- **登录态导入没有入口**：凭据只能由代码 `credentials.save()` 写入，还没有二维码/浏览器 cookie 导入工具与 GUI。
+- **登录态导入已有 CLI/HTTP 入口，缺 GUI 与扫码**：`npm run daemon:import-account`（或 `POST /accounts/import`）从带 `--remote-debugging-port=9222` 的 Chrome 读 cookie 写入 `CredentialStore`（AES-256-GCM）；accountId 默认取 cookie 里的 `unb`。插件侧按钮与手机扫码登录还没做。
 - **没有打包**：Electron/headless 分发形态待用户决策。
 - **没有真实联调**：所有测试都不发真实网络（AGENTS §5），首次真机验证需小号。
 
@@ -157,9 +158,9 @@ queued ──lease──► leased ──ack──► done
 
 | 层 | 数量 | 说明 |
 | --- | --- | --- |
-| 全仓 | 379 tests / 379 pass | `node scripts/test-all.mjs` |
+| 全仓 | 396 tests / 396 pass | `node scripts/test-all.mjs` |
 | core | 112 | 队列、仓储、策略、限流熔断、凭据、脱敏、配置 |
-| daemon | 69 | HTTP、CLI、客户端、执行器、worker、路由，含 5 条 `runtime.test.ts` 全链路集成（真 HTTP + 真 SQLite + 假 mtop transport） |
+| daemon | 86 | HTTP、CLI、客户端、执行器、worker、路由、账号导入（含 5 条 `runtime.test.ts` 全链路集成：真 HTTP + 真 SQLite + 假 mtop transport） |
 | channel-mtop / channel-cdp / channel-guanjia | 53 / 49 / 62 | 纯函数与假连接 |
 | plugin-ops | 32 | 插件契约与门禁 |
 | integration | 2 | 插件 client ↔ 真 daemon 的跨层端到端 |
