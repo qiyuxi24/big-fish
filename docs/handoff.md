@@ -1,4 +1,4 @@
-# 交接快照（2026-10-20 深夜）
+# 交接快照（2026-10-21 凌晨，P1.2 填表链路校准完成后）
 
 > 给"新开一个会话"用的最短上下文。读完这页 + `AGENTS.md` + `docs/architecture.md` 就能接着干。
 > 本文件由当前会话在上下文被压到约 100K 时写下；之后每个大阶段结束时更新。
@@ -14,7 +14,8 @@
 - **测试**：`npm test` = 477 tests / 477 pass（core 131 / daemon 106 / mtop 53 / cdp 75 / guanjia 62 / plugin-ops 48 / integration 2）。5 个 TS 包 tsc --noEmit 全 0 错误（命令见 §4，`scripts/typecheck.mjs` 在本机 spawn EPERM 用不了）。
 - **界面插件已可热调试**：侧边栏「BigFish 闲鱼运营」面板在隔离 dev 实例里已验证（栏位渲染 + 改 `client.js` 不刷新即换文案）。
 - **插件已装进用户自己的 desktop profile**，等用户重启一次 DSH 桌面应用生效；之后改 client.js 同样热替换。
-- **daemon 未常驻**：面板是静态占位，实时数据要 P1.2 做 daemon → 插件 → client 推送。
+- **daemon 未常驻**：面板现在是「静态快照 + 手动刷新」，实时推送仍要 daemon 常驻方案；面板按钮 disabled 是刻意的——DSH 宿主没有「面板按钮调 host 工具」的公开 API（见 `docs/client-plugin-sidebar.md`）。
+- **技术路线已定稿**：[ADR 0003](adr/0003-publish-automation-path.md)——发布走确定性 CDP 步骤机，LLM 只做校准、异常归因、人工兜底，不直接点页面；mtop 发布接口保留为将来加速通道；DSH 内置浏览器（bsk）只作兜底演示。
 
 ## 2. 仓库地图
 
@@ -26,7 +27,7 @@ packages/daemon/src/accounts.ts     登录态导入（CDP 读 cookie → Credent
 packages/daemon/src/cdp-publish.ts  daemon 发布通道（草稿文件 → 步骤机，默认 dry-run），已挂 CLI publish 与 publishItem 执行器
 packages/channel-guanjia 闲管家开放平台客户端（MIT，附 LICENSE）
 packages/daemon          HTTP + worker + executors + operations + runtime + cli
-packages/plugin-ops      DSH 插件（纯 ESM JS）：7 个 xy_* 工具 + 写操作审批门禁 + client.js 面板
+packages/plugin-ops      DSH 插件（纯 ESM JS）：9 个 xy_* 工具 + 写操作审批门禁 + client.js 面板
 packages/ops-bundle      只负责把插件插进 profile 的 bundle
 scripts/                 dsh-dev / dsh-shot / dsh-install / dsh-dump / test-all / typecheck
 docs/                    ADR、架构、开发说明、IM 协议、发货规则、资产吸收、client 插件机制
@@ -34,8 +35,7 @@ docs/                    ADR、架构、开发说明、IM 协议、发货规则�
 
 ## 3. 待办（按优先级）
 
-1. **用户重启 DSH 桌面应用** → 确认侧边栏出现 🐟 栏位（`npm run dsh:install -- --uninstall` 可回滚）。
-2. **P1.2 收尾：真发布一次（需用户点头）**。填表链路已真机 dry-run 校准（§1.4、architecture §13），剩下只有 `submit=true` 那条路：点提交 → 成功页 → 解析 item id。跑法：先用测试小号开专用 profile
+1. **P1.2 收尾：真发布一次（需用户点头）**。填表链路已真机 dry-run 校准（§1.4、architecture §13），剩下只有 `submit=true` 那条路：点提交 → 成功页 → 解析 item id。跑法：先用测试小号开专用 profile
    `Start-Process msedge.exe -ArgumentList '--remote-debugging-port=9222','--user-data-dir="D:\Github\big fish\.scratch\edge-cal\profile"','--no-first-run','about:blank'`，登录后
    `npm run daemon:publish -- --draft <草稿.json> --submit --screenshots .scratch/shots`。
    **没真发布成功前不得声称「发布成功」**；失败不要盲目重发（uniqueCode/itemId 幂等靠首次成功解析）。
@@ -44,11 +44,12 @@ docs/                    ADR、架构、开发说明、IM 协议、发货规则�
 5. **雾里 3.20 安装包未找回**（87,770,486 B）：本地已查遍 Downloads/微信缓存/D 盘/回收站，需要用户重新提供或给原链接。A（v4.8.2 自动发货助手）与 B（C 搬运助手 v2.1.9）已恢复在 `research/repos/`（不入 git）。
 6. **尚未逆向完成**（用户很在意，别再删）：A 的发货调用链、B 的发布/铺货调用链、C 的发布端点。
    见 `docs/asset-extraction.md` 与 `AGENTS.md` §6 的删除规则。
+7. **用户重启 DSH 桌面应用** → 确认侧边栏出现 🐟 栏位（`npm run dsh:install -- --uninstall` 可回滚）；之后 client.js 改动能热替换。
 
 ## 4. 常用命令
 
 ```bash
-npm test                                   # 431 tests（单进程顺序跑，不能 spawn）
+npm test                                   # 477 tests（单进程顺序跑，不能 spawn）
 node 'C:/Users/34239/Documents/GitHub/deepseek-harness/node_modules/typescript/bin/tsc' \
   --noEmit --pretty false -p packages/<pkg>/tsconfig.json \
   --typeRoots 'C:/Users/34239/Documents/GitHub/deepseek-harness/node_modules/@types'
@@ -72,3 +73,31 @@ npm run dsh:dev -- --stop                  # 停 dev 实例
 - Hindsight 在本机不可用（daemon 起不来、Python 无网），别调用 `hindsight_*`。
 - compress 参数是 `{content:[{startId,endId,summary}]}`，不是对象映射。
 - **DSH 沙箱创建的 workspace junction 是坏的**：reparse target 变成 `\??\Global\D:\...`，Node `realpathSync` 返回链接自身 → 报 `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING ... node_modules/@bigfish/*/src/index.ts`（TS 不允许在 node_modules 下剥类型）。修法：`run_code` 传 `sandbox_permissions:'danger-full-access'`，无沙箱下 `fs.rmdirSync(link)` + `fs.symlinkSync(target, link, 'junction')`，target 恢复成 `\??\D:\...`。**删 node_modules 下的链接只能用 `rmdir`/`fs.rmdirSync`，`rm -rf` 会跟随 junction 删掉真源码**（2026-10-20 曾因此删掉整个 `packages/channel-cdp`，用 `git checkout -- packages/channel-cdp` 恢复）。
+
+## 6. 收尾清单（2026-10-21 会话结束，用户已睡）
+
+**本次提交（P1.2 校准收尾，main 上 3 个 commit）**
+
+- `05edd61` fix(channel-cdp): cookie 读取按 `Storage.getCookies` 自动降级（Edge 155 移除了 `Network.getAllCookies`，报 `wasn't found`）。
+- `7c76d70` feat(channel-cdp): 步骤机真机校准——富文本描述（`Input.insertText` + `Range` 全选 + 回读校验）、地址（真实键入 + 候选匹配 + 表单回读）、真发布必填预检、新文件 `address.ts`/`form.ts`，+13 个假页面测试。
+- `63a0fa6` docs: architecture §13（选择器表 / 填写原理 / **地址搜索在 CDP 下不回显** / dry-run 记录）。
+- 另：ADR 0003（发布自动化路径）与本页更新，见随后提交。
+- 全仓 477 tests / 477 pass；channel-cdp 与 daemon tsc 0 错误；工作区干净。
+
+**刻意没做（等用户决定）**
+
+- 没跑真发布：`--submit` 会真的在测试小号上架一件 1 元商品；没用户点头不跑（ADR 0003 / AGENTS §5）。也没让任何路径声称「发布成功」。
+- 没装 BrowserSkill 扩展：bsk CLI 装着但 `0 browsers connected`，扩展（Chrome 商店 `hhcmgoofomhgciiibhipgmgkgnoenaoi` / Edge 商店 `emacgiaaaiojkkpkddmmdfhmokgmnikg`）需用户自己点安装。
+- 类目仍不自动选：页面 AI 识别（本次识别成「电子资料」），工具只在真发布前预检非空。
+
+**进程与环境状态**
+
+- 校准用的 Edge（专用 profile `.scratch/edge-cal/profile`，已登录测试小号）与 bsk daemon 已在收尾时关闭；登录态仍在 profile 目录里，下次直接复用，首次可能要重新扫码。
+- 测试小号登录态已加密落库：accountId `2206569289277`，`%LOCALAPPDATA%/bigfish/credentials`（21 个字段）。
+- daemon 未常驻；插件已装进 desktop profile（用户重启后生效）。
+
+**下次从哪继续**
+
+1. 用户同意后跑真发布：`npm run daemon:publish -- --draft .scratch/pubtest/draft-addr.json --submit --screenshots .scratch/pubtest/shots-submit --account-id 2206569289277`（先按 §3.1 起 Edge）。跑完记录 itemId、成功页 URL、商品是否出现在主页，然后马上在 App 里下架。
+2. P2：IM 协议 + 发货规则（`docs/im-protocol.md`、`docs/delivery-rules.md`；core 的 `delivery.ts` 已是纯函数引擎，等通道接上）。
+3. 用户三问里还差两个（首发主打、目标商家）；运行形态已定 DSH 插件 + daemon 自启。

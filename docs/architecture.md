@@ -94,6 +94,7 @@ openStore({path: config.dbPath})
 
 ### 6.1 发布通道（P1.2）
 
+- 路线决策见 [ADR 0003](adr/0003-publish-automation-path.md)：确定性 CDP 步骤机是唯一写路径，LLM 不进热路径（只做校准、异常归因、人工兜底）；mtop 发布接口保留为将来加速通道；DSH 内置浏览器（bsk）只作兜底演示。
 - 步骤机在 `packages/channel-cdp/src/publish.ts`：打开发布页 → 上传图片（`DOM.setFileInputFiles`，等价用户选文件）→ 文案（contenteditable 富文本走 `Input.insertText`，普通 input 走原生 setter + `input` 事件）→ 计价方式 → 价格/包邮 → 地址（真实键入触发联想，按候选匹配点选并回读表单）→ 必填项预检（分类/所在地非空）→ 提交并验证（URL 含 item id 或页面出现「发布成功」，超时按失败处理且**不自动重试**）。dry-run 在提交前收尾。
 - 装配在 `packages/daemon/src/cdp-publish.ts`：先读浏览器 `unb` 与期望账号比对（防发错号）→ 开空白页跑步骤机 → 返回 `{accountId,dryRun,itemId?,href,durationMs}`。
 - 安全默认：`submit=false` 只填表不点提交；CLI `npm run daemon:publish -- --draft <草稿.json> [--account-id X] [--chrome-port 9222] [--screenshots dir] [--submit]`，daemon 队列发布要 `BF_PUBLISH_SUBMIT=1`（另支持 `BF_CHROME_PORT`、`BF_PUBLISH_SCREENSHOTS`，截图默认 `<data-dir>/publish-shots`）。
