@@ -6,7 +6,9 @@
 
 ## 0. 当前阶段
 
-P0：pnpm workspace 骨架 → 最小插件加载跑通 → 空壳打包实测 → 接 daemon。**跑通加载之前不写业务代码。**
+P0 **已完成**：workspace 骨架 + core 契约 + daemon HTTP/队列 + plugin-ops 7 个工具，测试/类型检查/真 DSH loader 装配三项验收全绿（见 `docs/architecture.md`、ADR 0002）。
+
+下一步是 P1：真实通道（mtop 读 + CDP 发布）+ daemon 执行器 + 登录态。**在通道与执行器落地前，不要往队列里塞假业务、不要改工具契约。**
 
 ## 1. 架构不变量（违反即回退）
 
@@ -23,17 +25,19 @@ P0：pnpm workspace 骨架 → 最小插件加载跑通 → 空壳打包实测 �
 | --- | --- | --- |
 | `packages/core` | 纯 TS 库 | 无内部依赖；不得 import electron / playwright / dsh |
 | `packages/daemon` | 独立 Node 进程 | `core` |
-| `packages/plugin-ops` | Cordis 插件 | `core`、DSH 公开导出、daemon 的 HTTP client |
+| `packages/plugin-ops` | Cordis 插件（**纯 ESM JS**） | 无第三方依赖；不 import `@bigfish/core`（自带最小 client 与错误映射） |
 | `packages/ops-bundle` | 声明 `dsh.bundle.patch` 的包 | 只声明发布物组合，无业务逻辑 |
 
 - 包名统一 `@bigfish/*`。
+- 语言边界：`core`/`daemon` 用 TS（Node 24 直接跑，无构建）；`plugin-ops`/`ops-bundle` 用纯 ESM JS + JSDoc（它们被宿主直接 import，见 ADR 0002）。
+- **运行时零第三方依赖**。新增依赖必须先写 ADR：说明为什么 node 内置不够、体积多少、离线安装怎么办。
 - **禁止跨包相对路径 import**（`../../daemon/src/...`）；跨包只走包名。
 - 依赖方向单向：`core ← daemon`、`core ← plugin-ops`；`daemon` 与 `plugin-ops` 互不 import。
 
 ## 3. 代码规范
 
-- Node ≥ 24、TypeScript strict、ESM only、`moduleResolution: NodeNext`、pnpm workspace。
-- **禁止 `any`**；边界用 `unknown` + zod 校验，内部类型用 `z.infer` 派生。对外输入（工具参数、mtime 响应、配置文件）一律先校验再用。
+- Node ≥ 24、ESM only、pnpm workspace；TS 部分是 strict + `moduleResolution: NodeNext`，无构建产物（`exports` 指向 `./src/index.ts`）。
+- **禁止 `any`**；边界一律 `unknown` + 手写窄化校验函数（P0 零依赖，没有 zod，见 ADR 0002；能装依赖后再评估引入）。对外输入（工具参数、HTTP 响应、配置文件）先校验再用。
 - 错误：只用 `class XianyuError extends Error`，带稳定 `code`（`AUTH_EXPIRED | RISK_CONTROL | RATE_LIMITED | VALIDATION | NETWORK | BUS_STATE | UNKNOWN`）。禁止裸 `throw "字符串"`、禁止 `catch {}` 吞异常。
 - **金额一律整数分（cent），时间一律整数毫秒**，禁止浮点相乘（mtop 字段本身就是分）。
 - 所有 IO 必须有超时（默认 15s）并透传 `AbortSignal`；重试只对幂等请求，退避用 `min(60 * 2^(n-1), 1800)` 秒。
@@ -45,7 +49,7 @@ P0：pnpm workspace 骨架 → 最小插件加载跑通 → 空壳打包实测 �
 ## 4. DSH 插件规则
 
 - 只用**公开导出**与稳定扩展点：`ctx.tools.register / defineTool`、`ctx.on('tools/pre-execute')`、settings 卡片、cron → `agent.followup()`、client-module（GUI）、`ctx.jobs.start`。**禁止**引用 `@deepseek-ai/dsh-*` 的 `/src/*`、`/lib/*` 深层路径。
-- peerDependencies 精确 pin 到当前安装版本（当前 `0.1.5-rc.2`）；升级上游单独提交，并全量回归。
+- 当前**不声明** `peerDependencies`（离线安装解析不了 `@deepseek-ai/*`）；插件按「运行期零依赖 + 只用宿主公开扩展点」写。将来能联网安装时，再 pin 到宿主版本（当前 `0.1.5-rc.2`）并全量回归。
 - `cordis.patch.yml` 里一行是**整段替换 `config`**：覆盖时必须把该行原有 key 全部重述（上游注释明确写了这点）。
 - 工具命名统一 `xy_` 前缀；**写类工具必须挂审批门禁**（`tools/pre-execute` 返回 ask/deny），读类可自动放行。
 - 长任务用 `ctx.jobs.start`，不要在工具 `execute` 里阻塞几十分钟。
@@ -53,12 +57,13 @@ P0：pnpm workspace 骨架 → 最小插件加载跑通 → 空壳打包实测 �
 
 ## 5. 测试
 
-- vitest。`core` 纯函数行覆盖 ≥ 80%。
-- **禁止在本仓与 CI 直连真实闲鱼接口。** 通道测试用脱敏 fixture（`tests/fixtures/*.json`）回放请求/响应。
+- 用 `node:test`，**不用 vitest / `node --test`**：沙箱禁止 spawn，`scripts/test-all.mjs` 在单进程里顺序 import 所有 `packages/**/test/**/*.test.(ts|mjs)` 与 `integration/**/*.test.mjs`，可传路径前缀过滤。
+- 类型检查：`node scripts/typecheck.mjs`（探测 `BF_TSC` → 本地 → DSH checkout 的 tsc）。
+- **禁止在本仓与 CI 直连真实闲鱼接口。** 通道测试用脱敏 fixture 回放请求/响应。
 - 限流、熔断、退避、幂等必须有单测：注入假时钟与假随机数，不 `sleep` 等真实时间。
-- daemon 端到端用本地 fake mtop server（`node:http`）。
+- daemon 端到端用本地 fake mtop server（`node:http`）；跨层用 `integration/`（不依赖 spawn）。
 - 真人验证只用**测试小号**，不在主账号上试发布。
-- 提交前跑 `pnpm typecheck && pnpm lint && pnpm test`（P0 建立后启用）。
+- 提交前必须跑：`node scripts/test-all.mjs && node scripts/typecheck.mjs`；改了插件装配再跑 `node scripts/dsh-dump.mjs`。
 
 ## 6. Git
 
@@ -114,6 +119,16 @@ settled.forEach((s, i) => {
 ### 7.8 Hindsight 当前离线，不要调用
 
 全部 `ECONNREFUSED 127.0.0.1:9077`；daemon 未起，且本沙箱 Python 无外网、embedding 不可得。已在本仓库禁用（`~/.hindsight/coding-agent.json`），重启 DSH 生效。恢复条件：可达的 LLM + embeddings 端点，或 cloud token，或放开 Python 网络。
+
+### 7.9 安装与 tsc 只能「借」
+
+- registry 不可达：装依赖必须 `pnpm install --offline --ignore-scripts`；给 workspace 包写 `peerDependencies` 引用 `@deepseek-ai/dsh-*` 会 `ERR_PNPM_NO_OFFLINE_META`。
+- 仓库不装 devDependencies；tsc 与 `@types/node` 都在 DSH checkout（`scripts/typecheck.mjs` 会自动找）。
+- 插件包 `main`/`exports` 必须指向 `./index.js`（写成 `.ts` 会 ERR_MODULE_NOT_FOUND）；插件必须 `export const inject = ['tools']`，否则 Cordis 报 `cannot get property "tools" without inject`。
+
+### 7.10 改文件前必须先读
+
+edit/write 之前必须先用 read 读过该文件，否则报 file has not been read（本会话踩过 2 次）。大文件用 offset/limit 读目标段。
 
 ## 8. 报告口径
 
