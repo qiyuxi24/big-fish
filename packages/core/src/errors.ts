@@ -16,6 +16,8 @@ export type ErrorCode =
   | 'UNSUPPORTED'
   | 'INTERNAL'
   | 'UNAUTHORIZED'
+  /** 平台返回了我们没归类的 ret；保留原文进 message，重试无意义。 */
+  | 'UNKNOWN'
 
 /** 全部错误码的集合（运行时判定用，例如把外部 code 收敛到白名单）。 */
 export const ERROR_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
@@ -29,6 +31,7 @@ export const ERROR_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
   'UNSUPPORTED',
   'INTERNAL',
   'UNAUTHORIZED',
+  'UNKNOWN',
 ])
 
 /** 每个 code 的重试语义：true=稍后可重试，false=重试无意义。 */
@@ -44,6 +47,7 @@ const RETRYABLE: Record<ErrorCode, boolean> = {
   INTERNAL: false,
   // 401：daemon token 缺失/不匹配。凭据本身可重配，但重试同一请求无意义。
   UNAUTHORIZED: false,
+  UNKNOWN: false,
 }
 
 export interface XianyuErrorOptions {

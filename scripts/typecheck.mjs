@@ -71,7 +71,11 @@ for (const project of projects) {
   const args = [tscBin, '--noEmit', '--pretty', 'false', '-p', project.tsconfig]
   if (typesDir) args.push('--typeRoots', typesDir)
   const result = spawnSync(process.execPath, args, { cwd: repoRoot, encoding: 'utf8' })
-  const output = (result.stdout ?? '') + (result.stderr ?? '')
+  // 子进程起不来（沙箱禁 spawn 时是 EPERM）不能当成类型错误吞掉，否则只看到「失败」没有诊断。
+  const spawned = !result.error && result.status !== null
+  const output = spawned
+    ? (result.stdout ?? '') + (result.stderr ?? '')
+    : 'spawn tsc 失败（不是类型错误）：' + String(result.error?.message ?? 'status=' + String(result.status))
   if (result.status === 0) {
     console.log('✔ ' + project.name + ' 类型检查通过')
     continue

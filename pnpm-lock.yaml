@@ -8,6 +8,24 @@ importers:
 
   .: {}
 
+  packages/channel-cdp:
+    dependencies:
+      '@bigfish/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/channel-guanjia:
+    dependencies:
+      '@bigfish/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/channel-mtop:
+    dependencies:
+      '@bigfish/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/core: {}
 
   packages/daemon:
@@ -22,8 +40,4 @@ importers:
         specifier: workspace:*
         version: link:../plugin-ops
 
-  packages/plugin-ops:
-    dependencies:
-      '@bigfish/core':
-        specifier: workspace:*
-        version: link:../core
+  packages/plugin-ops: {}

@@ -4,5 +4,6 @@
  */
 export * from './types.ts'
 export * from './errors.ts'
+export * from './risk.ts'
 export * from './data.ts'
 export * from './runtime.ts'
