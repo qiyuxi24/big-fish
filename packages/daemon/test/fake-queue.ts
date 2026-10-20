@@ -22,6 +22,14 @@ const STATES: readonly TaskState[] = ['queued', 'leased', 'done', 'failed', 'nee
 const DEFAULT_MAX_ATTEMPTS = 3
 const RETRY_BACKOFF_MS = 1000
 
+/** fail() 的一次调用记录，供 worker 测试断言失败映射参数。 */
+export interface FakeFailCall {
+  id: string
+  owner: string
+  error: string
+  options?: FailTaskOptions
+}
+
 /** 假队列构造参数。 */
 export interface FakeQueueOptions {
   /** 注入时钟（整数毫秒），默认 Date.now。 */
@@ -30,6 +38,10 @@ export interface FakeQueueOptions {
 
 /** 内存任务队列。 */
 export class FakeQueue implements TaskQueue {
+  /** fail() 调用轨迹；worker 测试用来断言 nonRetryable / retryAfterMs 透传。 */
+  readonly failCalls: FakeFailCall[] = []
+  /** 测试钩子：设为 Error 后 lease() 直接抛，用于验证 tick 循环兜底。 */
+  leaseError: Error | undefined
   private readonly now: () => number
   private readonly tasks = new Map<string, TaskRecord>()
   private readonly order: string[] = []
@@ -75,6 +87,7 @@ export class FakeQueue implements TaskQueue {
 
   lease(options: LeaseOptions): TaskRecord[] {
     this.requireOpen()
+    if (this.leaseError !== undefined) throw this.leaseError
     const now = options.now ?? this.now()
     if (!isPositiveInt(options.limit)) fail('VALIDATION', 'limit 必须是正整数')
     if (!isPositiveInt(options.ttlMs)) fail('VALIDATION', 'ttlMs 必须是正整数')
@@ -107,14 +120,17 @@ export class FakeQueue implements TaskQueue {
   fail(id: string, owner: string, error: string | Error, options?: FailTaskOptions): void {
     this.requireOpen()
     const record = this.requireLease(id, owner)
-    record.lastError = error instanceof Error ? error.message : error
+    const message = error instanceof Error ? error.message : error
+    this.failCalls.push({ id, owner, error: message, ...(options === undefined ? {} : { options }) })
+    record.lastError = message
     delete record.leaseOwner
     delete record.leaseUntil
     if (options?.nonRetryable === true) record.state = 'failed'
     else if (record.attempts >= record.maxAttempts) record.state = 'needs_review'
     else {
       record.state = 'queued'
-      record.availableAt = this.now() + RETRY_BACKOFF_MS
+      // 真实队列会与指数退避取较大者；假队列用固定退避模拟同样的语义。
+      record.availableAt = this.now() + Math.max(RETRY_BACKOFF_MS, safeDelay(options?.retryAfterMs))
     }
     record.updatedAt = this.now()
   }
@@ -178,6 +194,11 @@ export class FakeQueue implements TaskQueue {
     if (record.leaseOwner !== owner) fail('VALIDATION', '租约持有者不匹配：' + id)
     return record
   }
+}
+
+function safeDelay(value: number | undefined): number {
+  if (value === undefined) return 0
+  return Number.isSafeInteger(value) && value > 0 ? value : 0
 }
 
 function isPositiveInt(value: number): boolean {

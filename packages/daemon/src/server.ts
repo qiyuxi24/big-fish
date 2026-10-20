@@ -13,12 +13,13 @@ import type { AddressInfo } from 'node:net'
 import { dirname } from 'node:path'
 
 import { XianyuError, fail, toXianyuError } from '@bigfish/core'
-import type { DaemonStatus, TaskQueue } from '@bigfish/core'
+import type { CircuitBreaker, DaemonStatus, ItemRepository, TaskQueue } from '@bigfish/core'
 import { isLoopbackHost } from './config.ts'
 import type { DaemonConfig } from './config.ts'
 import { extractBearer, loadRedact, sendError, sendMappedError, tokenMatches } from './http.ts'
 import type { RedactFn } from './http.ts'
 import { buildStatus, matchRoute } from './routes.ts'
+import type { WorkerCounts } from './routes.ts'
 
 /** 请求总超时：本机 IPC 不应该有慢请求。 */
 const REQUEST_TIMEOUT_MS = 30_000
@@ -29,6 +30,14 @@ const HEADERS_TIMEOUT_MS = 10_000
 export interface StartDaemonOptions {
   config: DaemonConfig
   queue: TaskQueue
+  /** 商品表；缺省时 GET /items 返回空数组（P0 行为）。 */
+  items?: ItemRepository
+  /** 已保存账号列表；缺省视作空。 */
+  accounts?: () => string[]
+  /** 账号熔断器；缺省时 status.circuits 为空对象。 */
+  circuits?: CircuitBreaker
+  /** worker 计数；缺省时 status 不带 worker 字段。 */
+  worker?: () => WorkerCounts
   /** 可注入时钟（整数毫秒），测试用假时钟断言 uptime。 */
   now?: () => number
   version?: string
@@ -46,6 +55,10 @@ export interface Daemon {
 
 interface ServerContext {
   queue: TaskQueue
+  items: ItemRepository | undefined
+  accounts: (() => string[]) | undefined
+  circuits: CircuitBreaker | undefined
+  worker: (() => WorkerCounts) | undefined
   now: () => number
   startedAt: number
   version: string
@@ -65,7 +78,18 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
   const version = options.version ?? '0.0.0'
   const token = await readOrCreateToken(config.tokenPath)
   const redact = await loadRedact()
-  const context: ServerContext = { queue, now, startedAt, version, token, redact }
+  const context: ServerContext = {
+    queue,
+    items: options.items,
+    accounts: options.accounts,
+    circuits: options.circuits,
+    worker: options.worker,
+    now,
+    startedAt,
+    version,
+    token,
+    redact,
+  }
 
   const server = createServer((req, res) => {
     void handleRequest(req, res, context).catch((error: unknown) => {
@@ -86,7 +110,16 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
       closing ??= closeServer(server)
       return closing
     },
-    status: () => buildStatus({ queue, now, startedAt, version }),
+    status: () =>
+      buildStatus({
+        queue,
+        now,
+        startedAt,
+        version,
+        ...(options.accounts === undefined ? {} : { accounts: options.accounts }),
+        ...(options.circuits === undefined ? {} : { circuits: options.circuits }),
+        ...(options.worker === undefined ? {} : { worker: options.worker }),
+      }),
   }
 }
 
@@ -112,6 +145,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, context:
     }
     await matched.route.handler({
       queue: context.queue,
+      items: context.items,
+      accounts: context.accounts,
+      circuits: context.circuits,
+      worker: context.worker,
       now: context.now,
       startedAt: context.startedAt,
       version: context.version,

@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { loadDaemonConfig } from '@bigfish/core'
-import type { DaemonConfig } from '@bigfish/core'
+import type { CircuitBreaker, DaemonConfig, ItemRepository } from '@bigfish/core'
 
 import { DaemonClient } from '../src/client.ts'
 import { startDaemon } from '../src/server.ts'
@@ -44,6 +44,7 @@ export interface DaemonHarness {
   readonly client: DaemonClient
   readonly config: DaemonConfig
   readonly queue: FakeQueue
+  readonly items: ItemRepository | undefined
   readonly baseUrl: string
   readonly tokenPath: string
   now(): number
@@ -54,6 +55,12 @@ export interface DaemonHarness {
 
 export interface HarnessOptions {
   version?: string
+  /** 注入商品表以测试 GET /items 的过滤；缺省时不注入。 */
+  items?: ItemRepository
+  /** 已保存账号列表提供者（测试 /status.accounts）。 */
+  accounts?: () => string[]
+  /** 熔断器（测试 /status.circuits 与 /circuits/reset）。 */
+  circuits?: CircuitBreaker
 }
 
 /** 建夹具；t.after 负责关服务与清理目录。 */
@@ -70,7 +77,15 @@ export async function createHarness(t: { after(fn: () => Promise<void>): void },
   const config: DaemonConfig = { ...loaded, port: 0 }
   let nowMs = 1_700_000_000_000
   const queue = new FakeQueue({ now: (): number => nowMs })
-  const daemon = await startDaemon({ config, queue, now: (): number => nowMs, version: options.version ?? '9.9.9' })
+  const daemon = await startDaemon({
+    config,
+    queue,
+    now: (): number => nowMs,
+    version: options.version ?? '9.9.9',
+    ...(options.items === undefined ? {} : { items: options.items }),
+    ...(options.accounts === undefined ? {} : { accounts: options.accounts }),
+    ...(options.circuits === undefined ? {} : { circuits: options.circuits }),
+  })
   const client = new DaemonClient({ baseUrl: daemon.url, tokenPath: config.tokenPath })
   const baseUrl = daemon.url
   const tokenPath = config.tokenPath
@@ -100,6 +115,7 @@ export async function createHarness(t: { after(fn: () => Promise<void>): void },
     client,
     config,
     queue,
+    items: options.items,
     baseUrl,
     tokenPath,
     now: (): number => nowMs,

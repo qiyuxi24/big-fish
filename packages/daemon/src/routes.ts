@@ -7,8 +7,12 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 
 import { XianyuError, fail } from '@bigfish/core'
 import type {
+  CircuitBreaker,
   DaemonStatus,
   EnqueueInput,
+  ItemFilter,
+  ItemRepository,
+  ItemState,
   ItemSummary,
   TaskFilter,
   TaskKind,
@@ -32,6 +36,14 @@ import type { RedactFn } from './http.ts'
 /** 一次请求的处理上下文：路由参数、URL、队列与时钟都在这里。 */
 export interface RouteContext {
   queue: TaskQueue
+  /** 商品表；未注入时为 undefined（GET /items 返回空数组）。 */
+  items: ItemRepository | undefined
+  /** 已保存账号列表提供者；未注入时 /status.accounts 为空。 */
+  accounts: (() => string[]) | undefined
+  /** 账号熔断器；未注入时 /status.circuits 为空且 /circuits/reset 为空操作。 */
+  circuits: CircuitBreaker | undefined
+  /** worker 计数提供者；未注入时 /status 不带 worker 字段。 */
+  worker: (() => WorkerCounts) | undefined
   now: () => number
   startedAt: number
   version: string
@@ -58,8 +70,14 @@ const TASK_STATES = new Set<string>(['queued', 'leased', 'done', 'failed', 'need
 const TASK_KINDS = new Set<string>(['publish', 'deliver', 'polish', 'reply', 'probe'])
 
 /** 状态机取值校验（P0 手写集合；任务层用 zod 时再统一）。 */
+const ITEM_STATES = new Set<string>(['online', 'offline', 'unknown'])
+
 function isTaskState(value: string): value is TaskState {
   return TASK_STATES.has(value)
+}
+
+function isItemState(value: string): value is ItemState {
+  return ITEM_STATES.has(value)
 }
 
 function isTaskKind(value: string): value is TaskKind {
@@ -100,22 +118,39 @@ export function matchRoute(method: string, pathname: string): RouteMatch | undef
   return pathMatched ? { methodNotAllowed: true } : undefined
 }
 
+/** /status.worker 的最小形状（避免 routes 依赖 worker 实现）。 */
+export interface WorkerCounts {
+  leased: number
+  done: number
+  failed: number
+  errors: number
+}
+
 interface StatusSource {
   queue: TaskQueue
   now: () => number
   startedAt: number
   version: string
+  /** 已保存账号列表提供者（凭据库）；缺省或 undefined 视作空。 */
+  accounts?: (() => string[]) | undefined
+  /** 账号熔断器；缺省或 undefined 视作无熔断。 */
+  circuits?: CircuitBreaker | undefined
+  /** worker 计数；缺省或 undefined 时不带 worker 字段。 */
+  worker?: (() => WorkerCounts) | undefined
 }
 
-/** 组装 DaemonStatus。accounts/circuits 在 P0 固定为空，P1 接账号存储与熔断器。 */
+/** 组装 DaemonStatus：queue 统计 + 账号列表 + 仍在冷却中的熔断原因。 */
 export function buildStatus(source: StatusSource): DaemonStatus {
+  const circuits: Record<string, string> = {}
+  for (const state of source.circuits?.list() ?? []) circuits[state.accountId] = state.reason
   return {
     version: source.version,
     uptimeMs: uptime(source),
     pid: process.pid,
     queue: source.queue.stats(),
-    accounts: [],
-    circuits: {},
+    accounts: source.accounts?.() ?? [],
+    circuits,
+    ...(source.worker === undefined ? {} : { worker: source.worker() }),
   }
 }
 
@@ -217,16 +252,28 @@ function applyTaskAction(queue: TaskQueue, id: string, action: string, owner: st
 }
 
 async function listItemsHandler(ctx: RouteContext): Promise<void> {
-  // TODO(P1)：接 @bigfish/core 的 store（ItemSummary 落库）；P0 固定返回空数组以冻结接口。
-  const items: ItemSummary[] = []
+  const filter: ItemFilter = {}
+  const state = ctx.url.searchParams.get('state')
+  if (state !== null) {
+    if (!isItemState(state)) fail('VALIDATION', 'item state 非法：' + state)
+    filter.state = state
+  }
+  const accountId = ctx.url.searchParams.get('accountId')
+  if (accountId !== null) {
+    if (accountId === '') fail('VALIDATION', 'accountId 不能为空')
+    filter.accountId = accountId
+  }
+  const limit = ctx.url.searchParams.get('limit')
+  if (limit !== null) filter.limit = parseLimit(limit)
+  const items: ItemSummary[] = ctx.items?.list(filter) ?? []
   await sendJson(ctx.res, 200, ok(items), ctx.redact)
 }
 
 async function resetCircuitHandler(ctx: RouteContext): Promise<void> {
   const body = asRecord(await readJsonBody(ctx.req), '熔断重置请求体')
-  requiredString(body, 'accountId', '熔断重置请求体')
-  // TODO(P1)：接 @bigfish/core 的 CircuitBreaker.reset(accountId)；P0 空实现以固定接口。
-  await sendJson(ctx.res, 200, ok({}), ctx.redact)
+  const accountId = requiredString(body, 'accountId', '熔断重置请求体')
+  ctx.circuits?.reset(accountId)
+  await sendJson(ctx.res, 200, ok({ accountId, reset: ctx.circuits !== undefined }), ctx.redact)
 }
 
 /** 构造 404 错误：code 用 VALIDATION（core 没有 NOT_FOUND 码，HTTP 状态已表达语义）。 */

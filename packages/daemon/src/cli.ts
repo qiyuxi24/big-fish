@@ -9,11 +9,12 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { createLogger, createTaskQueue, fail, loadDaemonConfig, toXianyuError } from '@bigfish/core'
-import type { DaemonConfig, EnvLike, Logger, TaskQueueHandle } from '@bigfish/core'
+import { createLogger, fail, loadDaemonConfig, toXianyuError } from '@bigfish/core'
+import type { DaemonConfig, EnvLike, Logger } from '@bigfish/core'
 
 import { isLoopbackHost } from './config.ts'
-import { startDaemon } from './server.ts'
+import { startDaemonRuntime } from './runtime.ts'
+import type { DaemonRuntime } from './runtime.ts'
 
 /** 命令行解析结果。 */
 export interface CliOptions {
@@ -179,22 +180,24 @@ export async function runCli(
   }
 }
 
-/** 起队列 + HTTP 服务，然后阻塞等 SIGINT/SIGTERM；启动失败返回 1。 */
+/** 起队列 + worker + HTTP 服务，然后阻塞等 SIGINT/SIGTERM；启动失败返回 1。 */
 async function runServer(config: DaemonConfig, io: CliIo): Promise<number> {
   const logger = createLogger({ level: config.logLevel, name: 'bigfish-daemon' })
-  let queue: TaskQueueHandle | undefined
+  let runtime: DaemonRuntime | undefined
   try {
-    queue = createTaskQueue({ path: config.dbPath })
-    const daemon = await startDaemon({ config, queue, version: await readVersion() })
-    logger.info('daemon 已启动', { url: daemon.url, port: daemon.port, pid: process.pid })
+    runtime = await startDaemonRuntime({ config, logger, version: await readVersion() })
+    logger.info('daemon 已启动', {
+      url: runtime.daemon.url,
+      port: runtime.daemon.port,
+      pid: process.pid,
+      workerOwner: 'daemon-' + String(process.pid),
+    })
     const signal = await waitForShutdownSignal()
     logger.info('收到退出信号，开始关闭', { signal })
-    await closeQuietly(daemon, logger)
-    queue.close()
+    await closeQuietly(runtime, logger)
     logger.info('daemon 已停止', {})
     return 0
   } catch (error) {
-    if (queue !== undefined) queue.close()
     const normalized = toXianyuError(error)
     logger.error('daemon 启动失败', { error: normalized.message })
     io.stderr(isAddressInUse(normalized) ? addressInUseHint(config) : '启动失败：' + normalized.message)

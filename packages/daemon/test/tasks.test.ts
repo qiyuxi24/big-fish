@@ -141,7 +141,7 @@ describe('daemon /tasks 路由', () => {
     assert.equal(conflict.status, 409)
   })
 
-  it('/items 返回空数组；/circuits/reset 需要 accountId', async (t) => {
+  it('/items 未注入仓储时返回空数组；/circuits/reset 需要 accountId', async (t) => {
     const h = await createHarness(t)
     assert.deepEqual(await h.client.listItems(), [])
 
@@ -151,7 +151,8 @@ describe('daemon /tasks 路由', () => {
       body: JSON.stringify({ accountId: 'acc-1' }),
     })
     assert.equal(reset.status, 200)
-    assert.deepEqual(dataOf(reset), {})
+    // 未注入 CircuitBreaker 时是空操作，但仍回显 accountId 并标明 reset=false。
+    assert.deepEqual(dataOf(reset), { accountId: 'acc-1', reset: false })
 
     const invalid = await h.rawRequest({ method: 'POST', path: '/circuits/reset', body: '{}' })
     assert.equal(invalid.status, 400)

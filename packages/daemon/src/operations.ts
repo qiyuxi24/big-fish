@@ -1,0 +1,118 @@
+/**
+ * 通道装配：把 channel-mtop / channel-cdp 接到执行器的 OperationPort 上。
+ *
+ * P1.1 落地的真实通道：
+ * - fetchItemDetail：mtop 详情接口 → core 的 ItemSummary（probe 任务用）。
+ * - polishItem：mtop 擦亮接口 v2.0（写操作，已过执行器的限流与熔断）。
+ *
+ * 尚未落地的通道（显式抛 UNSUPPORTED，避免任务被静默当成功）：
+ * - publishItem：CDP 发布步骤机（图片上传 + 表单填充）在 P1.2 实现。
+ * - deliverOrder / sendReply：IM 协议与发货规则在 P2 实现。
+ *
+ * 为什么 publish 不用 mtop：发布载荷含图片上传后的 imageInfoDOList，且部分类目只支持 App，
+ * 网页端 CDP 是唯一能同时覆盖"图片 + 类目属性 + 地址"的通道（见 docs/xianyu-4q-research.md）。
+ * @module @bigfish/daemon/operations
+ */
+import {
+  MTOP_APIS,
+  MTOP_API_VERSIONS,
+  buildItemDetailData,
+  buildPolishData,
+  callMtop,
+  parseItemDetail,
+} from '@bigfish/channel-mtop'
+import type { MtopHttpRequest, MtopHttpResponse, MtopTransport } from '@bigfish/channel-mtop'
+import { XianyuError, fail } from '@bigfish/core'
+
+import type { DetailSnapshot, OperationPort, PublishDraft, Session } from './executors.ts'
+
+/** 基于全局 fetch 的 mtop 传输层；超时由 callMtop 合并的 AbortSignal 负责。 */
+export function createFetchTransport(fetchImpl: typeof fetch = fetch): MtopTransport {
+  return {
+    async request(request: MtopHttpRequest): Promise<MtopHttpResponse> {
+      const init: RequestInit = {
+        method: request.method,
+        headers: request.headers,
+        body: request.body,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+      }
+      const response = await fetchImpl(request.url, init)
+      const headers: Record<string, string> = {}
+      response.headers.forEach((value, key) => {
+        headers[key] = value
+      })
+      return { status: response.status, headers, text: await response.text() }
+    },
+  }
+}
+
+export interface OperationPortOptions {
+  /** 传输层；测试注入 fake，生产用 createFetchTransport()。 */
+  transport?: MtopTransport
+  /** 发布时间戳注入（毫秒），测试用。 */
+  now?: () => number
+  /** 未实现通道的提示前缀（写进错误信息，便于用户知道该等哪个版本）。 */
+  pendingHint?: string
+}
+
+/**
+ * 构造 OperationPort。
+ * 注意：publish/deliver/reply 是有意的 UNSUPPORTED 占位，worker 会按"不可重试"处理成 needs_review，
+ * 不会反复重试消耗账号写入配额。
+ */
+export function createOperationPort(options: OperationPortOptions = {}): OperationPort {
+  const transport = options.transport ?? createFetchTransport()
+  const now = options.now ?? ((): number => Date.now())
+  const hint = options.pendingHint ?? '该通道将在 P1.2/P2 落地'
+
+  return {
+    async fetchItemDetail(input: { session: Session; itemId: string; signal: AbortSignal }): Promise<DetailSnapshot> {
+      const raw = await callMtop(transport, {
+        api: MTOP_APIS.detail,
+        data: buildItemDetailData({ itemId: input.itemId }),
+        session: { cookies: input.session.cookies, ...(input.session.deviceId === undefined ? {} : { deviceId: input.session.deviceId }) },
+        signal: input.signal,
+      })
+      const summary = parseItemDetail(raw, input.session.accountId, now())
+      return { itemId: summary.itemId, title: summary.title, priceCents: summary.priceCents, state: summary.state }
+    },
+
+    async polishItem(input: { session: Session; itemId: string; signal: AbortSignal }): Promise<void> {
+      await callMtop(transport, {
+        api: MTOP_APIS.polish,
+        version: MTOP_API_VERSIONS.polish,
+        data: buildPolishData({ itemId: input.itemId }),
+        session: { cookies: input.session.cookies, ...(input.session.deviceId === undefined ? {} : { deviceId: input.session.deviceId }) },
+        signal: input.signal,
+      })
+    },
+
+    async publishItem(input: { session: Session; draft: PublishDraft; signal: AbortSignal }): Promise<{ itemId?: string }> {
+      void input
+      fail('UNSUPPORTED', '发布通道尚未接入：' + hint + '（CDP 发布步骤：图片上传 → 类目属性 → 价格地址 → 提交）')
+    },
+
+    async deliverOrder(): Promise<{ delivered: boolean }> {
+      fail('UNSUPPORTED', '自动发货通道尚未接入：' + hint + '（IM 协议 + 卡密规则引擎）')
+    },
+
+    async sendReply(): Promise<void> {
+      fail('UNSUPPORTED', 'IM 回复通道尚未接入：' + hint + '（wss-goofish 握手与心跳，见 docs/im-protocol.md）')
+    },
+  }
+}
+
+/** 读出 mtop 响应里的 ret（测试与诊断用）；非对象返回 undefined。 */
+export function readMtopRet(raw: unknown): string | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const ret = (raw as Record<string, unknown>)['ret']
+  if (!Array.isArray(ret)) return undefined
+  const first = ret[0]
+  return typeof first === 'string' ? first : undefined
+}
+
+/** 断言通道错误码可被 daemon 白名单接受（开发期自检用）。 */
+export function assertSupportedChannelError(error: unknown): XianyuError {
+  if (error instanceof XianyuError) return error
+  return new XianyuError({ code: 'INTERNAL', message: '通道抛出了非 XianyuError 的异常', details: {} })
+}
