@@ -2,7 +2,7 @@
 
 面向个人/小商家闲鱼店铺的自动化运营工具：商品详情抓取、批量发布、自动发货、AI 客服。
 
-**当前状态：P0 骨架跑通**（122 条测试全绿、core/daemon 类型检查通过、插件在真 DSH loader 里装配成功并注册 7 个工具）。还没有接真实闲鱼通道与执行器。
+**当前状态：P0 骨架 + 侧边栏栏位跑通**（133 条测试全绿、core/daemon 类型检查通过、插件在真 DSH loader 里装配成功并注册 7 个工具、Web GUI 侧边栏有「BigFish 闲鱼运营」入口并支持热更新）。还没有接真实闲鱼通道与执行器。
 
 ## 技术路线
 
@@ -24,6 +24,8 @@ pnpm install --offline --ignore-scripts   # 本机 registry 不可达，必须�
 node scripts/test-all.mjs                 # 122 tests / 122 pass
 node scripts/typecheck.mjs                # core + daemon
 node scripts/dsh-dump.mjs --smoke         # 在隔离 DSH_HOME 里真装配插件
+node scripts/dsh-dev.mjs --fresh          # 起隔离 DSH Web（含侧边栏栏位）到 127.0.0.1:47080
+node scripts/dsh-shot.mjs                 # headless Chrome 截图验证栏位与面板（--hmr 验证热更新）
 node packages/daemon/src/cli.ts --data-dir .scratch/daemon --port 47001
 ```
 
@@ -34,7 +36,7 @@ node packages/daemon/src/cli.ts --data-dir .scratch/daemon --port 47001
 ```
 packages/      产品代码（core / daemon / plugin-ops / ops-bundle）
 integration/   跨层端到端测试（真实 daemon + 插件 client，不依赖 spawn）
-scripts/       test-all / typecheck / dsh-dump 三个开发脚本
+scripts/       test-all / typecheck / dsh-dump / dsh-dev / dsh-shot 开发脚本（lib/ 放零依赖 CDP 与 profile 工具）
 docs/          设计、调研、决策记录
   adr/         架构决策记录（0001 基于 DSH、0002 运行时契约）
 research/      第三方资料（repos/ 被 gitignore，可重新下载）
@@ -44,6 +46,7 @@ research/      第三方资料（repos/ 被 gitignore，可重新下载）
 文档索引：
 - [ADR 0001：基于 DSH 二次开发](docs/adr/0001-base-on-dsh.md)；[ADR 0002：零依赖/无构建/插件用 JS](docs/adr/0002-p0-runtime-contract.md)
 - [架构（P0 已实现形态）](docs/architecture.md)；[开发环境与运行方式](docs/dev-setup.md)
+- [Client 插件与侧边栏栏位（含 HMR 与调试坑）](docs/client-plugin-sidebar.md)
 - [总体设计：三层架构与性能预算](docs/xianyu-ops-agent-design.md)
 - [四问调研：仓库/风控/扩展/问题清单](docs/xianyu-4q-research.md)
 - [商业工具逆向分析（三款）](docs/xianyu-commercial-tools-analysis.md)、[雾里 3.20 套件](docs/xianyu-wuli-kit-analysis.md)

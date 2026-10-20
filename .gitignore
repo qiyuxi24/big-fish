@@ -5,7 +5,8 @@ research/tmp/
 node_modules/
 *.log
 dist/
-lib/
+# 只忽略各包的构建产物，别把脚本目录（scripts/lib）一起吞掉
+/packages/*/lib/
 tsbuildinfo
 
 # 第三方仓库、商业软件样本与解压产物：体积大（约 886MB）、可重新下载，不进版本库

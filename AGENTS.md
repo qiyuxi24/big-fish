@@ -7,6 +7,7 @@
 ## 0. 当前阶段
 
 P0 **已完成**：workspace 骨架 + core 契约 + daemon HTTP/队列 + plugin-ops 7 个工具，测试/类型检查/真 DSH loader 装配三项验收全绿（见 `docs/architecture.md`、ADR 0002）。
+P0.5 **已完成**：Web GUI 侧边栏栏位「BigFish 闲鱼运营」（`packages/plugin-ops/client.js`，手写 loader bundle），CDP 截图与 HMR 均已实测（见 `docs/client-plugin-sidebar.md`）。
 
 下一步是 P1：真实通道（mtop 读 + CDP 发布）+ daemon 执行器 + 登录态。**在通道与执行器落地前，不要往队列里塞假业务、不要改工具契约。**
 
@@ -54,6 +55,13 @@ P0 **已完成**：workspace 骨架 + core 契约 + daemon HTTP/队列 + plugin-
 - 工具命名统一 `xy_` 前缀；**写类工具必须挂审批门禁**（`tools/pre-execute` 返回 ask/deny），读类可自动放行。
 - 长任务用 `ctx.jobs.start`，不要在工具 `execute` 里阻塞几十分钟。
 - client 侧代码与 host 侧物理隔离（两个 tsconfig 聚合），client 不得 import host 包。
+- **client bundle 是手写 loader 产物**：`window.__ModuleLoader__.load({ id: '<包名>', factory })`，
+  导出 `{ apply, inject }`；`id` 必须等于包名，且 `package.json` 同时声明 `exports["./client"]` 与 `dsh.client.platform`。
+- client 里**只能** `require` 宿主 9 个静态模块（react、react/jsx-runtime、react-dom、react-dom/client、
+  @deepseek-ai/cordis、@deepseek-ai/dsh-client-store / -ui-slots / -ui-primitives / -ui-dockkit）；
+  禁止直接摸 `document.` / `localStorage` / `fetch(`（client 单测会断言这三样不出现）。
+- 侧边栏栏位要**成对注册** `sidebar.panellist`（id/order/label）与 `main`（key），且必须用
+  `ctx.slots.inject(...)` 包住；插槽早于声明注册会在加载期抛错。细节见 `docs/client-plugin-sidebar.md`。
 
 ## 5. 测试
 

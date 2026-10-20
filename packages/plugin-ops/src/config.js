@@ -8,7 +8,7 @@
  * @module @bigfish/plugin-ops/config
  */
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, posix, win32 } from 'node:path'
 
 /** daemon 默认端口，与 @bigfish/core 的 loadDaemonConfig 默认值保持一致。 */
 export const DEFAULT_DAEMON_PORT = 47001
@@ -44,12 +44,14 @@ export function resolveDataDir(configured, env = process.env, platform = process
   if (typeof configured === 'string' && configured.length > 0) return configured
   const override = env.BF_DATA_DIR
   if (typeof override === 'string' && override.length > 0) return override
+  // 用 platform 对应的 path 实现，而不是宿主 path：这样函数可测、行为不随运行平台漂移。
+  const joinPath = platform === 'win32' ? win32.join : posix.join
   if (platform === 'win32') {
     const localAppData = env.LOCALAPPDATA
-    if (typeof localAppData === 'string' && localAppData.length > 0) return join(localAppData, 'bigfish')
-    return join(homedir(), 'AppData', 'Local', 'bigfish')
+    if (typeof localAppData === 'string' && localAppData.length > 0) return joinPath(localAppData, 'bigfish')
+    return joinPath(homedir(), 'AppData', 'Local', 'bigfish')
   }
-  return join(homedir(), '.local', 'share', 'bigfish')
+  return joinPath(homedir(), '.local', 'share', 'bigfish')
 }
 
 /**

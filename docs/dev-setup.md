@@ -56,6 +56,20 @@ node scripts/dsh-dump.mjs --keep    # 保留 .scratch/.dshcheck 便于排查
 - 脚本会去 `~/.dsh/profiles[/<name>]/node_modules` 找一个已装 `@deepseek-ai/dsh-base` 的目录，用 **junction** 借用（不复制、不重新安装）。
 - 需要 DSH CLI：默认找 `C:/Users/34239/Documents/GitHub/deepseek-harness/apps/cli/lib/bin.js`，可用 `DSH_CHECKOUT` 覆盖。
 
+## 热调试 client 插件（侧边栏栏位）
+
+```sh
+node scripts/dsh-dev.mjs --fresh   # 隔离 DSH_HOME(.scratch/.dshdev)，起 web 到 127.0.0.1:47080
+node scripts/dsh-shot.mjs          # CDP 打开页面、点栏位、断言面板文案、截图 .scratch/shots/
+node scripts/dsh-shot.mjs --hmr    # 改 client.js 后不刷新页面断言新文案，然后自动还原
+node scripts/dsh-dev.mjs --stop    # 停实例
+```
+
+- 手写 `packages/plugin-ops/client.js` 即可，**不需要** `pnpm run dev:web`：web-app bundle 无条件挂 `client-hmr`，
+  宿主按 mtime+size 轮询 bundle，经 `/plugins/events` SSE 推 `rebuilt`，浏览器原地换插件。
+- HMR 后主区域会回落到会话欢迎页（activePanelId 被重置），**再点一次侧边栏栏位**即可看到新面板。
+- 机制细节、路由 404 现象与 6 个实测坑见 [client-plugin-sidebar.md](client-plugin-sidebar.md)。
+
 ## 装进真实 DSH profile（手工）
 
 在 `~/.dsh/profiles/<your-profile>/` 下：
@@ -75,6 +89,9 @@ node scripts/dsh-dump.mjs --keep    # 保留 .scratch/.dshcheck 便于排查
 | daemon 起不来，退出码 1 | 端口占用 / 非回环 host / 数据目录不可写 | 看 stderr 的第一行；`--print-config` 核对路径 |
 | 插件返回 `[UNAUTHORIZED]` | token 文件缺失或路径不一致 | 核对 `--token-path` 与插件 `tokenPath` 配置 |
 | `ExperimentalWarning: SQLite` | `node:sqlite` 是实验 API | 正常，忽略 |
+| `bundle <url> loaded without registering "<id>"` | `client.js` 里 `__ModuleLoader__.load({id})` 与包名不一致 | id 必须等于 loader entry 包名 |
+| `layout.selectPanel: main panel "bigfish" is not registered` | 只注册了 `sidebar.panellist` 没注册 `main` | 两个插槽成对注册（见 client-plugin-sidebar.md） |
+| 点栏位没反应 | 用 textContent 匹配命中了外层 `<nav>` | 精确点 `button[aria-label="BigFish 闲鱼运营"]` |
 
 ## 本机环境的坑
 

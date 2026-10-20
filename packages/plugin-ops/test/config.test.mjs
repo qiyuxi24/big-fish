@@ -29,7 +29,7 @@ test('launchEnvironment 快照优先于 process.env', () => {
 })
 
 test('非法配置 fail loud', () => {
-  assert.throws(() => normalizeConfig({ daemonUrl: 'ftp://example.com' }), /http/https|daemonUrl/)
+  assert.throws(() => normalizeConfig({ daemonUrl: 'ftp://example.com' }), /daemonUrl/)
   assert.throws(() => normalizeConfig({ daemonUrl: 'not a url' }), /daemonUrl/)
   assert.throws(() => normalizeConfig({ timeoutMs: 0 }), /timeoutMs/)
   assert.throws(() => normalizeConfig({ timeoutMs: '5000' }), /timeoutMs/)
@@ -38,7 +38,8 @@ test('非法配置 fail loud', () => {
 })
 
 test('resolveDataDir 平台差异', () => {
-  assert.equal(resolveDataDir(undefined, { LOCALAPPDATA: 'C:/Users/x/AppData/Local' }, 'win32'), 'C:/Users/x/AppData/Local/bigfish')
+  // win32.join 会把分隔符归一成反斜杠；函数按传入 platform 决定，与宿主平台无关，因此可确定断言。
+  assert.equal(resolveDataDir(undefined, { LOCALAPPDATA: 'C:/Users/x/AppData/Local' }, 'win32'), 'C:\\Users\\x\\AppData\\Local\\bigfish')
   assert.equal(resolveDataDir('/explicit', {}, 'linux'), '/explicit')
   assert.equal(resolveDataDir(undefined, { BF_DATA_DIR: '/from-env' }, 'linux'), '/from-env')
   assert.ok(resolveDataDir(undefined, {}, 'linux').endsWith('/.local/share/bigfish'))
