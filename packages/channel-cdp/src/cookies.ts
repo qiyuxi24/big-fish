@@ -1,14 +1,15 @@
 /**
- * 登录态导入：从用户日常 Chrome 导出 cookie（CDP `Network.getAllCookies`）。
+ * 登录态导入：从用户日常 Chrome 导出 cookie（CDP `Storage.getCookies`，旧版浏览器降级到 `Network.getAllCookies`）。
  *
  * 为什么不用读 Chrome 的 Cookies SQLite：Windows 下要 DPAPI 解 AES key，需要原生模块或
- * `browser_cookie3` 等价物，与「运行时零第三方依赖」冲突（AGENTS §2）；`Network.getAllCookies`
- * 是浏览器级方法，不需要 sessionId，也不依赖 page 域（docs/component-decomposition.md §2.1）。
+ * `browser_cookie3` 等价物，与「运行时零第三方依赖」冲突（AGENTS §2）；`Storage.getCookies` /
+ * `Network.getAllCookies` 是浏览器级方法，不需要 sessionId，也不依赖 page 域（docs/component-decomposition.md §2.1）。
  *
  * 本文件只做「导出 → 挑选 → 校验」，不负责加密落盘（那是 core/credentials.ts 的事）。
  * @module @bigfish/channel-cdp/cookies
  */
 import { fail, toXianyuError } from '@bigfish/core'
+import type { XianyuError } from '@bigfish/core'
 
 /** CDP cookie 的可移植子集；字段名与 CDP `Network.Cookie` 一致。 */
 export interface BrowserCookie {
@@ -96,6 +97,21 @@ export interface CdpRequestConnection {
   send(method: string, params?: Record<string, unknown>, sessionId?: string): Promise<unknown>
 }
 
+/**
+ * 取全部 cookie 的 CDP 方法，按新旧排序。
+ *
+ * Chrome 127+ / Edge 155 把浏览器级 cookie 读取挪到 Storage.getCookies，老方法会回
+ * 「'Network.getAllCookies' wasn't found」；旧版本浏览器则相反。两个都是浏览器级方法：
+ * 无参数、不需要 sessionId。
+ */
+const COOKIE_METHODS = ['Storage.getCookies', 'Network.getAllCookies'] as const
+
+/** 「协议里没有这个方法」才降级；连接断开之类的真故障必须原样抛出，不能被当成版本差异吞掉。 */
+function isMethodNotFound(error: XianyuError): boolean {
+  const message = error.message.toLowerCase()
+  return message.includes("wasn't found") || message.includes('not found') || message.includes('unknown method')
+}
+
 /** 从浏览器导出的 cookie 源。只读，不写浏览器。 */
 export class CdpCookieSource {
   readonly #connection: CdpRequestConnection
@@ -108,11 +124,11 @@ export class CdpCookieSource {
   async getAllCookies(): Promise<BrowserCookie[]> {
     const response = await this.#call()
     if (typeof response !== 'object' || response === null) {
-      fail('NETWORK', 'CDP Network.getAllCookies 返回结构异常：不是对象（实际 ' + describeType(response) + '）')
+      fail('NETWORK', 'CDP 取 cookie 返回结构异常：不是对象（实际 ' + describeType(response) + '）')
     }
     const list = (response as { cookies?: unknown }).cookies
     if (!Array.isArray(list)) {
-      fail('NETWORK', 'CDP Network.getAllCookies 返回结构异常：cookies 不是数组（实际 ' + describeType(list) + '）')
+      fail('NETWORK', 'CDP 取 cookie 返回结构异常：cookies 不是数组（实际 ' + describeType(list) + '）')
     }
     const cookies: BrowserCookie[] = []
     for (const item of list) {
@@ -131,12 +147,18 @@ export class CdpCookieSource {
   }
 
   async #call(): Promise<unknown> {
-    try {
-      // Network.getAllCookies 是浏览器级方法：没有参数，也不需要 sessionId。
-      return await this.#connection.send('Network.getAllCookies', {})
-    } catch (error) {
-      throw toXianyuError(error, 'NETWORK')
+    let lastError: XianyuError | undefined
+    for (const method of COOKIE_METHODS) {
+      try {
+        // 两个方法都是浏览器级：没有参数，也不需要 sessionId。
+        return await this.#connection.send(method, {})
+      } catch (error) {
+        const wrapped = toXianyuError(error, 'NETWORK')
+        if (!isMethodNotFound(wrapped)) throw wrapped
+        lastError = wrapped
+      }
     }
+    throw lastError ?? fail('NETWORK', 'CDP 取 cookie 失败：所有已知方法都不可用')
   }
 }
 

@@ -120,12 +120,36 @@ test('assertLoginCookies 空白值按缺失处理', () => {
     (error: unknown) => assertCode(error, 'UNAUTHORIZED', '_m_h5_tk'),
   )
 })
-test('CdpCookieSource 只发 Network.getAllCookies，参数为空对象、不带 sessionId', async () => {
+test('CdpCookieSource 首选 Storage.getCookies（新版浏览器），参数为空对象、不带 sessionId', async () => {
   const conn = new FakeConnection()
   conn.responder = () => ({ cookies: [] })
   const source = new CdpCookieSource(conn)
   assert.deepEqual(await source.getAllCookies(), [])
-  assert.deepEqual(conn.calls, [{ method: 'Network.getAllCookies', params: {} }])
+  assert.deepEqual(conn.calls, [{ method: 'Storage.getCookies', params: {} }])
+})
+
+test('Storage.getCookies 不存在时降级到 Network.getAllCookies', async () => {
+  const conn = new FakeConnection()
+  conn.responder = (method) => {
+    if (method === 'Storage.getCookies') {
+      throw new XianyuError({ code: 'NETWORK', message: "CDP 错误：'Storage.getCookies' wasn't found" })
+    }
+    return { cookies: [] }
+  }
+  assert.deepEqual(await new CdpCookieSource(conn).getAllCookies(), [])
+  assert.deepEqual(conn.methods(), ['Storage.getCookies', 'Network.getAllCookies'])
+})
+
+test('非「方法不存在」的失败不降级，避免把断连当成版本差异', async () => {
+  const conn = new FakeConnection()
+  conn.responder = () => {
+    throw new XianyuError({ code: 'NETWORK', message: 'socket closed' })
+  }
+  await assert.rejects(
+    new CdpCookieSource(conn).getAllCookies(),
+    (error: unknown) => assertCode(error, 'NETWORK', 'socket closed'),
+  )
+  assert.deepEqual(conn.methods(), ['Storage.getCookies'])
 })
 
 test('getAllCookies 映射 CDP 字段：expires 秒值保留、-1 与空 sameSite 丢弃', async () => {
@@ -182,7 +206,7 @@ test('getAllCookies 响应结构非法时 fail(NETWORK)', async () => {
   notObject.responder = () => null
   await assert.rejects(
     new CdpCookieSource(notObject).getAllCookies(),
-    (error: unknown) => assertCode(error, 'NETWORK', 'Network.getAllCookies'),
+    (error: unknown) => assertCode(error, 'NETWORK', 'CDP 取 cookie'),
   )
 
   const notArray = new FakeConnection()
