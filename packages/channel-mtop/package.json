@@ -1,0 +1,15 @@
+{
+  "name": "@bigfish/channel-mtop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node ../../scripts/test-all.mjs packages/channel-mtop"
+  },
+  "dependencies": {
+    "@bigfish/core": "workspace:*"
+  }
+}
