@@ -89,6 +89,7 @@ node 'C:/Users/34239/Documents/GitHub/deepseek-harness/node_modules/typescript/b
 - 一个提交一个主题；不留注释掉的代码、调试 `console.log`。
 - 分支 `feat/xxx`、`fix/xxx`；`main` 始终可构建。
 - **禁止提交**：凭据/cookie、`*.db`、`research/repos/`、`.scratch/`、构建产物、任何 > 2MB 文件（先问）。
+- **删除第三方材料（`research/repos/`、下载缓存、逆向证据）前必须**：①先列「尚未逆向完成项」清单并写进 `docs/asset-extraction.md`；②标出还没有结论的靶点（哪条调用链/哪个端点未还原）；③等用户明确确认。**「facts 已吸收」≠「逆向完成」**——2026-10-20 曾因一句「榨干后删除」把 886MB（含 3 套商业包原文件）全部 `rm -rf`，而 A/B 的核心发货、发布调用链当时并未还原；`rm -rf` 不进回收站、无 VSS 权限即不可恢复。
 
 ## 7. 本机环境的坑（实测，非通用）
 
