@@ -16,4 +16,12 @@ export { H5_TOKEN_COOKIE, h5Token, signMtop } from './sign.ts'
 export { buildMtopRequest } from './request.ts'
 export { parseMtopResponse, parseSetCookie } from './response.ts'
 export { callMtop } from './call.ts'
+export {
+  MTOP_APIS,
+  MTOP_API_VERSIONS,
+  buildItemDetailData,
+  buildPolishData,
+  parseItemDetail,
+} from './api.ts'
+export type { ItemDetailInput, PolishInput } from './api.ts'
 export type { MtopCallOptions, MtopHttpRequest, MtopHttpResponse, MtopSession, MtopTransport } from './types.ts'
