@@ -9,7 +9,9 @@
 P0 **已完成**：workspace 骨架 + core 契约 + daemon HTTP/队列 + plugin-ops 7 个工具，测试/类型检查/真 DSH loader 装配三项验收全绿（见 `docs/architecture.md`、ADR 0002）。
 P0.5 **已完成**：Web GUI 侧边栏栏位「BigFish 闲鱼运营」（`packages/plugin-ops/client.js`，手写 loader bundle），CDP 截图与 HMR 均已实测（见 `docs/client-plugin-sidebar.md`）。
 
-下一步是 P1：真实通道（mtop 读 + CDP 发布）+ daemon 执行器 + 登录态。**在通道与执行器落地前，不要往队列里塞假业务、不要改工具契约。**
+P1.0 **已完成**：组件拆解——`channel-mtop` / `channel-cdp` / `channel-guanjia` 三个通道包（契约与实施状态见 `docs/component-decomposition.md`），全仓 264 tests。
+
+下一步是 P1.1：daemon 执行器接通道 + 发布字段映射 + 登录态导入。**在执行器落地前，不要往队列里塞假业务、不要改工具契约。**
 
 ## 1. 架构不变量（违反即回退）
 
@@ -28,18 +30,21 @@ P0.5 **已完成**：Web GUI 侧边栏栏位「BigFish 闲鱼运营」（`packag
 | `packages/daemon` | 独立 Node 进程 | `core` |
 | `packages/plugin-ops` | Cordis 插件（**纯 ESM JS**） | 无第三方依赖；不 import `@bigfish/core`（自带最小 client 与错误映射） |
 | `packages/ops-bundle` | 声明 `dsh.bundle.patch` 的包 | 只声明发布物组合，无业务逻辑 |
+| `packages/channel-mtop` | TS 库（纯函数） | `core`；mtop 签名/信封/cookie 归一/ret 分类，不发请求 |
+| `packages/channel-cdp` | TS 库 | `core`；CDP 连接/页面/启动/发布步骤机，传输与 spawn 可注入 |
+| `packages/channel-guanjia` | TS 库 | `core`；闲管家开放平台客户端（MIT 移植），**不含 placeOrder** |
 
 - 包名统一 `@bigfish/*`。
 - 语言边界：`core`/`daemon` 用 TS（Node 24 直接跑，无构建）；`plugin-ops`/`ops-bundle` 用纯 ESM JS + JSDoc（它们被宿主直接 import，见 ADR 0002）。
 - **运行时零第三方依赖**。新增依赖必须先写 ADR：说明为什么 node 内置不够、体积多少、离线安装怎么办。
 - **禁止跨包相对路径 import**（`../../daemon/src/...`）；跨包只走包名。
-- 依赖方向单向：`core ← daemon`、`core ← plugin-ops`；`daemon` 与 `plugin-ops` 互不 import。
+- 依赖方向单向：`core ← daemon`、`core ← plugin-ops`、`core ← channel-*`；`daemon` 与 `plugin-ops` 互不 import，channel 包之间也互不 import（P1.1 由 daemon 调 channel）。
 
 ## 3. 代码规范
 
 - Node ≥ 24、ESM only、pnpm workspace；TS 部分是 strict + `moduleResolution: NodeNext`，无构建产物（`exports` 指向 `./src/index.ts`）。
 - **禁止 `any`**；边界一律 `unknown` + 手写窄化校验函数（P0 零依赖，没有 zod，见 ADR 0002；能装依赖后再评估引入）。对外输入（工具参数、HTTP 响应、配置文件）先校验再用。
-- 错误：只用 `class XianyuError extends Error`，带稳定 `code`（`AUTH_EXPIRED | RISK_CONTROL | RATE_LIMITED | VALIDATION | NETWORK | BUS_STATE | UNKNOWN`）。禁止裸 `throw "字符串"`、禁止 `catch {}` 吞异常。
+- 错误：只用 `class XianyuError extends Error`，带稳定 `code`（`VALIDATION | AUTH_EXPIRED | RISK_CONTROL | RATE_LIMITED | CIRCUIT_OPEN | NETWORK | STORAGE | UNSUPPORTED | INTERNAL | UNAUTHORIZED | UNKNOWN`）。禁止裸 `throw "字符串"`、禁止 `catch {}` 吞异常。
 - **金额一律整数分（cent），时间一律整数毫秒**，禁止浮点相乘（mtop 字段本身就是分）。
 - 所有 IO 必须有超时（默认 15s）并透传 `AbortSignal`；重试只对幂等请求，退避用 `min(60 * 2^(n-1), 1800)` 秒。
 - 文件 ≤ 400 行、函数 ≤ 60 行。复杂分支写"为什么"，不写"做了什么"。

@@ -25,12 +25,25 @@
 
 | 包 | 语言 | 依赖 | 职责 |
 | --- | --- | --- | --- |
-| `packages/core` | TS | 无 | 领域类型与契约、错误、队列/存储、限流熔断、凭据、配置、脱敏日志 |
-| `packages/daemon` | TS | core | HTTP 控制面 + CLI + DaemonClient；未来承载执行器与通道 |
-| `packages/plugin-ops` | JS(ESM) | 无（含自带 HTTP client） | 7 个 `xy_*` 工具 + 写操作审批门禁 |
+| `packages/core` | TS | 无 | 领域类型与契约、错误、ret 风控分类、队列/存储、限流熔断、凭据、配置、脱敏日志 |
+| `packages/daemon` | TS | core | HTTP 控制面 + CLI + DaemonClient；P1.1 承载执行器并调用 channel 包 |
+| `packages/plugin-ops` | JS(ESM) | 无（含自带 HTTP client） | 7 个 `xy_*` 工具 + 写操作审批门禁 + 侧边栏面板 |
 | `packages/ops-bundle` | JS | plugin-ops | 只声明 `dsh.bundle.patch`，把插件塞进 profile |
+| `packages/channel-mtop` | TS | core | mtop 只读通道：签名、信封、cookie 归一、ret 分类（**纯函数，无状态**） |
+| `packages/channel-cdp` | TS | core | CDP 会话：启动/attach 真 Chrome、页面操作、拦截 XHR JSON、发布步骤状态机 |
+| `packages/channel-guanjia` | TS | core | 闲管家开放平台客户端（MIT 移植的签名与 20 个接口） |
 
-依赖方向单向：`core ← daemon`、`core ← plugin-ops`；`daemon` 与 `plugin-ops` 互不 import。
+依赖方向单向：`core ← daemon`、`core ← plugin-ops`、`core ← channel-*`；`daemon` 与 `plugin-ops` 互不 import，三个 channel 包之间也互不 import。
+
+### 2.1 三个通道包（P1.0）
+
+通道包只提供**能力**，不含业务编排：谁在什么节奏下调用它们由 daemon 执行器（P1.1）决定。
+
+- `channel-mtop`：`signMtop / h5Token / buildMtopRequest / parseMtopResponse / parseSetCookie / callMtop`，传输层用可注入的 `MtopTransport`；不发请求、不存 cookie，调用方负责合并 `_m_h5_tk`。
+- `channel-cdp`：`launchChrome / attachChrome / CdpConnection / CdpPage / runPublishSteps`；`captureJson` 免签名读 mtop 响应（先 `Network.loadingFinished` 再 `getResponseBody`），发布失败即停不重试。
+- `channel-guanjia`：`GuanJiaClient` 20 个方法（商品/订单/物流/余额）；`code === 0` 成功，非 0 转 `XianyuError`；**不实现 placeOrder**（代下单红线）。
+
+三者都零第三方依赖、无构建、测试全部假传输/假连接，不发真实网络（AGENTS §5）。
 
 ## 3. 一次写操作的路径（以发布为例）
 
@@ -107,7 +120,7 @@ queued ──lease──► leased ──ack──► done
 ## 9. P0 明确未实现（不要当 bug）
 
 - **没有执行器**：队列只落库，没有 worker 领任务去调通道；`lease/ack/fail/release` 目前只有 HTTP 与单测驱动。
-- **没有真实通道**：mtop 签名、CDP 发布、IM 长连接都还没写。
+- **通道实现已就绪但没接进 daemon**：mtop 签名/信封、CDP 会话与发布步骤机、闲管家客户端都在 `packages/channel-*`，但没有执行器调用它们；IM 长连接未写。
 - **items 是空表**：`/items` 恒返回 `[]`，`xy_items_list` 返回「本地还没有商品记录」。
 - **`/circuits/reset` 是空实现**。
 - **没有打包**：Electron/headless 分发形态待用户决策。
