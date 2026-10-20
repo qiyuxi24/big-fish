@@ -1,0 +1,8 @@
+/**
+ * @bigfish/core 公共出口。只导出类型与无副作用工具；实现模块由 P0 逐步补齐。
+ * @module @bigfish/core
+ */
+export * from './types.ts'
+export * from './errors.ts'
+export * from './data.ts'
+export * from './runtime.ts'

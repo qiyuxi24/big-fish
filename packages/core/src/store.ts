@@ -1,0 +1,286 @@
+/**
+ * SQLite 连接与迁移（node:sqlite 的 DatabaseSync）。
+ *
+ * 为什么不用 ORM：P0 只有三张表、且仓库硬约束是零第三方依赖；prepared statement
+ * 已足够表达队列查询，迁移则必须是显式、可审计的版本数组（一版一事务）。
+ * @module @bigfish/core/store
+ */
+import { mkdirSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
+import { XianyuError, fail, toXianyuError } from './errors.ts'
+
+/** 打开参数。 */
+export interface StoreOptions {
+  /** 数据库文件路径；':memory:' 表示内存库。父目录不存在时递归创建。 */
+  path: string
+  /** 注入时钟（整数毫秒），只用于迁移的 applied_at；缺省 Date.now。 */
+  now?: () => number
+}
+
+/** 打开后的存储句柄。 */
+export interface Store {
+  /** 底层连接；只有 data 层与迁移断言应该直接用它。 */
+  db: DatabaseSync
+  /** 幂等关闭。 */
+  close(): void
+}
+
+/** SQLite 锁等待上限（毫秒）：并发写先排队，而不是立刻抛 SQLITE_BUSY。 */
+export const DEFAULT_BUSY_TIMEOUT_MS = 5000
+
+/** v1：任务队列 + 商品摘要 + 事件流。CHECK 约束把状态机钉在库层面。 */
+const V1_SQL = `
+CREATE TABLE tasks (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL UNIQUE,
+  payload TEXT NOT NULL,
+  state TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 3,
+  lease_owner TEXT,
+  lease_until INTEGER,
+  available_at INTEGER NOT NULL,
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  CHECK (state IN ('queued', 'leased', 'done', 'failed', 'needs_review')),
+  CHECK (kind IN ('publish', 'deliver', 'polish', 'reply', 'probe'))
+);
+CREATE INDEX idx_tasks_claim ON tasks(state, available_at);
+CREATE INDEX idx_tasks_lease ON tasks(lease_until);
+
+CREATE TABLE items (
+  item_id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  price_cents INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX idx_items_account ON items(account_id);
+
+CREATE TABLE events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  payload TEXT NOT NULL
+);
+`
+
+interface Migration {
+  version: number
+  sql: string
+}
+
+const MIGRATIONS: readonly Migration[] = [{ version: 1, sql: V1_SQL }]
+
+const CREATE_MIGRATIONS_SQL = `CREATE TABLE IF NOT EXISTS schema_migrations (
+  version INTEGER PRIMARY KEY,
+  applied_at INTEGER NOT NULL
+)`
+
+/** 打开（必要时创建）数据库，并补齐尚未应用的迁移。 */
+export function openStore(options: StoreOptions): Store {
+  if (typeof options !== 'object' || options === null) fail('VALIDATION', 'openStore 需要参数对象')
+  const path = readStorePath(options.path)
+  const clock = options.now ?? ((): number => Date.now())
+  ensureParentDirectory(path)
+  const db = connectDatabase(path)
+  try {
+    configure(db)
+    migrate(db, clock)
+  } catch (error) {
+    closeOnFailure(db)
+    throw toXianyuError(error, 'STORAGE')
+  }
+  return createHandle(db)
+}
+
+/** 单事务执行；不支持嵌套（同一连接同一时刻只允许一个事务）。 */
+export function withTransaction<T>(db: DatabaseSync, body: () => T): T {
+  beginImmediate(db)
+  try {
+    const result = body()
+    commit(db)
+    return result
+  } catch (error) {
+    rollback(db)
+    throw toXianyuError(error, 'STORAGE')
+  }
+}
+
+/** payload 统一以 JSON 文本落库；入参必须是普通对象（数组/基本类型一律拒绝）。 */
+export function encodePayload(payload: unknown): string {
+  if (!isPlainRecord(payload)) fail('VALIDATION', 'payload 必须是普通对象')
+  let text: string | undefined
+  try {
+    text = JSON.stringify(payload)
+  } catch (error) {
+    throw new XianyuError({ code: 'VALIDATION', message: 'payload 无法 JSON 序列化', cause: error })
+  }
+  if (typeof text !== 'string') fail('VALIDATION', 'payload 无法 JSON 序列化')
+  return text
+}
+
+/** payload 读回：必须是 JSON 对象，否则说明库被外部改坏（STORAGE）。 */
+export function decodePayload(raw: unknown, taskId?: string): Record<string, unknown> {
+  const label = taskId === undefined ? '任务' : `任务 ${taskId}`
+  if (typeof raw !== 'string') {
+    throw new XianyuError({ code: 'STORAGE', message: `${label} 的 payload 列不是文本` })
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error) {
+    throw new XianyuError({ code: 'STORAGE', message: `${label} 的 payload 不是合法 JSON`, cause: error })
+  }
+  if (!isPlainRecord(parsed)) {
+    throw new XianyuError({ code: 'STORAGE', message: `${label} 的 payload 不是对象` })
+  }
+  return parsed
+}
+
+/** SQLite 行：node:sqlite 返回无原型对象，键为列名。 */
+export type SqlRow = Record<string, string | number | bigint | null | Uint8Array>
+
+/** 收窄一行查询结果；undefined 表示没查到。 */
+export function asSqlRow(raw: unknown): SqlRow | undefined {
+  if (raw === undefined || raw === null) return undefined
+  if (typeof raw !== 'object') fail('STORAGE', 'SQLite 查询结果不是行对象')
+  return raw as SqlRow
+}
+
+export function readSqlNumber(row: SqlRow, key: string): number {
+  const value = row[key]
+  if (typeof value !== 'number') fail('STORAGE', `列 ${key} 不是数字`)
+  return value
+}
+
+export function readSqlText(row: SqlRow, key: string): string {
+  const value = row[key]
+  if (typeof value !== 'string') fail('STORAGE', `列 ${key} 不是文本`)
+  return value
+}
+
+export function readSqlOptionalText(row: SqlRow, key: string): string | undefined {
+  const value = row[key]
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string') fail('STORAGE', `列 ${key} 不是文本`)
+  return value
+}
+
+export function readSqlOptionalNumber(row: SqlRow, key: string): number | undefined {
+  const value = row[key]
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'number') fail('STORAGE', `列 ${key} 不是数字`)
+  return value
+}
+
+function createHandle(db: DatabaseSync): Store {
+  let closed = false
+  return {
+    db,
+    close(): void {
+      if (closed) return
+      closed = true
+      try {
+        db.close()
+      } catch (error) {
+        throw new XianyuError({ code: 'STORAGE', message: '关闭数据库失败', cause: error })
+      }
+    },
+  }
+}
+
+function readStorePath(value: unknown): string {
+  if (typeof value !== 'string') fail('VALIDATION', 'openStore({ path }) 的 path 必须是字符串')
+  const path = value.trim()
+  if (path.length === 0) fail('VALIDATION', 'openStore({ path }) 的 path 不能为空')
+  return path
+}
+
+function ensureParentDirectory(path: string): void {
+  if (path.startsWith(':')) return // ':memory:' 等 URI 形式没有父目录
+  const dir = dirname(resolve(path))
+  try {
+    mkdirSync(dir, { recursive: true })
+  } catch (error) {
+    throw new XianyuError({ code: 'STORAGE', message: `无法创建数据库目录：${dir}`, cause: error, details: { dir } })
+  }
+}
+
+function connectDatabase(path: string): DatabaseSync {
+  try {
+    return new DatabaseSync(path)
+  } catch (error) {
+    throw new XianyuError({ code: 'STORAGE', message: `无法打开数据库：${path}`, cause: error, details: { path } })
+  }
+}
+
+function configure(db: DatabaseSync): void {
+  // WAL：让 daemon 的状态查询（读）不阻塞队列写入（写）。
+  db.exec('PRAGMA journal_mode = WAL')
+  db.exec('PRAGMA foreign_keys = ON')
+  db.exec(`PRAGMA busy_timeout = ${DEFAULT_BUSY_TIMEOUT_MS}`)
+}
+
+function migrate(db: DatabaseSync, now: () => number): void {
+  db.exec(CREATE_MIGRATIONS_SQL)
+  const applied = new Set<number>(readAppliedVersions(db))
+  for (const migration of MIGRATIONS) {
+    if (applied.has(migration.version)) continue
+    withTransaction(db, () => {
+      db.exec(migration.sql)
+      db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(migration.version, now())
+    })
+  }
+}
+
+function readAppliedVersions(db: DatabaseSync): number[] {
+  const rows: unknown = db.prepare('SELECT version FROM schema_migrations ORDER BY version').all()
+  if (!Array.isArray(rows)) return []
+  const versions: number[] = []
+  for (const row of rows) {
+    const version = asSqlRow(row)?.version
+    if (typeof version === 'number') versions.push(version)
+  }
+  return versions
+}
+
+function beginImmediate(db: DatabaseSync): void {
+  try {
+    db.exec('BEGIN IMMEDIATE')
+  } catch (error) {
+    throw toXianyuError(error, 'STORAGE')
+  }
+}
+
+function commit(db: DatabaseSync): void {
+  try {
+    db.exec('COMMIT')
+  } catch (error) {
+    throw toXianyuError(error, 'STORAGE')
+  }
+}
+
+function rollback(db: DatabaseSync): void {
+  try {
+    db.exec('ROLLBACK')
+  } catch {
+    // 事务可能已被 SQLite 自动回滚（例如语句级致命错误）；不能覆盖调用方的原始错误。
+  }
+}
+
+function closeOnFailure(db: DatabaseSync): void {
+  try {
+    db.close()
+  } catch {
+    // 打开/迁移失败后的清理路径：连接可能已不可用，保留原始错误优先。
+  }
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
