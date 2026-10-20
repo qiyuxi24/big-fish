@@ -16,10 +16,10 @@
 
 | 包 | 形态 | 职责 |
 | --- | --- | --- |
-| `@xianyu/ops-bundle` | 声明 `dsh.bundle.patch` 的 npm 包 | 产品组合：依赖 `dsh-base` + `dsh-web-app`（或 headless）+ 我们的插件，决定最终产品长什么样 |
-| `@xianyu/plugin-ops` | Cordis 插件 | 注册 `xy_*` 工具、settings 卡片、client UI 行、cron 唤醒、写操作审批门禁 |
-| `@xianyu/daemon` | 独立 Node 进程（无 LLM） | 24/7 确定性动作：登录态保活、发布队列、订单监听、自动发货、限流熔断 |
-| `@xianyu/core` | 纯库 | mtop/CDP 通道、签名、SQLite 队列、凭据加密 |
+| `@bigfish/ops-bundle` | 声明 `dsh.bundle.patch` 的 npm 包 | 产品组合：依赖 `dsh-base` + `dsh-web-app`（或 headless）+ 我们的插件，决定最终产品长什么样 |
+| `@bigfish/plugin-ops` | Cordis 插件 | 注册 `xy_*` 工具、settings 卡片、client UI 行、cron 唤醒、写操作审批门禁 |
+| `@bigfish/daemon` | 独立 Node 进程（无 LLM） | 24/7 确定性动作：登录态保活、发布队列、订单监听、自动发货、限流熔断 |
+| `@bigfish/core` | 纯库 | mtop/CDP 通道、签名、SQLite 队列、凭据加密 |
 
 ## 依据（均已在本机源码核对）
 
