@@ -1,0 +1,18 @@
+# 临时脚本与中间产物
+.scratch/
+research/tmp/
+node_modules/
+*.log
+dist/
+lib/
+tsbuildinfo
+
+# 第三方仓库、商业软件样本与解压产物：体积大（约 886MB）、可重新下载，不进版本库
+research/repos/
+
+# 凭据与本地环境
+.env
+.env.*
+credentials.json
+*.sqlite
+*.db
