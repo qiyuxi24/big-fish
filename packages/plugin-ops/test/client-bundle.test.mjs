@@ -121,7 +121,20 @@ test('侧边栏图标渲染 🐟，选中态与未选中态透明度不同', () 
   assert.equal(active.props['aria-hidden'], 'true')
 })
 
-test('主面板渲染标题、三张卡与工具提示，且只引用主题变量', () => {
+/** 收集指定类型的元素（按钮等），用于结构断言。 */
+function collectByType(node, type, out = []) {
+  if (node === null || node === undefined || typeof node !== 'object') return out
+  if (Array.isArray(node)) {
+    for (const child of node) collectByType(child, type, out)
+    return out
+  }
+  if (node.type === type) out.push(node)
+  if (typeof node.type === 'function') collectByType(node.type(node.props), type, out)
+  else collectByType(node.children ?? [], type, out)
+  return out
+}
+
+test('主面板渲染标题、状态区与可复制命令', () => {
   const { registrations, require } = loadBundle()
   const exports = registrations[0].factory(require)
   const { ctx, registered } = createFakeCtx()
@@ -131,18 +144,38 @@ test('主面板渲染标题、三张卡与工具提示，且只引用主题变�
 
   for (const expected of [
     'BigFish 闲鱼运营',
-    'P0 · 插件已装载，daemon 待接入',
+    'P1.2 · 登录态导入 / 发布 dry-run 入口',
+    '登录态导入',
+    'xy_import_account',
     '发布通道',
-    'CDP 接管真 Chrome',
-    '任务队列',
+    '默认 dry-run',
     '127.0.0.1:47001 · 本地常驻',
-    '写操作门禁',
-    '需人工审批',
+    'xy_publish_draft',
+    '可复制命令',
+    'npm run daemon:import-account',
+    'npm run daemon:publish -- --draft <草稿.json>',
+    'BF_PUBLISH_SUBMIT=1',
     'xy_status',
     'xy_tasks_list',
   ]) {
     assert.ok(text.includes(expected), '面板文本缺少：' + expected)
   }
+})
+
+test('操作按钮存在但 disabled，并用 title 指向对应工具', () => {
+  const { registrations, require } = loadBundle()
+  const exports = registrations[0].factory(require)
+  const { ctx, registered } = createFakeCtx()
+  exports.apply(ctx)
+  const Panel = registered[1].component
+  const buttons = collectByType(Panel(), 'button')
+
+  assert.equal(buttons.length, 2)
+  assert.equal(buttons[0].props.disabled, true)
+  assert.equal(buttons[1].props.disabled, true)
+  assert.match(buttons[0].props.title, /xy_import_account/)
+  assert.match(buttons[1].props.title, /xy_publish_draft/)
+  assert.match(toText(Panel()), /按钮为什么是灰的/)
 })
 
 test('bundle 不写死 daemon 地址以外的环境值，也不访问 document/localStorage', () => {

@@ -48,6 +48,7 @@ export function createFakeClient(overrides = {}) {
     enqueue: record('enqueue'),
     taskAction: record('taskAction'),
     listItems: record('listItems'),
+    importAccount: record('importAccount'),
   }
 }
 

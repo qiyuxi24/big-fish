@@ -15,6 +15,30 @@ test('写类判定：只有 publish/deliver/polish 入队需要确认', () => {
   assert.equal(WRITE_TOOLS.has('xy_task_enqueue'), true)
 })
 
+test('登录态导入永远是写操作；发布只有 enqueue 才拦', () => {
+  assert.equal(isWriteCall('xy_import_account', {}), true)
+  assert.equal(isWriteCall('xy_import_account', null), true)
+  assert.equal(isWriteCall('xy_publish_draft', { draftPath: 'a.json' }), false)
+  assert.equal(isWriteCall('xy_publish_draft', { draftPath: 'a.json', mode: 'dry-run' }), false)
+  assert.equal(isWriteCall('xy_publish_draft', { draftPath: 'a.json', mode: 'enqueue' }), true)
+  assert.equal(isWriteCall('xy_publish_draft', null), true)
+  assert.equal(WRITE_TOOLS.has('xy_import_account'), true)
+  assert.equal(WRITE_TOOLS.has('xy_publish_draft'), true)
+})
+
+test('门禁为每种写操作给出各自的确认原因', () => {
+  const { ctx, listeners } = createFakeCtx()
+  registerWriteGate(ctx, {})
+  const gate = listeners.get('tools/pre-execute')
+  const account = gate({ name: 'xy_import_account', arguments: {} }, () => ({ kind: 'allow' }))
+  assert.equal(account.kind, 'ask')
+  assert.match(account.reason, /凭据/)
+  const publish = gate({ name: 'xy_publish_draft', arguments: { mode: 'enqueue' } }, () => ({ kind: 'allow' }))
+  assert.match(publish.reason, /BF_PUBLISH_SUBMIT=1/)
+  const dryRun = gate({ name: 'xy_publish_draft', arguments: { mode: 'dry-run' } }, () => ({ kind: 'allow' }))
+  assert.equal(dryRun.kind, 'allow')
+})
+
 test('门禁：写调用返回 ask，读调用走 next()', () => {
   const { ctx, listeners } = createFakeCtx()
   registerWriteGate(ctx, {})

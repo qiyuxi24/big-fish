@@ -12,11 +12,11 @@ function findTool(tools, name) {
   return tool
 }
 
-test('注册 7 个 xy_ 工具，schema 形态合法', () => {
+test('注册 9 个 xy_ 工具，schema 形态合法', () => {
   const tools = buildTools({ client: createFakeClient({}), config })
   assert.deepEqual(tools.map((tool) => tool.name).sort(), [
-    'xy_daemon_health', 'xy_items_list', 'xy_ping', 'xy_status',
-    'xy_task_action', 'xy_task_enqueue', 'xy_tasks_list',
+    'xy_daemon_health', 'xy_import_account', 'xy_items_list', 'xy_ping',
+    'xy_publish_draft', 'xy_status', 'xy_task_action', 'xy_task_enqueue', 'xy_tasks_list',
   ])
   for (const tool of tools) {
     assert.equal(tool.parameters.type, 'object')
@@ -101,4 +101,65 @@ test('xy_ping 汇总健康与鉴权两段结论', async () => {
 test('输出 schema 与 render 一致：render 读 value.text', () => {
   const tool = findTool(buildTools({ client: createFakeClient({}), config }), 'xy_status')
   assert.deepEqual(tool.output.render({}, { text: 'hi' }), [{ type: 'text', text: 'hi' }])
+})
+/** 发布草稿样例：价格是整数分、图片是 Windows 绝对路径。 */
+const validDraft = { title: '测试商品', desc: '这是一段描述', priceCents: 1990, images: ['D:\\pics\\a.png'] }
+
+test('xy_import_account 调 daemon 导入并渲染摘要', async () => {
+  const client = createFakeClient({
+    importAccount: () => ({ accountId: 'acc-9', savedFieldCount: 12, updatedAt: Date.UTC(2026, 0, 2, 3, 4, 5), source: 'chrome-cdp' }),
+  })
+  const tool = findTool(buildTools({ client, config }), 'xy_import_account')
+  const value = await tool.execute({ accountId: 'acc-9', port: 9333 }, {})
+  assert.match(value.text, /已导入账号 acc-9/)
+  assert.match(value.text, /12 条登录态字段/)
+  assert.match(value.text, /2026-01-02/)
+  assert.deepEqual(client.calls.at(-1).args[0], { accountId: 'acc-9', port: 9333 })
+})
+
+test('xy_import_account 对结构异常的 daemon 返回报 INTERNAL', async () => {
+  const client = createFakeClient({ importAccount: () => ({ savedFieldCount: 'x' }) })
+  const value = await findTool(buildTools({ client, config }), 'xy_import_account').execute({}, {})
+  assert.match(value.text, /\[INTERNAL\]/)
+  assert.match(value.text, /accountId/)
+})
+
+test('xy_publish_draft 默认 dry-run：只给命令，不写队列', async () => {
+  const client = createFakeClient({ health: { version: '1.2.3', pid: 1, uptimeMs: 5 } })
+  const tool = findTool(buildTools({ client, config, readDraftFile: async () => JSON.stringify(validDraft) }), 'xy_publish_draft')
+  const value = await tool.execute({ draftPath: 'C:/tmp/draft.json', screenshotsDir: 'C:/tmp/shots' }, {})
+  assert.match(value.text, /dry-run/)
+  assert.match(value.text, /npm run daemon:publish -- --draft C:\/tmp\/draft.json --screenshots C:\/tmp\/shots/)
+  assert.match(value.text, /不点提交/)
+  assert.match(value.text, /daemon：在线/)
+  assert.equal(client.calls.some((call) => call.method === 'enqueue'), false)
+})
+
+test('xy_publish_draft enqueue：带 accountId 入队并按内容生成幂等键', async () => {
+  const client = createFakeClient({
+    enqueue: (input) => ({ id: 'abcdef0123456789', kind: input.kind, state: 'queued', attempts: 0, maxAttempts: 3,
+      dedupeKey: input.dedupeKey, payload: input.payload, availableAt: 0, createdAt: 0, updatedAt: 0 }),
+  })
+  const tool = findTool(buildTools({ client, config, readDraftFile: async () => JSON.stringify(validDraft) }), 'xy_publish_draft')
+  const value = await tool.execute({ draftPath: 'C:/tmp/draft.json', mode: 'enqueue', accountId: 'acc-1' }, {})
+  const input = client.calls.at(-1).args[0]
+  assert.equal(input.kind, 'publish')
+  assert.match(input.dedupeKey, /^publish:[0-9a-f]{8}$/)
+  assert.deepEqual(input.payload, {
+    accountId: 'acc-1', title: '测试商品', desc: '这是一段描述', priceCents: 1990, images: ['D:\\pics\\a.png'],
+  })
+  assert.match(value.text, /已入队/)
+  assert.match(value.text, /BF_PUBLISH_SUBMIT=1/)
+})
+
+test('xy_publish_draft 入队前挡住缺 accountId / quantity / 非法 JSON', async () => {
+  const client = createFakeClient({})
+  const toolFor = (text) => findTool(buildTools({ client, config, readDraftFile: async () => text }), 'xy_publish_draft')
+  const missingAccount = await toolFor(JSON.stringify(validDraft)).execute({ draftPath: 'a.json', mode: 'enqueue' }, {})
+  assert.match(missingAccount.text, /accountId/)
+  const withQuantity = await toolFor(JSON.stringify({ ...validDraft, quantity: 2 }))
+    .execute({ draftPath: 'a.json', mode: 'enqueue', accountId: 'acc-1' }, {})
+  assert.match(withQuantity.text, /quantity/)
+  const broken = await toolFor('{not json').execute({ draftPath: 'a.json' }, {})
+  assert.match(broken.text, /合法 JSON/)
 })

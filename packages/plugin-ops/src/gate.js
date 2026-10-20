@@ -2,14 +2,27 @@
  * 写操作审批门禁。
  *
  * DSH 的 tools/pre-execute 是 waterfall：返回 {kind:'allow'|'deny'|'ask'} 或调 next()。
- * 本插件把所有"会真正写闲鱼"的工具路由到人工确认；P0 阶段只有入队写类任务会触发，
- * 未来接入 xy_publish / xy_deliver 时把它们加进 WRITE_TOOLS 即可。
+ * 本插件把所有"会真正写闲鱼/写凭据"的工具路由到人工确认：
+ * - xy_task_enqueue：入队 publish/deliver/polish；
+ * - xy_import_account：从本机 Chrome 读 cookie 并加密落盘；
+ * - xy_publish_draft：只有 mode='enqueue' 才写队列，默认 dry-run 只读，放行。
  *
  * @module @bigfish/plugin-ops/gate
  */
 
 /** 需要人工确认的工具名。 */
-export const WRITE_TOOLS = new Set(['xy_task_enqueue'])
+export const WRITE_TOOLS = new Set(['xy_task_enqueue', 'xy_import_account', 'xy_publish_draft'])
+
+/** 每种写操作各自的确认原因；分开写是为了让人知道自己在批准什么。 */
+const WRITE_REASONS = {
+  xy_task_enqueue: '会入队写类任务（真机写闲鱼），需要人工确认。',
+  xy_import_account: '会从本机 Chrome 读取闲鱼登录态 cookie 并加密落盘（写凭据），需要人工确认。',
+  xy_publish_draft: '会把发布任务排进 daemon 队列（daemon 以 BF_PUBLISH_SUBMIT=1 启动时会真发布），需要人工确认。',
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === 'object'
+}
 
 /**
  * 判断一次调用是否属于写操作。
@@ -20,11 +33,17 @@ export const WRITE_TOOLS = new Set(['xy_task_enqueue'])
  */
 export function isWriteCall(name, args) {
   if (!WRITE_TOOLS.has(name)) return false
-  if (name === 'xy_task_enqueue' && args !== null && typeof args === 'object') {
+  if (name === 'xy_task_enqueue' && isRecord(args)) {
     const kind = /** @type {{kind?: unknown}} */ (args).kind
     // 只读探针与 IM 回复不触碰商品数据，先不拦；发布/发货/擦亮都要确认。
     return kind === 'publish' || kind === 'deliver' || kind === 'polish'
   }
+  if (name === 'xy_publish_draft' && isRecord(args)) {
+    const mode = /** @type {{mode?: unknown}} */ (args).mode
+    // 默认 dry-run：只读草稿文件并打印校准命令，不碰 daemon 写队列，无需审批。
+    return mode !== undefined && mode !== 'dry-run'
+  }
+  // 参数缺失时按保守方向处理：先问人，再让工具自己报 VALIDATION。
   return true
 }
 
@@ -46,7 +65,7 @@ export function registerWriteGate(ctx, options = {}) {
     if (!isWriteCall(exec?.name, exec?.arguments)) return next()
     return {
       kind: 'ask',
-      reason: `${exec.name} 会入队写类任务（真机写闲鱼），需要人工确认。`,
+      reason: WRITE_REASONS[exec.name] ?? `${exec.name} 会写真实闲鱼数据，需要人工确认。`,
     }
   })
 }

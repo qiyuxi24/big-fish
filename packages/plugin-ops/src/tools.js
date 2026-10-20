@@ -11,6 +11,8 @@
  * @module @bigfish/plugin-ops/tools
  */
 import { DaemonError } from './client.js'
+import { loadPublishDraft } from './draft.js'
+import { dryRunLines, enqueuePublish, formatDraftSummary, healthNote } from './publish-flow.js'
 
 /** 所有工具共用的输出 schema：一个文本块。 */
 const OUTPUT_SCHEMA = {
@@ -88,10 +90,39 @@ export function formatStatus(status) {
   return lines.join('\n')
 }
 
+/** 窄化 daemon 的账号导入结果；结构不对直接报 INTERNAL，不猜字段。 */
+function readImportedAccount(value) {
+  if (value === null || typeof value !== 'object') {
+    throw new DaemonError('INTERNAL', 'daemon 返回的账号导入结果不是对象')
+  }
+  const record = value
+  if (typeof record.accountId !== 'string' || record.accountId === '') {
+    throw new DaemonError('INTERNAL', 'daemon 返回的账号导入结果缺少 accountId')
+  }
+  if (typeof record.savedFieldCount !== 'number') {
+    throw new DaemonError('INTERNAL', 'daemon 返回的账号导入结果缺少 savedFieldCount')
+  }
+  return {
+    accountId: record.accountId,
+    savedFieldCount: record.savedFieldCount,
+    updatedAt: typeof record.updatedAt === 'number' ? record.updatedAt : Date.now(),
+    source: typeof record.source === 'string' ? record.source : 'unknown',
+  }
+}
+
+/** epoch ms → 本地 'YYYY-MM-DD HH:mm:ss'；非法值原样显示，不为展示抛错。 */
+function formatTime(ms) {
+  if (typeof ms !== 'number' || !Number.isFinite(ms)) return String(ms)
+  const date = new Date(ms)
+  const pad = value => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
 /**
  * 构造全部工具定义。
  *
- * @param {{client: object, config: {daemonUrl: string, tokenPath: string}, version?: string}} deps - 依赖注入，便于测试。
+ * @param {{client: object, config: {daemonUrl: string, tokenPath: string}, version?: string, owner?: string, readDraftFile?: Function}} deps - 依赖注入，便于测试。
+ *   readDraftFile 只在测试里注入假读取器，线上走 node:fs/promises.readFile。
  * @returns {object[]} 原始 ToolDefinition 数组。
  */
 export function buildTools(deps) {
@@ -218,6 +249,56 @@ export function buildTools(deps) {
         return items
           .map(item => `${item.itemId} | ${item.accountId} | ${item.state} | ¥${(item.priceCents / 100).toFixed(2)} | ${item.title}`)
           .join('\n')
+      },
+    }),
+    textTool({
+      name: 'xy_import_account',
+      description: '从本机已登录闲鱼的真 Chrome（需带 --remote-debugging-port 启动）读取登录态 cookie，加密写入 daemon 凭据库。写操作，执行前会要人工确认。导入后 /status 的账号列表会刷新；插件侧看不到 cookie 明文。',
+      parameters: {
+        type: 'object',
+        properties: {
+          accountId: { type: 'string', minLength: 1, maxLength: 64, description: '账号 id，默认取浏览器里的闲鱼 userId（unb cookie）。' },
+          port: { type: 'integer', minimum: 1, maximum: 65535, description: 'Chrome DevTools 端口，默认 9222。' },
+        },
+        additionalProperties: false,
+      },
+      async handler(args) {
+        const input = {}
+        if (args.accountId !== undefined) input.accountId = args.accountId
+        if (args.port !== undefined) input.port = args.port
+        const account = readImportedAccount(await client.importAccount(input))
+        return [
+          `已导入账号 ${account.accountId}：${account.savedFieldCount} 条登录态字段已加密落盘（source=${account.source}）。`,
+          `导入时间：${formatTime(account.updatedAt)}`,
+          '下一步：xy_status 确认账号出现在 daemon 的 accounts 里；发布前先用 xy_publish_draft 的 dry-run 校准。',
+        ].join('\n')
+      },
+    }),
+    textTool({
+      name: 'xy_publish_draft',
+      description: '校验本机发布草稿 JSON 并给出执行路径。默认 dry-run：只输出 daemon 发布命令（只填表、不点提交、不入队）；mode=enqueue 才把 publish 任务排进队列（写操作，需人工确认；daemon 只有以 BF_PUBLISH_SUBMIT=1 启动才会真提交）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          draftPath: { type: 'string', minLength: 1, description: '草稿 JSON 路径：title/desc/priceCents/images，可选 pricingMode/shipping/address。' },
+          mode: { type: 'string', enum: ['dry-run', 'enqueue'], description: 'dry-run（默认）只输出命令；enqueue 才写 daemon 队列。' },
+          accountId: { type: 'string', minLength: 1, description: '期望账号 id；enqueue 必填，dry-run 可选（daemon 会拿它和浏览器账号比对，防发错号）。' },
+          chromePort: { type: 'integer', minimum: 1, maximum: 65535, description: 'Chrome DevTools 端口，默认 9222。' },
+          screenshotsDir: { type: 'string', minLength: 1, description: '每步截图目录；真机校准强烈建议传。' },
+          dedupeKey: { type: 'string', minLength: 1, maxLength: 200, description: '幂等键，默认按草稿内容生成 publish:<hash>。' },
+        },
+        required: ['draftPath'],
+        additionalProperties: false,
+      },
+      async handler(args) {
+        // readDraftFile 只是测试注入点；线上用 node:fs/promises.readFile。
+        const draft = await loadPublishDraft(args.draftPath, deps.readDraftFile)
+        const summary = formatDraftSummary(args.draftPath, draft)
+        if (args.mode === 'enqueue') {
+          const lines = await enqueuePublish(args, draft, { client, formatTask: formatTaskLine })
+          return [summary, '', ...lines].join('\n')
+        }
+        return [summary, '', ...dryRunLines(args, draft), '', await healthNote(client)].join('\n')
       },
     }),
   ]

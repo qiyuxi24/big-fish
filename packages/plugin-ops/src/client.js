@@ -33,7 +33,7 @@ export class DaemonError extends Error {
  * 建客户端。所有方法都返回 data 本体，失败抛 DaemonError。
  *
  * @param {{daemonUrl: string, tokenPath: string, timeoutMs?: number, fetchImpl?: typeof fetch, readFileImpl?: typeof readFile}} options
- * @returns {{request: Function, health: Function, status: Function, listTasks: Function, enqueue: Function, taskAction: Function, listItems: Function, daemonUrl: string, tokenPath: string}}
+ * @returns {{request: Function, health: Function, status: Function, listTasks: Function, enqueue: Function, taskAction: Function, listItems: Function, importAccount: Function, daemonUrl: string, tokenPath: string}}
  */
 export function createDaemonClient(options) {
   const { daemonUrl, tokenPath, timeoutMs = 15_000 } = options
@@ -119,5 +119,7 @@ export function createDaemonClient(options) {
     getTask: (id) => request(`/tasks/${encodeURIComponent(id)}`),
     taskAction: (id, action, body = {}) => request(`/tasks/${encodeURIComponent(id)}/${action}`, { method: 'POST', body }),
     listItems: () => request('/items'),
+    // 登录态导入是写操作（落加密凭据），插件侧门禁会先拦一次人工确认。
+    importAccount: (input = {}) => request('/accounts/import', { method: 'POST', body: input }),
   }
 }

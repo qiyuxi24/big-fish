@@ -75,6 +75,34 @@ test('连不上 → NETWORK；超时 → NETWORK(retryable)', async () => {
   }
 })
 
+test('importAccount 以 POST /accounts/import 提交，带 Bearer 且 body 透传', async () => {
+  const seen = []
+  const server = await startStubServer({
+    '/accounts/import': { body: { ok: true, data: { accountId: 'acc-9', savedFieldCount: 5, updatedAt: 1, source: 'chrome-cdp' } } },
+  })
+  try {
+    const client = createDaemonClient({
+      daemonUrl: server.url,
+      tokenPath: 'x',
+      readFileImpl: readFileOk,
+      fetchImpl: (url, init) => {
+        seen.push({ method: init?.method, body: init?.body, headers: init?.headers })
+        return fetch(url, init)
+      },
+    })
+    const imported = await client.importAccount({ accountId: 'acc-9', port: 9333 })
+    assert.equal(imported.accountId, 'acc-9')
+    assert.equal(imported.savedFieldCount, 5)
+    assert.equal(seen[0].method, 'POST')
+    assert.equal(seen[0].headers.authorization, 'Bearer secret-token')
+    assert.deepEqual(JSON.parse(seen[0].body), { accountId: 'acc-9', port: 9333 })
+    await client.importAccount()
+    assert.deepEqual(JSON.parse(seen[1].body), {})
+  } finally {
+    await server.close()
+  }
+})
+
 test('非 JSON 响应 → INTERNAL', async () => {
   const server = await startStubServer({ '/status': { body: '<html>bad gateway</html>' } })
   try {
