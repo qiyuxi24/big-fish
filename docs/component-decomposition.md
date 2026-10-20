@@ -1,5 +1,9 @@
 # 组件拆解与整合（P1.0）
 
+> **状态更新（P1.1 完成后）**：本文 §5 里列为「留给 P1.1」的项，执行器已经落地（`probe/polish` 接 mtop 真实通道，
+> `publish/deliver/reply` 显式 UNSUPPORTED）；发布字段完整映射与登录态导入 UI 顺延到 P1.2。当前实现形态以
+> [architecture.md](architecture.md) 为准，本文保留拆解决策与接口契约。
+>
 > 目标：把调研过的小仓库**按功能拆开**，只把能合规复用、零依赖、可离线测试的部分整合进
 > `packages/`，其余只留"思路记录"。本文是拆解结果 + 本期接口契约，实现见三个 channel 包。
 > 依据：`research/notes/{A-cores,B-im,C-scraping}.md`、`docs/xianyu-4q-research.md`。

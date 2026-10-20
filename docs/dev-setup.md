@@ -1,4 +1,4 @@
-# 开发环境与运行方式（P0）
+# 开发环境与运行方式（P1.1）
 
 ## 前置
 
@@ -14,19 +14,36 @@
 pnpm install --offline --ignore-scripts
 ```
 
-如果 `.pnpm-store` 里没有需要的包，会报 `ERR_PNPM_NO_OFFLINE_META`。P0 的运行时零第三方依赖，所以正常构建根本不需要联网；workspace 内各包用 `node_modules` 里的符号链接互相引用。
+如果 `.pnpm-store` 里没有需要的包，会报 `ERR_PNPM_NO_OFFLINE_META`。运行时零第三方依赖，workspace 内各包用 `node_modules` 里的符号链接互相引用（daemon 额外依赖 `@bigfish/channel-mtop`，同样走 workspace 链接）。
 
 ## 测试与类型检查
 
 ```sh
-node scripts/test-all.mjs             # 全量：packages/**/test + integration/**
-node scripts/test-all.mjs packages/core   # 只跑某个包（按路径前缀过滤）
-node scripts/test-all.mjs integration     # 只跑跨层集成测试
-node scripts/typecheck.mjs            # core + daemon 的 tsc --noEmit
+node scripts/test-all.mjs                   # 全量：379 tests / 379 pass
+node scripts/test-all.mjs packages/core     # 只跑某个包（按路径前缀过滤）
+node scripts/test-all.mjs integration       # 只跑跨层集成测试
 ```
 
+| 包 | 用例数 |
+| --- | --- |
+| core | 112 |
+| daemon | 69（含 5 条 runtime 全链路集成） |
+| channel-mtop | 53 |
+| channel-cdp | 49 |
+| channel-guanjia | 62 |
+| plugin-ops | 32 |
+| integration | 2 |
+
 - 不用 `node --test`、不用 vitest：沙箱禁止 spawn，脚本在单进程里顺序 import 测试文件再由 `node:test` 汇总。
-- `scripts/typecheck.mjs` 依次探测 `BF_TSC` → 仓库 `node_modules/typescript` → DSH checkout 的 tsc；找不到就打印提示并以非 0 退出。也可以用 `BF_TSC=/path/to/tsc` 指定。
+- `scripts/typecheck.mjs` 在本沙箱会因 `spawnSync node.exe EPERM` 报错（不是类型错误）。**直跑 tsc**：
+
+```sh
+node 'C:/Users/34239/Documents/GitHub/deepseek-harness/node_modules/typescript/bin/tsc' \
+  --noEmit --pretty false -p packages/daemon/tsconfig.json \
+  --typeRoots 'C:/Users/34239/Documents/GitHub/deepseek-harness/node_modules/@types'
+```
+
+把 `packages/daemon` 换成 core / channel-mtop / channel-cdp / channel-guanjia 即可逐包检查；plugin-ops 与 ops-bundle 是纯 JS，不参与类型检查。
 
 ## 起 daemon
 
@@ -36,11 +53,23 @@ node packages/daemon/src/cli.ts --print-config
 node packages/daemon/src/cli.ts --data-dir .scratch/daemon --port 47001
 ```
 
+- 启动即装配**完整运行时**（`startDaemonRuntime`）：SQLite store → 队列 → 商品仓储 → 凭据 → 限流 → 熔断 → 执行器 → worker → HTTP 服务。**worker 默认自动开始轮询**，所以起 daemon 就会执行队列里的任务。
 - 数据目录默认 `%LOCALAPPDATA%\bigfish`（win32）/ `~/.local/share/bigfish`；`--data-dir` 会重算 db / 凭据 / 熔断 / token 四个路径。
 - `--port 0` 让系统分配端口（冒烟用）；默认 47001。
 - 首次启动在数据目录生成 `daemon.token`（32 字节 hex，0600）。**token 不进版本库**，插件按同一路径读取。
 - 只允许绑定回环地址；`--host` 给非回环值会直接以退出码 1 拒绝。
-- 日志是一行一条 JSON（`{"t":...,"level":"info","name":"bigfish-daemon","msg":"daemon 已启动","url":...}`）。
+- 日志是一行一条 JSON（`{"t":...,"level":"info","name":"bigfish-daemon","msg":"daemon 已启动","url":...,"workerOwner":...}`）。
+- `SIGINT` 优雅退出：先停 worker（release 在飞任务）再关 HTTP 与 store。
+
+### 手动冒烟一次 probe（不发外网）
+
+daemon 用的是真 mtop 传输，没有登录态时任务会以 `AUTH_EXPIRED` 失败——这本身就是正确结果。要验证「校验→限流→凭据→通道」的顺序，跑集成测试更省事：
+
+```sh
+node packages/daemon/test/runtime.test.ts
+```
+
+它用假 transport + 临时目录 + 真 HTTP，断言 probe 落库、无凭据不调通道、publish 进 `UNSUPPORTED` 等 5 条链路。**不要**用真实账号跑（AGENTS §5）。
 
 ## 在隔离 DSH_HOME 里验证插件装配
 
@@ -88,6 +117,8 @@ node scripts/dsh-dev.mjs --stop    # 停实例
 | 插件工具没出现 | bundle 层没装配 / patch 行 id 冲突 | 跑 `node scripts/dsh-dump.mjs`，看 `--dump-config` 里有没有 `bigfish-ops` 行 |
 | daemon 起不来，退出码 1 | 端口占用 / 非回环 host / 数据目录不可写 | 看 stderr 的第一行；`--print-config` 核对路径 |
 | 插件返回 `[UNAUTHORIZED]` | token 文件缺失或路径不一致 | 核对 `--token-path` 与插件 `tokenPath` 配置 |
+| 任务一直 `failed` 且错误含 `UNSUPPORTED` | 该操作还没接通道（publish/deliver/reply） | 预期行为，见 architecture §6/§11 |
+| 任务 `failed` 且错误含 `登录态`/`AUTH_EXPIRED` | 没往凭据库写过该账号，或凭据过期 | 先用 `credentials.save()` 导入（P1.2 会有二维码入口） |
 | `ExperimentalWarning: SQLite` | `node:sqlite` 是实验 API | 正常，忽略 |
 | `bundle <url> loaded without registering "<id>"` | `client.js` 里 `__ModuleLoader__.load({id})` 与包名不一致 | id 必须等于 loader entry 包名 |
 | `layout.selectPanel: main panel "bigfish" is not registered` | 只注册了 `sidebar.panellist` 没注册 `main` | 两个插槽成对注册（见 client-plugin-sidebar.md） |

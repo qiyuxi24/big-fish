@@ -9,9 +9,11 @@
 P0 **已完成**：workspace 骨架 + core 契约 + daemon HTTP/队列 + plugin-ops 7 个工具，测试/类型检查/真 DSH loader 装配三项验收全绿（见 `docs/architecture.md`、ADR 0002）。
 P0.5 **已完成**：Web GUI 侧边栏栏位「BigFish 闲鱼运营」（`packages/plugin-ops/client.js`，手写 loader bundle），CDP 截图与 HMR 均已实测（见 `docs/client-plugin-sidebar.md`）。
 
-P1.0 **已完成**：组件拆解——`channel-mtop` / `channel-cdp` / `channel-guanjia` 三个通道包（契约与实施状态见 `docs/component-decomposition.md`），全仓 264 tests。
+P1.0 **已完成**：组件拆解——`channel-mtop` / `channel-cdp` / `channel-guanjia` 三个通道包（契约与实施状态见 `docs/component-decomposition.md`）。
 
-下一步是 P1.1：daemon 执行器接通道 + 发布字段映射 + 登录态导入。**在执行器落地前，不要往队列里塞假业务、不要改工具契约。**
+P1.1 **已完成**：daemon 运行时装配（`runtime.ts`）+ worker 领租约执行 + 执行器能力矩阵 + `/items` 落库 + `/status` 的 accounts/circuits/worker；`probe/polish` 已接 mtop 真实通道，`publish/deliver/reply` 显式 `UNSUPPORTED`（宁可失败不留假成功）。全仓 379 tests、5 个 TS 包类型检查 0 错误，见 `docs/architecture.md`。
+
+下一步是 P1.2：发布接 CDP 通道（图片上传 → 类目属性 → 价格地址 → 提交）+ 登录态导入入口。**在 publish 落地前，不要让任何代码路径声称「发布成功」。**
 
 ## 1. 架构不变量（违反即回退）
 
@@ -27,7 +29,7 @@ P1.0 **已完成**：组件拆解——`channel-mtop` / `channel-cdp` / `channel
 | 包 | 形态 | 允许依赖 |
 | --- | --- | --- |
 | `packages/core` | 纯 TS 库 | 无内部依赖；不得 import electron / playwright / dsh |
-| `packages/daemon` | 独立 Node 进程 | `core` |
+| `packages/daemon` | 独立 Node 进程 | `core`、`channel-mtop`（执行器调读接口） |
 | `packages/plugin-ops` | Cordis 插件（**纯 ESM JS**） | 无第三方依赖；不 import `@bigfish/core`（自带最小 client 与错误映射） |
 | `packages/ops-bundle` | 声明 `dsh.bundle.patch` 的包 | 只声明发布物组合，无业务逻辑 |
 | `packages/channel-mtop` | TS 库（纯函数） | `core`；mtop 签名/信封/cookie 归一/ret 分类，不发请求 |
@@ -71,12 +73,15 @@ P1.0 **已完成**：组件拆解——`channel-mtop` / `channel-cdp` / `channel
 ## 5. 测试
 
 - 用 `node:test`，**不用 vitest / `node --test`**：沙箱禁止 spawn，`scripts/test-all.mjs` 在单进程里顺序 import 所有 `packages/**/test/**/*.test.(ts|mjs)` 与 `integration/**/*.test.mjs`，可传路径前缀过滤。
-- 类型检查：`node scripts/typecheck.mjs`（探测 `BF_TSC` → 本地 → DSH checkout 的 tsc）。
+- 类型检查：`node scripts/typecheck.mjs`（探测 `BF_TSC` → 本地 → DSH checkout 的 tsc）。**本沙箱里这个脚本会因 `spawnSync node.exe EPERM` 报错**（不是类型错误），改用：
+```sh
+node 'C:/Users/34239/Documents/GitHub/deepseek-harness/node_modules/typescript/bin/tsc' --noEmit --pretty false -p packages/<pkg>/tsconfig.json --typeRoots 'C:/Users/34239/Documents/GitHub/deepseek-harness/node_modules/@types'
+```
 - **禁止在本仓与 CI 直连真实闲鱼接口。** 通道测试用脱敏 fixture 回放请求/响应。
 - 限流、熔断、退避、幂等必须有单测：注入假时钟与假随机数，不 `sleep` 等真实时间。
 - daemon 端到端用本地 fake mtop server（`node:http`）；跨层用 `integration/`（不依赖 spawn）。
 - 真人验证只用**测试小号**，不在主账号上试发布。
-- 提交前必须跑：`node scripts/test-all.mjs && node scripts/typecheck.mjs`；改了插件装配再跑 `node scripts/dsh-dump.mjs`。
+- 提交前必须跑：`node scripts/test-all.mjs` + 逐包 tsc（见上）；改了插件装配再跑 `node scripts/dsh-dump.mjs`。
 
 ## 6. Git
 
