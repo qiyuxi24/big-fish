@@ -24,6 +24,7 @@ import {
   asRecord,
   ok,
   optionalBoolean,
+  optionalPort,
   optionalString,
   readJsonBody,
   requiredString,
@@ -32,6 +33,10 @@ import {
   sendMappedError,
 } from './http.ts'
 import type { RedactFn } from './http.ts'
+import type { ImportAccountInput, ImportedAccount } from './accounts.ts'
+
+/** 账号导入能力的注入签名；未注入时路由返回 UNSUPPORTED（HTTP 500）。 */
+export type ImportAccountHandler = (input: ImportAccountInput) => Promise<ImportedAccount>
 
 /** 一次请求的处理上下文：路由参数、URL、队列与时钟都在这里。 */
 export interface RouteContext {
@@ -44,6 +49,8 @@ export interface RouteContext {
   circuits: CircuitBreaker | undefined
   /** worker 计数提供者；未注入时 /status 不带 worker 字段。 */
   worker: (() => WorkerCounts) | undefined
+  /** 账号导入能力；未注入时 POST /accounts/import 返回 UNSUPPORTED。 */
+  importAccount: ImportAccountHandler | undefined
   now: () => number
   startedAt: number
   version: string
@@ -88,6 +95,7 @@ function isTaskKind(value: string): value is TaskKind {
 const ROUTES: readonly Route[] = [
   { method: 'GET', pattern: /^\/health\/?$/, handler: healthHandler, public: true },
   { method: 'GET', pattern: /^\/status\/?$/, handler: statusHandler },
+  { method: 'POST', pattern: /^\/accounts\/import\/?$/, handler: importAccountHandler },
   { method: 'GET', pattern: /^\/tasks\/?$/, handler: listTasksHandler },
   { method: 'POST', pattern: /^\/tasks\/?$/, handler: enqueueHandler },
   { method: 'GET', pattern: /^\/tasks\/([^/]+)\/?$/, handler: getTaskHandler },
@@ -172,6 +180,23 @@ async function healthHandler(ctx: RouteContext): Promise<void> {
 
 async function statusHandler(ctx: RouteContext): Promise<void> {
   await sendJson(ctx.res, 200, ok(buildStatus(ctx)), ctx.redact)
+}
+
+/**
+ * 从本机 Chrome 导入登录态。
+ * 请求体可为空对象；accountId / port 都可选（默认 unb、默认 9222）。
+ * 这是写操作（落加密凭据），插件侧必须走审批门禁。
+ */
+async function importAccountHandler(ctx: RouteContext): Promise<void> {
+  const importer = ctx.importAccount ?? fail('UNSUPPORTED', 'daemon 未注入账号导入能力')
+  const body = asRecord(await readJsonBody(ctx.req), '账号导入请求体')
+  const input: ImportAccountInput = {}
+  const accountId = optionalString(body, 'accountId', '账号导入请求体')
+  if (accountId !== undefined) input.accountId = accountId
+  const port = optionalPort(body, 'port', '账号导入请求体')
+  if (port !== undefined) input.port = port
+  const result = await importer(input)
+  await sendJson(ctx.res, 200, ok(result), ctx.redact)
 }
 
 async function listTasksHandler(ctx: RouteContext): Promise<void> {

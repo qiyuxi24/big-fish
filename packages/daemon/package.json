@@ -10,6 +10,7 @@
     "bigfish-daemon": "./src/cli.ts"
   },
   "dependencies": {
+    "@bigfish/channel-cdp": "workspace:*",
     "@bigfish/channel-mtop": "workspace:*",
     "@bigfish/core": "workspace:*"
   }

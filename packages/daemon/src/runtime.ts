@@ -23,6 +23,7 @@ import type {
   TaskQueueHandle,
 } from '@bigfish/core'
 
+import { importAccountFromChrome } from './accounts.ts'
 import { createExecutors } from './executors.ts'
 import type { OperationPort } from './executors.ts'
 import type { ExecutorDeps } from './executor.ts'
@@ -133,6 +134,17 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
         circuits,
         accounts: () => accounts,
         worker: () => worker.stats(),
+        importAccount: async (input) => {
+          const imported = await importAccountFromChrome({
+            credentials,
+            ...(options.now === undefined ? {} : { now: options.now }),
+            ...(input.accountId === undefined ? {} : { accountId: input.accountId }),
+            ...(input.port === undefined ? {} : { port: input.port }),
+          })
+          // /status 的账号列表是启动时快照；导入后立刻刷新，概览面板才不会显示旧列表。
+          await refreshAccounts()
+          return imported
+        },
         ...(options.version === undefined ? {} : { version: options.version }),
       })
     } catch (error) {

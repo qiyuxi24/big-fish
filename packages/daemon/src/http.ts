@@ -178,3 +178,13 @@ export function optionalBoolean(source: Record<string, unknown>, key: string, wh
   if (typeof value !== 'boolean') fail('VALIDATION', what + ' 的 ' + key + ' 必须是布尔值')
   return value
 }
+
+/** 取可选端口字段；出现了就必须是 1..65535 的整数（0 只允许在内部配置里表示随机端口）。 */
+export function optionalPort(source: Record<string, unknown>, key: string, what: string): number | undefined {
+  const value = source[key]
+  if (value === undefined) return undefined
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 65535) {
+    fail('VALIDATION', what + ' 的 ' + key + ' 必须是 1..65535 的整数')
+  }
+  return value
+}

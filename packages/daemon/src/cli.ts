@@ -9,19 +9,29 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { createLogger, fail, loadDaemonConfig, toXianyuError } from '@bigfish/core'
+import { CredentialStore, createLogger, fail, loadDaemonConfig, toXianyuError } from '@bigfish/core'
 import type { DaemonConfig, EnvLike, Logger } from '@bigfish/core'
 
+import { importAccountFromChrome } from './accounts.ts'
+import type { ImportAccountDeps, ImportAccountInput, ImportedAccount } from './accounts.ts'
 import { isLoopbackHost } from './config.ts'
 import { startDaemonRuntime } from './runtime.ts'
 import type { DaemonRuntime } from './runtime.ts'
 
+/** 子命令：默认 serve（起 daemon）；import-account 只做登录态导入后退出。 */
+export type CliCommand = 'serve' | 'import-account'
+
 /** 命令行解析结果。 */
 export interface CliOptions {
+  command: CliCommand
   dataDir?: string
   port?: number
   host?: string
   tokenPath?: string
+  /** import-account：覆盖默认账号 id（默认取 unb）。 */
+  accountId?: string
+  /** import-account：Chrome DevTools 端口，默认 9222。 */
+  chromePort?: number
   printConfig: boolean
   help: boolean
 }
@@ -42,15 +52,25 @@ const defaultIo: CliIo = {
   },
 }
 
-const VALUE_FLAGS: ReadonlySet<string> = new Set(['--data-dir', '--host', '--token-path', '--port'])
+const VALUE_FLAGS: ReadonlySet<string> = new Set([
+  '--data-dir',
+  '--host',
+  '--token-path',
+  '--port',
+  '--account-id',
+  '--chrome-port',
+])
 
-const USAGE_HINT =
-  '用法：bigfish-daemon [--data-dir DIR] [--port PORT] [--host HOST] [--token-path FILE] [--print-config] [--help]'
+const USAGE_HINT = [
+  '用法：bigfish-daemon [--data-dir DIR] [--port PORT] [--host HOST] [--token-path FILE] [--print-config] [--help]',
+  '      bigfish-daemon import-account [--data-dir DIR] [--account-id ID] [--chrome-port PORT]',
+].join('\n')
 
 const HELP_TEXT = [
   'bigfish daemon —— 闲鱼店铺自动化的本地控制面',
   '',
   '用法：bigfish-daemon [选项]',
+  '      bigfish-daemon import-account [选项]',
   '',
   '选项：',
   '  --data-dir DIR     数据目录（SQLite、token、凭据都放这里）',
@@ -60,13 +80,26 @@ const HELP_TEXT = [
   '  --print-config     打印解析后的配置并退出（不启动服务）',
   '  --help, -h         显示本帮助',
   '',
+  '子命令 import-account：',
+  '  从本机已登录的 Chrome 读取闲鱼 cookie 并加密落盘，然后退出（不起服务）。',
+  '  前置：Chrome 必须带 --remote-debugging-port 启动，且已登录 https://www.goofish.com/',
+  '  --account-id ID    账号 id，默认取 unb cookie（闲鱼 userId）',
+  '  --chrome-port PORT DevTools 端口，默认 9222',
+  '',
   '环境变量：BF_DATA_DIR / BF_HOST / BF_PORT / BF_LOG_LEVEL / BF_LEASE_TTL_MS / BF_POLL_INTERVAL_MS',
 ].join('\n')
 
 /** 解析命令行；未知参数、缺取值、非法端口一律 VALIDATION（runCli 转成退出码 2）。 */
 export function parseArgs(argv: readonly string[]): CliOptions {
-  const options: CliOptions = { printConfig: false, help: false }
+  const options: CliOptions = { command: 'serve', printConfig: false, help: false }
   let index = 0
+  const command = argv[0]
+  if (command === 'import-account') {
+    options.command = 'import-account'
+    index = 1
+  } else if (command !== undefined && !command.startsWith('-')) {
+    fail('VALIDATION', '未知子命令：' + command)
+  }
   while (index < argv.length) {
     const raw = argv[index]
     if (raw === undefined) {
@@ -89,10 +122,27 @@ export function parseArgs(argv: readonly string[]): CliOptions {
     if (parts.flag === '--data-dir') options.dataDir = value
     else if (parts.flag === '--host') options.host = value
     else if (parts.flag === '--token-path') options.tokenPath = value
-    else options.port = parseCliPort(value)
+    else if (parts.flag === '--account-id') options.accountId = value
+    else if (parts.flag === '--chrome-port') options.chromePort = parsePortFlag(value, '--chrome-port', false)
+    else options.port = parsePortFlag(value, '--port', true)
     index += parts.inline === undefined ? 2 : 1
   }
+  validateCommandFlags(options)
   return options
+}
+
+/** 子命令与参数交叉校验：免得用户以为 serve 模式会顺手导入账号。 */
+function validateCommandFlags(options: CliOptions): void {
+  if (options.command === 'serve') {
+    if (options.accountId !== undefined || options.chromePort !== undefined) {
+      fail('VALIDATION', '--account-id / --chrome-port 只用于 import-account 子命令')
+    }
+    return
+  }
+  if (options.printConfig) fail('VALIDATION', 'import-account 不支持 --print-config')
+  if (options.host !== undefined || options.port !== undefined || options.tokenPath !== undefined) {
+    fail('VALIDATION', 'import-account 只接受 --data-dir / --account-id / --chrome-port / --help')
+  }
 }
 
 interface FlagParts {
@@ -116,12 +166,18 @@ function takeValue(argv: readonly string[], index: number, parts: FlagParts): st
   return next
 }
 
-/** CLI 端口校验：显式拒绝 0，避免用户以为「随机端口」也能连上（嵌入场景请直接传配置）。 */
-function parseCliPort(value: string): number {
+/**
+ * CLI 端口校验。
+ * --port 允许 0（「让系统分配」只对监听端口有意义）；--chrome-port 必须 1..65535。
+ */
+function parsePortFlag(value: string, flag: string, allowZero: boolean): number {
   const text = value.trim()
-  if (!/^[0-9]+$/.test(text)) fail('VALIDATION', '--port 必须是 0..65535 的整数，收到 ' + JSON.stringify(value))
+  if (!/^[0-9]+$/.test(text)) fail('VALIDATION', flag + ' 必须是整数，收到 ' + JSON.stringify(value))
   const port = Number(text)
-  if (!Number.isSafeInteger(port) || port < 0 || port > 65535) fail('VALIDATION', '--port 超出范围 0..65535：' + text)
+  const min = allowZero ? 0 : 1
+  if (!Number.isSafeInteger(port) || port < min || port > 65535) {
+    fail('VALIDATION', flag + ' 超出范围 ' + String(min) + '..65535：' + text)
+  }
   return port
 }
 
@@ -140,16 +196,23 @@ export function toConfigOverrides(options: CliOptions): Partial<DaemonConfig> {
   return overrides
 }
 
+/** runCli 的可注入依赖；测试用假导入器避免真连 Chrome（本机沙箱禁 spawn）。 */
+export interface RunCliDeps {
+  importAccount?: (deps: ImportAccountDeps & ImportAccountInput) => Promise<ImportedAccount>
+}
+
 /**
  * 执行 CLI；返回进程退出码（0 正常、1 运行期失败、2 用法错误）。
  * @param argv 参数（不含 node/脚本路径）
  * @param env 环境变量表
  * @param io 输出通道
+ * @param deps 可注入依赖（默认用真实实现）
  */
 export async function runCli(
   argv: readonly string[] = process.argv.slice(2),
   env: EnvLike = process.env,
   io: CliIo = defaultIo,
+  deps: RunCliDeps = {},
 ): Promise<number> {
   let options: CliOptions
   try {
@@ -169,6 +232,7 @@ export async function runCli(
     if (!isLoopbackHost(config.host)) {
       fail('VALIDATION', 'daemon 只允许绑定回环地址（127.0.0.1 / localhost / ::1），收到 ' + config.host)
     }
+    if (options.command === 'import-account') return await runImportAccount(options, config, io, deps)
     if (options.printConfig) {
       io.stdout(JSON.stringify(config, null, 2))
       return 0
@@ -176,6 +240,35 @@ export async function runCli(
     return await runServer(config, io)
   } catch (error) {
     io.stderr('daemon 无法启动：' + toXianyuError(error).message)
+    return 1
+  }
+}
+
+/**
+ * 导入登录态：读本机 Chrome cookie → 加密写 <credentialsDir>/<accountId>.cred.json → 打印摘要。
+ * 刻意不启动 daemon：导入是「登录一次」的一次性动作，不该要求后台常驻。
+ */
+async function runImportAccount(
+  options: CliOptions,
+  config: DaemonConfig,
+  io: CliIo,
+  deps: RunCliDeps,
+): Promise<number> {
+  const credentials = new CredentialStore({ dir: config.credentialsDir })
+  const importer = deps.importAccount ?? importAccountFromChrome
+  const input: ImportAccountInput = {}
+  if (options.accountId !== undefined) input.accountId = options.accountId
+  if (options.chromePort !== undefined) input.port = options.chromePort
+  try {
+    const imported = await importer({ credentials, ...input })
+    io.stdout(JSON.stringify(imported, null, 2))
+    io.stdout(
+      '已导入账号 ' + imported.accountId + '（' + String(imported.savedFieldCount) + ' 条 cookie，已加密落盘）。',
+    )
+    io.stdout('daemon 若正在运行，需重启（或再调一次 POST /accounts/import）才会在 /status 里看到该账号。')
+    return 0
+  } catch (error) {
+    io.stderr('导入登录态失败：' + toXianyuError(error).message)
     return 1
   }
 }

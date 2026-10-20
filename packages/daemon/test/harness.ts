@@ -15,6 +15,7 @@ import type { CircuitBreaker, DaemonConfig, ItemRepository } from '@bigfish/core
 import { DaemonClient } from '../src/client.ts'
 import { startDaemon } from '../src/server.ts'
 import type { Daemon } from '../src/server.ts'
+import type { ImportAccountHandler } from '../src/routes.ts'
 import { FakeQueue } from './fake-queue.ts'
 
 /** 临时目录根：.scratch 已 gitignore，仓库根下便于排查残留。 */
@@ -61,6 +62,8 @@ export interface HarnessOptions {
   accounts?: () => string[]
   /** 熔断器（测试 /status.circuits 与 /circuits/reset）。 */
   circuits?: CircuitBreaker
+  /** 账号导入能力（测试 POST /accounts/import）；缺省时不注入，路由应返回 UNSUPPORTED。 */
+  importAccount?: ImportAccountHandler
 }
 
 /** 建夹具；t.after 负责关服务与清理目录。 */
@@ -85,6 +88,7 @@ export async function createHarness(t: { after(fn: () => Promise<void>): void },
     ...(options.items === undefined ? {} : { items: options.items }),
     ...(options.accounts === undefined ? {} : { accounts: options.accounts }),
     ...(options.circuits === undefined ? {} : { circuits: options.circuits }),
+    ...(options.importAccount === undefined ? {} : { importAccount: options.importAccount }),
   })
   const client = new DaemonClient({ baseUrl: daemon.url, tokenPath: config.tokenPath })
   const baseUrl = daemon.url

@@ -19,7 +19,7 @@ import type { DaemonConfig } from './config.ts'
 import { extractBearer, loadRedact, sendError, sendMappedError, tokenMatches } from './http.ts'
 import type { RedactFn } from './http.ts'
 import { buildStatus, matchRoute } from './routes.ts'
-import type { WorkerCounts } from './routes.ts'
+import type { ImportAccountHandler, WorkerCounts } from './routes.ts'
 
 /** 请求总超时：本机 IPC 不应该有慢请求。 */
 const REQUEST_TIMEOUT_MS = 30_000
@@ -38,6 +38,8 @@ export interface StartDaemonOptions {
   circuits?: CircuitBreaker
   /** worker 计数；缺省时 status 不带 worker 字段。 */
   worker?: () => WorkerCounts
+  /** 账号导入能力；缺省时 POST /accounts/import 返回 UNSUPPORTED。 */
+  importAccount?: ImportAccountHandler
   /** 可注入时钟（整数毫秒），测试用假时钟断言 uptime。 */
   now?: () => number
   version?: string
@@ -59,6 +61,7 @@ interface ServerContext {
   accounts: (() => string[]) | undefined
   circuits: CircuitBreaker | undefined
   worker: (() => WorkerCounts) | undefined
+  importAccount: ImportAccountHandler | undefined
   now: () => number
   startedAt: number
   version: string
@@ -84,6 +87,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
     accounts: options.accounts,
     circuits: options.circuits,
     worker: options.worker,
+    importAccount: options.importAccount,
     now,
     startedAt,
     version,
@@ -149,6 +153,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, context:
       accounts: context.accounts,
       circuits: context.circuits,
       worker: context.worker,
+      importAccount: context.importAccount,
       now: context.now,
       startedAt: context.startedAt,
       version: context.version,

@@ -30,6 +30,9 @@ importers:
 
   packages/daemon:
     dependencies:
+      '@bigfish/channel-cdp':
+        specifier: workspace:*
+        version: link:../channel-cdp
       '@bigfish/channel-mtop':
         specifier: workspace:*
         version: link:../channel-mtop
