@@ -5,5 +5,7 @@
 export * from './types.ts'
 export * from './errors.ts'
 export * from './risk.ts'
+export * from './policy.ts'
 export * from './data.ts'
+export * from './items.ts'
 export * from './runtime.ts'

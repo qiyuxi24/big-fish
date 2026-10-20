@@ -88,3 +88,17 @@ test('redact 特殊值：Date 转 ISO、Error 取消息、函数截断', () => {
   assert.equal(err['message'], 'boom')
   assert.equal(out['fn'], TRUNCATED)
 })
+test('redactString 保留结构 id（UUID）不被长串规则误掩', () => {
+  const taskId = '9f1c2b3a-4d5e-4f60-8a1b-2c3d4e5f6a7b'
+  const out = redactString('任务不存在：' + taskId)
+  assert.ok(out.includes(taskId), 'UUID 必须原样保留，否则客户端拿不到可回查的 id')
+  assert.ok(!out.includes(REDACTED))
+})
+
+test('redact 保留对象里的 UUID，同时仍然掩掉真正的长随机串', () => {
+  const id = '00000000-1111-4222-8333-444444444444'
+  const secret = 'AbCdEf0123456789AbCdEf0123456789'
+  const out = redact({ taskId: id, note: secret }) as { taskId: string; note: string }
+  assert.equal(out.taskId, id)
+  assert.equal(out.note, REDACTED)
+})

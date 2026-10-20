@@ -307,3 +307,78 @@ test('createTaskQueue 缺 path/store → VALIDATION', () => {
   expectCode('VALIDATION', () => createTaskQueue({}))
   expectCode('VALIDATION', () => createTaskQueue({ path: '  ' }))
 })
+
+test('fail 的 retryAfterMs 与指数退避取较大者：冷却窗口压住 60s 重试', (t) => {
+  const clock = fakeClock(0)
+  const { queue } = setup(t, { now: clock.now })
+  const task = queue.enqueue({ kind: 'publish', dedupeKey: 'publish-cooldown', payload: {}, maxAttempts: 5 })
+  assert.equal(queue.lease({ owner: OWNER, limit: 1, ttlMs: 1_000, now: 0 }).length, 1)
+  clock.set(1_000)
+  queue.fail(task.id, OWNER, '风控冷却', { retryAfterMs: 600_000 })
+  const first = mustGet(queue, task.id)
+  assert.equal(first.state, 'queued')
+  assert.equal(first.attempts, 1)
+  assert.equal(first.availableAt, 601_000)
+  // 60s 指数退避早过，但 10 分钟冷却未到，仍不可领取
+  assert.equal(queue.lease({ owner: OWNER, limit: 1, ttlMs: 1_000, now: 600_000 }).length, 0)
+  assert.equal(queue.lease({ owner: OWNER, limit: 1, ttlMs: 1_000, now: 601_000 }).length, 1)
+  // 第二次失败：指数退避 120s < 冷却 600s，仍以冷却为准
+  clock.set(601_000)
+  queue.fail(task.id, OWNER, '风控冷却', { retryAfterMs: 600_000 })
+  assert.equal(mustGet(queue, task.id).availableAt, 1_201_000)
+})
+
+test('retryAfterMs 小于指数退避时以退避为准，小数毫秒向上取整', (t) => {
+  const clock = fakeClock(0)
+  const { queue } = setup(t, { now: clock.now })
+  const task = queue.enqueue({ kind: 'deliver', dedupeKey: 'deliver-small-cool', payload: {}, maxAttempts: 5 })
+  assert.equal(queue.lease({ owner: OWNER, limit: 1, ttlMs: 1_000, now: 0 }).length, 1)
+  clock.set(500)
+  queue.fail(task.id, OWNER, 'boom', { retryAfterMs: 1_000 })
+  assert.equal(mustGet(queue, task.id).availableAt, 60_500)
+  assert.equal(queue.lease({ owner: OWNER, limit: 1, ttlMs: 1_000, now: 60_500 }).length, 1)
+  clock.set(60_500)
+  queue.fail(task.id, OWNER, 'boom', { retryAfterMs: 120_000.4 })
+  assert.equal(mustGet(queue, task.id).availableAt, 180_501)
+})
+
+test('retryAfterMs 非法（负数/NaN/Infinity/非数字/null）→ VALIDATION 且任务保持原状', (t) => {
+  const clock = fakeClock(0)
+  const { queue } = setup(t, { now: clock.now })
+  const task = queue.enqueue({ kind: 'probe', dedupeKey: 'probe-bad-cool', payload: {}, maxAttempts: 5 })
+  assert.equal(queue.lease({ owner: OWNER, limit: 1, ttlMs: 5_000, now: 0 }).length, 1)
+  clock.set(100)
+  const bads: unknown[] = [-1, Number.NaN, Number.POSITIVE_INFINITY, -0.5, '60000', null]
+  for (const bad of bads) {
+    expectCode('VALIDATION', () => queue.fail(task.id, OWNER, 'boom', { retryAfterMs: bad as number }))
+  }
+  const leased = mustGet(queue, task.id)
+  assert.equal(leased.state, 'leased')
+  assert.equal(leased.attempts, 1)
+  assert.equal(leased.leaseOwner, OWNER)
+  assert.equal(leased.leaseUntil, 5_000)
+  assert.equal(leased.lastError, undefined)
+  assert.equal(leased.availableAt, 0)
+})
+
+test('retryAfterMs 不改变 nonRetryable / 次数用尽的终态', (t) => {
+  const clock = fakeClock(0)
+  const { queue } = setup(t, { now: clock.now })
+  const fatal = queue.enqueue({ kind: 'publish', dedupeKey: 'publish-fatal-cool', payload: {}, maxAttempts: 9 })
+  assert.equal(queue.lease({ owner: OWNER, limit: 1, ttlMs: 1_000, now: 0 }).length, 1)
+  clock.set(1_000)
+  queue.fail(fatal.id, OWNER, '参数错误', { nonRetryable: true, retryAfterMs: 600_000 })
+  const failed = mustGet(queue, fatal.id)
+  assert.equal(failed.state, 'failed')
+  assert.equal(failed.availableAt, 0)
+  assert.equal(failed.leaseOwner, undefined)
+
+  const exhausted = queue.enqueue({ kind: 'deliver', dedupeKey: 'deliver-exhausted-cool', payload: {}, maxAttempts: 1 })
+  assert.equal(queue.lease({ owner: OWNER, limit: 1, ttlMs: 1_000, now: 1_000 }).length, 1)
+  clock.set(2_000)
+  queue.fail(exhausted.id, OWNER, 'boom', { retryAfterMs: 600_000 })
+  const review = mustGet(queue, exhausted.id)
+  assert.equal(review.state, 'needs_review')
+  assert.equal(review.attempts, 1)
+  assert.equal(review.availableAt, 1_000)
+})

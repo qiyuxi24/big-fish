@@ -58,6 +58,28 @@ const SK_KEY_RE = /\bsk-[A-Za-z0-9_-]{8,}/g
 const LONG_TOKEN_RE = /[A-Za-z0-9+/=_-]{24,}/g
 
 /**
+ * 结构 id（UUID v4 形态）必须先保护起来：36 字符的 UUID 会被 LONG_TOKEN_RE 命中，
+ * 早期版本因此把 taskId/itemId 一起掩成 [redacted]，客户端拿不到可回查的 id。
+ * 做法是占位符替换 → 脱敏 → 还原，占位符用私用区字符，正常文本不会出现。
+ */
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi
+const UUID_PLACEHOLDER_RE = /\uE000(\d+)\uE001/g
+
+function protectUuids(input: string): { text: string; uuids: string[] } {
+  const uuids: string[] = []
+  const text = input.replace(UUID_RE, (matched) => {
+    uuids.push(matched)
+    return '\uE000' + String(uuids.length - 1) + '\uE001'
+  })
+  return { text, uuids }
+}
+
+function restoreUuids(input: string, uuids: readonly string[]): string {
+  if (uuids.length === 0) return input
+  return input.replace(UUID_PLACEHOLDER_RE, (_matched, index: string) => uuids[Number(index)] ?? REDACTED)
+}
+
+/**
  * 判断字段名是否敏感（大小写不敏感）。
  * @param key 字段名
  */
@@ -72,10 +94,12 @@ export function isSensitiveKey(key: string): boolean {
  * @param input 原始字符串
  */
 export function redactString(input: string): string {
-  return input
+  const protectedInput = protectUuids(input)
+  const masked = protectedInput.text
     .replace(HEADER_VALUE_RE, '$1' + REDACTED)
     .replace(SK_KEY_RE, REDACTED)
     .replace(LONG_TOKEN_RE, REDACTED)
+  return restoreUuids(masked, protectedInput.uuids)
 }
 
 /**

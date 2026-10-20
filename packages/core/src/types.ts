@@ -49,6 +49,11 @@ export interface TaskRecord {
 export interface FailTaskOptions {
   /** 明确不可重试：跳过退避，直接进 failed（用于参数错误、账号无权限一类）。 */
   nonRetryable?: boolean
+  /**
+   * 指定最早可重试时间（毫秒，相对 now 的延迟）。与指数退避取较大者。
+   * 用于平台风控冷却：熔断 10 分钟期间不应该按 60s 退避疯狂重试。
+   */
+  retryAfterMs?: number
 }
 
 /** 任务队列的最小接口；daemon 与测试都只依赖它。 */
@@ -77,14 +82,45 @@ export interface TaskFilter {
   limit?: number
 }
 
-/** 商品摘要（P0 只落库不抓取）。 */
+/** 商品状态；unknown 表示最近一次抓取失败但历史记录仍在。 */
+export type ItemState = 'online' | 'offline' | 'unknown'
+
+/** 商品摘要（P0 只落库不抓取；P1.1 起由 probe 执行器写入）。 */
 export interface ItemSummary {
   itemId: string
   accountId: AccountId
   title: string
   priceCents: number
-  state: 'online' | 'offline' | 'unknown'
+  state: ItemState
   updatedAt: number
+}
+
+/** 写商品摘要的入参；updatedAt 缺省用当前时间。 */
+export interface ItemUpsertInput {
+  itemId: string
+  accountId: AccountId
+  title: string
+  priceCents: number
+  state: ItemState
+  updatedAt?: number
+}
+
+/** 商品列表过滤条件。 */
+export interface ItemFilter {
+  accountId?: AccountId
+  state?: ItemState
+  /** 缺省 50，上限 500。 */
+  limit?: number
+}
+
+/** 商品表读写接口；daemon 执行器与 HTTP 路由只依赖它，不直接碰 SQL。 */
+export interface ItemRepository {
+  /** 按 itemId 覆盖写；返回落库后的记录。 */
+  upsert(input: ItemUpsertInput): ItemSummary
+  /** 按 itemId 查；不存在返回 undefined。 */
+  get(itemId: string): ItemSummary | undefined
+  list(filter?: ItemFilter): ItemSummary[]
+  count(accountId?: AccountId): number
 }
 
 /** IPC 响应信封：错误永远走 `ok:false`，不借用 HTTP 状态码表达业务错误。 */
@@ -107,4 +143,11 @@ export interface DaemonStatus {
   accounts: AccountId[]
   /** 已熔断账号 → 原因。 */
   circuits: Record<string, string>
+  /** worker 计数（未注入 worker 时缺省）；让插件能判断"任务到底有没有人执行"。 */
+  worker?: {
+    leased: number
+    done: number
+    failed: number
+    errors: number
+  }
 }

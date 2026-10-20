@@ -218,10 +218,24 @@ function failTask(ctx: QueueContext, id: string, owner: string, error: string | 
   const task = requireLease(ctx, id, owner, 'fail')
   const at = ctx.now()
   const lastError = errorMessage(error).slice(0, MAX_LAST_ERROR_CHARS)
+  const retryAfterMs = readRetryAfterMs(options)
   // 判定顺序：明确不可重试 → failed；次数用尽 → needs_review（写操作交给人看，不自动重放）。
   const state: TaskState = options?.nonRetryable === true ? 'failed' : task.attempts >= task.maxAttempts ? 'needs_review' : 'queued'
-  const availableAt = state === 'queued' ? at + backoffMs(task.attempts) : task.availableAt
+  // 风控冷却只能推迟重试：与指数退避取较大者，避免「60s 退避」把 10 分钟冷却提前打穿。
+  const delay = retryAfterMs === undefined ? backoffMs(task.attempts) : Math.max(backoffMs(task.attempts), retryAfterMs)
+  // retryAfterMs 允许小数，但落库时间必须是整数毫秒，向上取整保证不会早于冷却截止。
+  const availableAt = state === 'queued' ? at + Math.ceil(delay) : task.availableAt
   ctx.sql.markFailed.run(state, availableAt, lastError, at, task.id)
+}
+
+/** retryAfterMs 校验：有限非负数（毫秒）；非法入参一律 VALIDATION，且不改动任务。 */
+function readRetryAfterMs(options: FailTaskOptions | undefined): number | undefined {
+  const value: unknown = options?.retryAfterMs
+  if (value === undefined) return undefined
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    fail('VALIDATION', 'retryAfterMs 必须是有限非负数（毫秒）')
+  }
+  return value
 }
 
 function getTask(ctx: QueueContext, id: string): TaskRecord | undefined {
