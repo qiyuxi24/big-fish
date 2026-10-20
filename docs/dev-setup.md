@@ -99,14 +99,24 @@ node scripts/dsh-dev.mjs --stop    # 停实例
 - HMR 后主区域会回落到会话欢迎页（activePanelId 被重置），**再点一次侧边栏栏位**即可看到新面板。
 - 机制细节、路由 404 现象与 6 个实测坑见 [client-plugin-sidebar.md](client-plugin-sidebar.md)。
 
-## 装进真实 DSH profile（手工）
+## 装进真实 DSH profile（脚本）
 
-在 `~/.dsh/profiles/<your-profile>/` 下：
+```sh
+node scripts/dsh-install.mjs --dry-run     # 先看会改什么
+node scripts/dsh-install.mjs               # 装进 ~/.dsh/profiles/desktop
+node scripts/dsh-install.mjs --profile web # 换 profile
+node scripts/dsh-install.mjs --uninstall   # 撤销（备份文件保留）
+```
 
-1. `package.json` 的 `dependencies` 加 `"@bigfish/ops-bundle": "link:D:/Github/big fish/packages/ops-bundle"`；
-2. `dependencies` 里同时要有 `@deepseek-ai/dsh-base` 与 `@deepseek-ai/dsh-web-app`（版本 `0.1.5-rc.2`）；
-3. `dsh.profile.bundles` 里按顺序写 `@deepseek-ai/dsh-base`、`@bigfish/ops-bundle`、`@deepseek-ai/dsh-web-app`；
-4. `dsh plugin --profile <your-profile> pnpm install`（或复用 `scripts/dsh-dump.mjs` 的 junction 手法）。
+脚本会：写 profile `package.json` 的 `dependencies`（`link:<repo>/packages/ops-bundle`）、把
+`@bigfish/ops-bundle` 插到 `dsh.profile.bundles` 的 `dsh-base` 与 `dsh-web-app` 之间、在 profile 的
+`node_modules/@bigfish/` 建 junction 指向本仓、改动前备份 `package.json.bak-bigfish-<ts>`。
+
+- **装完要完全退出并重开 DSH 桌面应用一次**：bundle 列表只在启动时读取。
+- 之后继续改 `packages/plugin-ops/client.js` 是热替换，**不用再重启**。
+- `desktop` profile 由 Electron 独占，`dsh --profile desktop --dump-config` 会被拒绝；装完只能在界面确认。
+- 手工等价步骤：`dependencies` 加 link、`dsh.profile.bundles` 插一行、`node_modules/@bigfish` 建 junction，
+  然后重启；不需要 pnpm install。
 
 ## 常见故障
 

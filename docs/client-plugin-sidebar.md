@@ -107,3 +107,45 @@ stub `window.__ModuleLoader__.load` 捕获注册、假 `react`、假 `ctx.slots`
 - 面板还没接真实数据：现在只是占位 UI，实时状态让模型调 `xy_status` / `xy_tasks_list`。
 - 没有服务端推送（SSE/WebSocket）到 client：P1 要展示队列进度时需要一条 daemon → 插件 → client 的通道。
 - 没有 `settings` 卡片（daemonUrl / tokenPath 现在只能写 `cordis.patch.yml`）。
+## 6. 热调试：在真实 DSH 里看到自己改的效果
+
+两条路，按需选。
+
+### A. 隔离 dev 实例（推荐日常改 UI 用，不碰你正在用的 DSH）
+
+```bash
+npm run dsh:dev -- --fresh          # 造 .scratch/.dshdev 隔离 DSH_HOME 并启动，默认 47080
+npm run dsh:shot -- --hmr           # 可选：headless 自检 + 热更新断言 + 截图
+npm run dsh:dev -- --stop           # 停
+```
+
+启动会打印带 token 的 URL（`http://127.0.0.1:47080/?token=…`），用浏览器打开即可。这个实例
+只装 `dsh-base + @bigfish/ops-bundle + dsh-web-app`，与你的日常 profile 完全隔离，改坏了不影响你。
+改 `packages/plugin-ops/client.js` 保存 → 页面**不刷新**即换新版（`dsh-client-hmr` stat-poll）。
+
+### B. 装进你自己的 DSH profile（日常使用，重启一次）
+
+```bash
+npm run dsh:install                      # 默认 profile: desktop（~/.dsh/profiles/desktop）
+npm run dsh:install -- --dry-run         # 只看改动
+npm run dsh:install -- --uninstall       # 撤销
+```
+
+脚本做的事（`scripts/dsh-install.mjs`，幂等）：
+
+1. profile `package.json` 的 `dependencies` 加 `"@bigfish/ops-bundle": "link:<repo>/packages/ops-bundle"`；
+2. 把 `@bigfish/ops-bundle` 插进 `dsh.profile.bundles`（`dsh-base` 之后、`dsh-web-app` 之前）；
+3. 在 profile 的 `node_modules/@bigfish/` 下建两个 junction 指向本仓 `packages/{ops-bundle,plugin-ops}`；
+4. 改动前备份成 `package.json.bak-bigfish-<ts>`。
+
+**装完必须完全退出并重开 DSH 桌面应用一次**（bundle 列表只在启动时读取）。之后侧边栏出现
+「BigFish 闲鱼运营」（🐟），并且**继续改 `client.js` 同样热替换、不用再重启**。
+
+为什么不用 `dsh plugin --profile desktop add`：它转发 pnpm，而 `ops-bundle` 依赖
+`@bigfish/plugin-ops: workspace:*`，profile 侧解析不了 workspace 协议（离线也无 registry）。
+junction + 手写 bundle 行是等价结果，且可控可回滚。
+
+注意：`desktop` profile 由 Electron 独占管理，`dsh --profile desktop --dump-config` 会直接拒绝
+（`profile "desktop" is managed exclusively by the Electron application`），所以装完无法用 CLI 预检，
+只能靠重启后的界面确认；dev 实例（A）承担 CI 式验证。
+

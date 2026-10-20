@@ -11,6 +11,9 @@
     "test": "node scripts/test-all.mjs",
     "typecheck": "node scripts/typecheck.mjs",
     "daemon": "node packages/daemon/src/cli.ts",
-    "dsh:dump": "node scripts/dsh-dump.mjs"
+    "dsh:dump": "node scripts/dsh-dump.mjs",
+    "dsh:dev": "node scripts/dsh-dev.mjs",
+    "dsh:shot": "node scripts/dsh-shot.mjs",
+    "dsh:install": "node scripts/dsh-install.mjs"
   }
 }
