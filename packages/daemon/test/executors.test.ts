@@ -243,6 +243,40 @@ describe('daemon 执行器', () => {
     await assert.rejects(executors.publish?.execute(bad.task, bad) as Promise<void>, /category/)
   })
 
+  it('publish：address/shipping 透传给通道（队列任务读不到草稿文件，缺地址会被必填预检拦下）', async () => {
+    const port = makePort()
+    const seen: Array<{ address: string | undefined; shipping: string | undefined }> = []
+    const executors = createExecutors({
+      ports: {
+        ...port,
+        async publishItem(input) {
+          seen.push({ address: input.draft.address, shipping: input.draft.shipping })
+          return { itemId: 'new-3' }
+        },
+      },
+    })
+    const credentials = makeCredentialStore({ acc1: { accountId: 'acc1', cookies: {}, updatedAt: 1 } })
+    const ok = makeCtx({
+      payload: {
+        accountId: 'acc1', title: 'T', desc: 'D', priceCents: 1000, images: ['a.png'],
+        category: '学习笔记', shipping: 'free', address: '西北工业大学长安校区星天苑',
+      },
+      credentials,
+    })
+    await executors.publish?.execute(ok.task, ok)
+    assert.deepEqual(seen, [{ address: '西北工业大学长安校区星天苑', shipping: 'free' }])
+    const badShipping = makeCtx({
+      payload: { accountId: 'acc1', title: 'T', desc: 'D', priceCents: 1000, images: ['a.png'], shipping: 'emi' },
+      credentials,
+    })
+    await assert.rejects(executors.publish?.execute(badShipping.task, badShipping) as Promise<void>, /shipping/)
+    const badAddress = makeCtx({
+      payload: { accountId: 'acc1', title: 'T', desc: 'D', priceCents: 1000, images: ['a.png'], address: 42 },
+      credentials,
+    })
+    await assert.rejects(executors.publish?.execute(badAddress.task, badAddress) as Promise<void>, /address/)
+  })
+
   it('publish：priceCents 非整数 → VALIDATION；images 非法 → VALIDATION', async () => {
     const executors = createExecutors({ ports: makePort() })
     const credentials = makeCredentialStore({ acc1: { accountId: 'acc1', cookies: {}, updatedAt: 1 } })

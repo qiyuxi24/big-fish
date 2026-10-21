@@ -37,6 +37,7 @@ import {
 import type { RedactFn } from './http.ts'
 import type { ImportAccountInput, ImportedAccount } from './accounts.ts'
 import type { LoginInput, LoginResult } from './login.ts'
+import type { AccountSummary } from './account-list.ts'
 
 /** 账号导入能力的注入签名；未注入时路由返回 UNSUPPORTED（HTTP 500）。 */
 export type ImportAccountHandler = (input: ImportAccountInput) => Promise<ImportedAccount>
@@ -59,6 +60,8 @@ export interface RouteContext {
   importAccount: ImportAccountHandler | undefined
   /** 扫码登录能力；未注入时 POST /accounts/login 返回 UNSUPPORTED。 */
   loginAccount: LoginAccountHandler | undefined
+  /** 账号摘要能力；未注入时 GET /accounts 返回空数组（不是错误，开发态也能渲染面板）。 */
+  accountSummaries: (() => Promise<AccountSummary[]>) | undefined
   now: () => number
   startedAt: number
   version: string
@@ -103,6 +106,7 @@ function isTaskKind(value: string): value is TaskKind {
 const ROUTES: readonly Route[] = [
   { method: 'GET', pattern: /^\/health\/?$/, handler: healthHandler, public: true },
   { method: 'GET', pattern: /^\/status\/?$/, handler: statusHandler },
+  { method: 'GET', pattern: /^\/accounts\/?$/, handler: listAccountsHandler },
   { method: 'POST', pattern: /^\/accounts\/import\/?$/, handler: importAccountHandler },
   { method: 'POST', pattern: /^\/accounts\/login\/?$/, handler: loginAccountHandler },
   { method: 'GET', pattern: /^\/tasks\/?$/, handler: listTasksHandler },
@@ -226,6 +230,15 @@ async function loginAccountHandler(ctx: RouteContext): Promise<void> {
  * 请求体可为空对象；accountId / port 都可选（默认 unb、默认 9222）。
  * 这是写操作（落加密凭据），插件侧必须走审批门禁。
  */
+/**
+ * 账号列表：只读摘要（账号 id / 更新时间 / 字段数 / 是否可用），不含任何 cookie 值。
+ * 未注入摘要能力时返回空数组：面板在「daemon 未接凭据库」的开发态也应当能渲染。
+ */
+async function listAccountsHandler(ctx: RouteContext): Promise<void> {
+  const summaries: AccountSummary[] = ctx.accountSummaries === undefined ? [] : await ctx.accountSummaries()
+  await sendJson(ctx.res, 200, ok(summaries), ctx.redact)
+}
+
 async function importAccountHandler(ctx: RouteContext): Promise<void> {
   const importer = ctx.importAccount ?? fail('UNSUPPORTED', 'daemon 未注入账号导入能力')
   const body = asRecord(await readJsonBody(ctx.req), '账号导入请求体')

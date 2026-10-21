@@ -20,6 +20,7 @@ import { extractBearer, loadRedact, sendError, sendMappedError, tokenMatches } f
 import type { RedactFn } from './http.ts'
 import { buildStatus, matchRoute } from './routes.ts'
 import type { ImportAccountHandler, LoginAccountHandler, WorkerCounts } from './routes.ts'
+import type { AccountSummary } from './account-list.ts'
 
 /** 请求总超时：本机 IPC 不应该有慢请求。 */
 const REQUEST_TIMEOUT_MS = 30_000
@@ -42,6 +43,8 @@ export interface StartDaemonOptions {
   importAccount?: ImportAccountHandler
   /** 扫码登录能力；缺省时 POST /accounts/login 返回 UNSUPPORTED。 */
   loginAccount?: LoginAccountHandler
+  /** 账号摘要能力；缺省时 GET /accounts 返回空数组。 */
+  accountSummaries?: () => Promise<AccountSummary[]>
   /** 可注入时钟（整数毫秒），测试用假时钟断言 uptime。 */
   now?: () => number
   version?: string
@@ -65,6 +68,7 @@ interface ServerContext {
   worker: (() => WorkerCounts) | undefined
   importAccount: ImportAccountHandler | undefined
   loginAccount: LoginAccountHandler | undefined
+  accountSummaries: (() => Promise<AccountSummary[]>) | undefined
   now: () => number
   startedAt: number
   version: string
@@ -92,6 +96,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
     worker: options.worker,
     importAccount: options.importAccount,
     loginAccount: options.loginAccount,
+    accountSummaries: options.accountSummaries,
     now,
     startedAt,
     version,
@@ -159,6 +164,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, context:
       worker: context.worker,
       importAccount: context.importAccount,
       loginAccount: context.loginAccount,
+      accountSummaries: context.accountSummaries,
       now: context.now,
       startedAt: context.startedAt,
       version: context.version,

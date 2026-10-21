@@ -5,8 +5,11 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
+import { XianyuError } from '@bigfish/core'
+
 import type { ImportedAccount } from '../src/accounts.ts'
 import type { ImportAccountInput } from '../src/accounts.ts'
+import type { AccountSummary } from '../src/account-list.ts'
 import { createHarness, dataOf, errorOf } from './harness.ts'
 
 const IMPORTED: ImportedAccount = {
@@ -68,5 +71,43 @@ describe('POST /accounts/import', () => {
       assert.equal(response.status, 400, body)
       assert.equal(errorOf(response).code, 'VALIDATION', body)
     }
+  })
+})
+
+const SUMMARIES: AccountSummary[] = [
+  { accountId: '2206569289277', updatedAt: 1_700_000_000_000, savedFieldCount: 18, ready: true, unb: '2206569289277', ageMs: 4_000 },
+]
+
+describe('GET /accounts', () => {
+  it('缺少 Bearer token → 401 UNAUTHORIZED', async (t) => {
+    const harness = await createHarness(t, { accountSummaries: async () => SUMMARIES })
+    const response = await harness.rawRequest({ method: 'GET', path: '/accounts', token: null })
+    assert.equal(response.status, 401)
+    assert.equal(errorOf(response).code, 'UNAUTHORIZED')
+  })
+
+  it('未注入摘要能力 → 200 空数组（开发态不报错）', async (t) => {
+    const harness = await createHarness(t)
+    const response = await harness.rawRequest({ method: 'GET', path: '/accounts' })
+    assert.equal(response.status, 200)
+    assert.deepEqual(dataOf(response), [])
+  })
+
+  it('注入摘要能力 → 原样返回（不含 cookie 值）', async (t) => {
+    const harness = await createHarness(t, { accountSummaries: async () => SUMMARIES })
+    const response = await harness.rawRequest({ method: 'GET', path: '/accounts' })
+    assert.equal(response.status, 200)
+    assert.deepEqual(dataOf(response), SUMMARIES)
+  })
+
+  it('摘要能力抛 STORAGE → 500 且错误码保留', async (t) => {
+    const harness = await createHarness(t, {
+      accountSummaries: async () => {
+        throw new XianyuError({ code: 'STORAGE', message: '凭据目录读取失败' })
+      },
+    })
+    const response = await harness.rawRequest({ method: 'GET', path: '/accounts' })
+    assert.equal(response.status, 500)
+    assert.equal(errorOf(response).code, 'STORAGE')
   })
 })

@@ -24,6 +24,7 @@ import type {
 } from '@bigfish/core'
 
 import { importAccountFromChrome } from './accounts.ts'
+import { listAccountSummaries } from './account-list.ts'
 import { loginAndSave } from './login.ts'
 import { createExecutors } from './executors.ts'
 import type { OperationPort } from './executors.ts'
@@ -138,6 +139,12 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
         items,
         circuits,
         accounts: () => accounts,
+        // 账号面板的列表：只读摘要，cookie 值不出进程（见 account-list.ts）。
+        accountSummaries: () =>
+          listAccountSummaries({
+            credentials,
+            ...(options.now === undefined ? {} : { now: options.now }),
+          }),
         worker: () => worker.stats(),
         importAccount: async (input) => {
           const imported = await importAccountFromChrome({

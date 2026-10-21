@@ -34,12 +34,6 @@ import type { PublishDraft } from './executors.ts'
 export interface PublishDraftFile extends PublishDraft {
   /** 服务类计价方式（元/次 等）；不传就跳过「请选择计价方式」。 */
   pricingMode?: string
-  /** 包邮开关；不传按页面默认（包邮）。 */
-  shipping?: 'free' | 'none'
-  /** 地点文字（如 广州大学城）；不传就不改地址。 */
-  address?: string
-  /** 目标类目名（如「电子资料」）；不传就沿用页面 AI 识别结果。 */
-  category?: string
 }
 
 /** 一次发布调用的输入。 */
