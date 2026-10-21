@@ -28,6 +28,15 @@ test('登录态导入永远是写操作；发布只有 enqueue 才拦', () => {
   assert.equal(WRITE_TOOLS.has('xy_publish_draft'), true)
 })
 
+test('批量发布：只有 enqueue 才拦，dry-run 放行', () => {
+  assert.equal(isWriteCall('xy_publish_batch', { drafts: [{ title: 'x' }] }), false)
+  assert.equal(isWriteCall('xy_publish_batch', { draftPaths: ['a.json'], mode: 'dry-run' }), false)
+  assert.equal(isWriteCall('xy_publish_batch', { drafts: [{ title: 'x' }], mode: 'enqueue' }), true)
+  // 参数形态无法判断时按最保守处理。
+  assert.equal(isWriteCall('xy_publish_batch', null), true)
+  assert.equal(WRITE_TOOLS.has('xy_publish_batch'), true)
+})
+
 test('门禁为每种写操作给出各自的确认原因', () => {
   const { ctx, listeners } = createFakeCtx()
   registerWriteGate(ctx, {})
@@ -39,6 +48,12 @@ test('门禁为每种写操作给出各自的确认原因', () => {
   assert.match(publish.reason, /BF_PUBLISH_SUBMIT=1/)
   const dryRun = gate({ name: 'xy_publish_draft', arguments: { mode: 'dry-run' } }, () => ({ kind: 'allow' }))
   assert.equal(dryRun.kind, 'allow')
+
+  const batch = gate({ name: 'xy_publish_batch', arguments: { mode: 'enqueue' } }, () => ({ kind: 'allow' }))
+  assert.equal(batch.kind, 'ask')
+  assert.match(batch.reason, /BF_PUBLISH_SUBMIT=1/)
+  const batchDryRun = gate({ name: 'xy_publish_batch', arguments: { mode: 'dry-run' } }, () => ({ kind: 'allow' }))
+  assert.equal(batchDryRun.kind, 'allow')
 })
 
 test('门禁：写调用返回 ask，读调用走 next()', () => {

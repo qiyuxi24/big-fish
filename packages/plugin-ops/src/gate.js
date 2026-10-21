@@ -5,19 +5,21 @@
  * 本插件把所有"会真正写闲鱼/写凭据"的工具路由到人工确认：
  * - xy_task_enqueue：入队 publish/deliver/polish；
  * - xy_import_account：从本机 Chrome 读 cookie 并加密落盘；
- * - xy_publish_draft：只有 mode='enqueue' 才写队列，默认 dry-run 只读，放行。
+ * - xy_publish_draft：只有 mode='enqueue' 才写队列，默认 dry-run 只读，放行；
+ * - xy_publish_batch：同上口径，逐条入队批量发布草稿。
  *
  * @module @bigfish/plugin-ops/gate
  */
 
 /** 需要人工确认的工具名。 */
-export const WRITE_TOOLS = new Set(['xy_task_enqueue', 'xy_import_account', 'xy_publish_draft'])
+export const WRITE_TOOLS = new Set(['xy_task_enqueue', 'xy_import_account', 'xy_publish_draft', 'xy_publish_batch'])
 
 /** 每种写操作各自的确认原因；分开写是为了让人知道自己在批准什么。 */
 const WRITE_REASONS = {
   xy_task_enqueue: '会入队写类任务（真机写闲鱼），需要人工确认。',
   xy_import_account: '会从本机 Chrome 读取闲鱼登录态 cookie 并加密落盘（写凭据），需要人工确认。',
   xy_publish_draft: '会把发布任务排进 daemon 队列（daemon 以 BF_PUBLISH_SUBMIT=1 启动时会真发布），需要人工确认。',
+  xy_publish_batch: '会把一批发布任务排进 daemon 队列（daemon 以 BF_PUBLISH_SUBMIT=1 启动时会逐条真发布），需要人工确认。',
 }
 
 function isRecord(value) {
@@ -41,6 +43,11 @@ export function isWriteCall(name, args) {
   if (name === 'xy_publish_draft' && isRecord(args)) {
     const mode = /** @type {{mode?: unknown}} */ (args).mode
     // 默认 dry-run：只读草稿文件并打印校准命令，不碰 daemon 写队列，无需审批。
+    return mode !== undefined && mode !== 'dry-run'
+  }
+  if (name === 'xy_publish_batch' && isRecord(args)) {
+    // 与 xy_publish_draft 同一口径：默认 dry-run 只读草稿（文件）并出计划，不写队列。
+    const mode = /** @type {{mode?: unknown}} */ (args).mode
     return mode !== undefined && mode !== 'dry-run'
   }
   // 参数缺失时按保守方向处理：先问人，再让工具自己报 VALIDATION。

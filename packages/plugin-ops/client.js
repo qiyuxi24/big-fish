@@ -88,6 +88,48 @@ window.__ModuleLoader__.load({
       { id: 'flawed', label: '有瑕疵' },
     ]
 
+    /** 发布流水线四步：面板只展示契约，真正执行在 daemon。 */
+    const PIPELINE_STEPS = [
+      { title: '1 草稿集', value: '标题 / 文案 / 图片 / 价格 / 成色' },
+      { title: '2 文案与图片', value: 'agent 调 xy_copy_plan 出文案；图片用本地目录' },
+      { title: '3 批量入队', value: '幂等 dedupeKey，重复草稿自动跳过' },
+      { title: '4 daemon 发布', value: '单账号串行 CDP；每步截图，失败进待审' },
+    ]
+    const CATEGORY_MATRIX = '✅ 电子资料 / 学习笔记 / 课业本；❌ 教材教辅 / 语言与兴趣培训 / 学习资料定制 / 文学 / 考研咨询（网页端不支持发布）'
+    /** 内联草稿示例（price 单位是分）。 */
+    const DRAFT_EXAMPLE = '{"title":"课程笔记 PDF","price":990,"condition":"like-new","images":["D:/pics/note-1.jpg"]}'
+
+    /** 逐行解析草稿集（内联 JSON 对象或 .json 路径）：路径条目交给 host 侧读取，这里只认形状。 */
+    function parseDraftLines(text) {
+      return text.split('\n').map(line => line.trim()).filter(line => line !== '').map((line, index) => {
+        if (!line.startsWith('{')) {
+          return /\.json$/i.test(line)
+            ? { index, kind: 'path', ok: true, path: line, message: '路径条目（host 侧读取，面板不校验内容）' }
+            : { index, kind: 'bad', ok: false, message: '既不是内联 JSON 对象，也不是 .json 路径' }
+        }
+        let draft
+        try { draft = JSON.parse(line) } catch { return { index, kind: 'inline', ok: false, message: 'JSON 不合法' } }
+        if (typeof draft !== 'object' || draft === null || Array.isArray(draft)) {
+          return { index, kind: 'inline', ok: false, message: 'JSON 不是对象' }
+        }
+        const missing = ['title', 'price', 'images'].filter(key => draft[key] === undefined || draft[key] === null || draft[key] === '' || (Array.isArray(draft[key]) && draft[key].length === 0))
+        return missing.length === 0
+          ? { index, kind: 'inline', ok: true, draft, message: '格式通过' }
+          : { index, kind: 'inline', ok: false, draft, message: '缺 ' + missing.join(' / ') }
+      })
+    }
+
+    /** 组装 xy_publish_batch 参数：只组数据，不执行。 */
+    function buildPublishBatchArguments(mode, results, accountId) {
+      const args = {
+        mode,
+        draftPaths: results.filter(result => result.kind === 'path').map(result => result.path),
+        drafts: results.filter(result => result.kind === 'inline' && result.ok).map(result => result.draft),
+      }
+      if (accountId.trim() !== '') args.accountId = accountId.trim()
+      return args
+    }
+
     /**
      * 组装 `xy_copy_plan` 的参数（纯数据，不含业务规则）。
      * 价格原样传「元」字符串：浮点乘 100 会出精度问题，转分交给 host 侧解析。
@@ -323,6 +365,69 @@ window.__ModuleLoader__.load({
           '写操作门禁：导入登录态、入队发布走 ask；dry-run 与 xy_copy_plan 只读放行。实时状态在「诊断」页。真机校准通过前，任何路径都不会声称「发布成功」。'))
     }
 
+    /** 「自动发布」会话视图（conversation.view）：草稿集 → 校验 → 组 xy_publish_batch 参数。纯 UI，不联网、不执行写操作。 */
+    function PublishBatchView() {
+      const [draftText, setDraftText] = React.useState('')
+      const [mode, setMode] = React.useState('dry-run')
+      const [accountId, setAccountId] = React.useState('')
+      const [generated, setGenerated] = React.useState(null)
+      const results = parseDraftLines(draftText)
+      const invalid = results.filter(result => !result.ok)
+      const valid = results.filter(result => result.ok)
+      const ready = valid.length >= 2 && invalid.length === 0
+      const blocked = results.length === 0 ? '先粘贴至少 2 条合法草稿'
+        : invalid.length > 0 ? '有 ' + String(invalid.length) + ' 行校验不通过，先修好再生成'
+          : '至少 2 条合法草稿才能生成（现在 ' + String(valid.length) + ' 条）'
+      const request = buildPublishBatchArguments(mode, results, accountId)
+      const update = setter => value => { setter(value); setGenerated(null) }
+      return h('div', { style: S.page },
+        h('div', { style: S.header }, h('div', { style: S.logo }, '🐟'),
+          h('div', null, h('div', { style: S.title }, '自动发布'),
+            h('div', { style: S.subtitle }, '批量入队 → daemon 串行执行；面板只组参数，不执行写操作'))),
+        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '流水线'),
+          h('div', { style: S.grid }, ...PIPELINE_STEPS.map(step => h(Card, { key: step.title, title: step.title, value: step.value })))),
+        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '草稿集'),
+          h('div', { style: S.sectionHint }, '每行一条：内联 JSON 对象，或草稿 .json 文件路径（由 host 侧读取）。price 单位是分。'),
+          h('textarea', {
+            value: draftText, rows: 6, 'data-role': 'draft-input',
+            placeholder: '每行一条草稿：{"title":"...","price":990,"images":["D:/pics/1.jpg"]} 或 D:/drafts/note.json',
+            onChange: event => update(setDraftText)(event.target.value),
+            style: { ...S.input, ...S.textarea },
+          }),
+          h('div', { style: S.sectionHint }, '示例：' + DRAFT_EXAMPLE)),
+        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '发布前校验'),
+          h('div', { style: S.sectionHint }, '类目矩阵：' + CATEGORY_MATRIX),
+          ...results.map(result => h('div', { key: String(result.index), style: S.cmdRow, 'data-role': 'draft-check', 'data-ok': result.ok },
+            h('span', { style: S.cmdLabel }, '第 ' + String(result.index + 1) + ' 行'),
+            h('span', { style: result.ok ? S.okText : S.badText }, result.message))),
+          h('div', { style: S.sectionHint }, '已通过 ' + String(valid.length) + ' 条 / 未通过 ' + String(invalid.length) + ' 条；至少 2 条合法草稿才能生成。')),
+        h('div', { style: S.section },
+          h('div', { style: S.fieldRow }, h('div', { style: S.field },
+            h('span', { style: S.fieldLabel }, '模式'),
+            h('div', { style: S.chipRow }, ...['dry-run', 'enqueue'].map(value => h('button', {
+              key: value, type: 'button', 'data-role': 'publish-mode', 'aria-pressed': value === mode,
+              title: value === 'dry-run' ? '只填表、不点提交' : '入队后由 daemon 执行，需要审批门禁',
+              onClick: () => update(setMode)(value),
+              style: value === mode ? { ...S.chip, ...S.chipActive } : S.chip,
+            }, value === 'dry-run' ? 'dry-run（只填表）' : 'enqueue（入队，走审批）')))),
+          h('label', { style: S.field }, h('span', { style: S.fieldLabel }, '账号（可选）'),
+            h('input', {
+              type: 'text', value: accountId, placeholder: 'daemon 账号 id，默认唯一账号',
+              onChange: event => update(setAccountId)(event.target.value), style: S.input,
+            }))),
+          h('div', { style: S.buttonRow },
+            h('button', {
+              type: 'button', 'data-role': 'publish-batch-submit', disabled: !ready,
+              title: ready ? '组装 xy_publish_batch 参数 JSON' : blocked,
+              onClick: () => setGenerated(request), style: ready ? S.primary : S.button,
+            }, '生成批量发布请求'),
+            h('span', { style: S.sectionHint }, '生成的 JSON 交给 agent 调 xy_publish_batch。'))),
+        generated === null ? null : h('div', { style: S.preview },
+          h('div', { style: S.sectionTitle }, 'xy_publish_batch 参数已就绪'),
+          h('pre', { style: S.pre, 'data-role': 'publish-request' }, JSON.stringify(generated, null, 2))),
+        h('div', { style: S.note }, '面板不执行发布：命令由 agent 调 xy_publish_batch / CLI 执行 —— 执行与 UI 解耦'))
+    }
+
     /** 行内样式表：跟随 DSH 主题变量，不引入样式文件（bundle 纯净度门禁不允许跨插件取值）。 */
     const S = {
       page: { padding: '32px', maxWidth: '860px', margin: '0 auto', color: 'var(--dsw-alias-label-primary)' },
@@ -372,9 +477,75 @@ window.__ModuleLoader__.load({
       cmdCode: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '12px',
         background: 'var(--dsw-alias-bg-l2)', borderRadius: '4px', padding: '2px 6px', wordBreak: 'break-all' },
       note: { marginTop: '24px', fontSize: '13px', lineHeight: '22px', color: 'var(--dsw-alias-label-secondary)' },
+      textarea: { width: '100%', boxSizing: 'border-box', resize: 'vertical', marginTop: '8px',
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+      okText: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' },
+      badText: { fontSize: '12px', color: 'var(--dsw-alias-label-danger, #c0392b)' },
       code: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '12px',
         background: 'var(--dsw-alias-bg-l2)', borderRadius: '4px', padding: '1px 5px' },
     }
+
+    /** 账号模块的三张来源卡：都是 daemon/host 侧动作，面板只解释怎么触发。 */
+    const ACCOUNT_SOURCES = [
+      {
+        title: '导入登录态',
+        value: '从本机 Chrome 读 cookie',
+        hint: 'Chrome 需带 --remote-debugging-port 启动；会加密写凭据，工具执行前要人工确认。',
+      },
+      {
+        title: '扫码登录',
+        value: 'npm run daemon:login',
+        hint: '打开闲鱼登录页等扫码；unb 与 _m_h5_tk 齐备才算成功（默认等 180s）。',
+      },
+      {
+        title: '凭据存储',
+        value: '加密落盘',
+        hint: 'Windows 走 DPAPI；daemon 只在执行时解密，插件与 UI 都拿不到 cookie 明文。',
+      },
+    ]
+
+    /** 账号模块的已知边界：写清「面板看到的是什么、过期怎么处理」，避免被当成实时登录态。 */
+    const ACCOUNT_NOTES = [
+      '摘要字段只有 id / 最后更新 / 登录态字段数 / 是否可写（unb + _m_h5_tk 齐备）；任何 cookie 值都不出 daemon 进程。',
+      '_m_h5_tk 约 2 小时过期：过期后写操作报 AUTH_EXPIRED；重新导入或扫码即可刷新（mtop 响应带新 token 时 daemon 也会自动续期）。',
+      '导入与扫码都是写操作（写加密凭据），走 ask 门禁；本面板只读，不联网、不调 daemon。',
+    ]
+
+    /**
+     * 「账号」会话视图（conversation.view）：登录态来源 + 只读摘要入口 + 已知边界。
+     * 面板不碰凭据、不发请求：cookie 只在 daemon 进程里解密，UI 侧将来要用也得先补 host rpc 通道（见页脚）。
+     */
+    function AccountView() {
+      return h('div', { style: S.page },
+        h('div', { style: S.header }, h('div', { style: S.logo }, '👤'),
+          h('div', null,
+            h('div', { style: S.title }, '账号管理'),
+            h('div', { style: S.subtitle }, '登录态来源、只读摘要与刷新方式；面板不读 cookie、不联网'))),
+        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '登录态怎么进来'),
+          h('div', { style: S.grid },
+            ...ACCOUNT_SOURCES.map(source => h(Card, { key: source.title, title: source.title, value: source.value, hint: source.hint })))),
+        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '看当前账号'),
+          h('div', { style: S.sectionHint }, '面板不执行工具：下面这些交给 agent 调，摘要在对话里返回。'),
+          h('div', { style: S.cmdRow },
+            h('span', { style: S.cmdLabel }, '只读摘要'), h('code', { style: S.cmdCode }, 'xy_accounts_list'),
+            h('span', { style: S.sectionHint }, '账号 id / 更新于 / 字段数 / 是否可写')),
+          h('div', { style: S.cmdRow },
+            h('span', { style: S.cmdLabel }, '导入登录态（需确认）'), h('code', { style: S.cmdCode }, 'xy_import_account')),
+          h('div', { style: S.cmdRow },
+            h('span', { style: S.cmdLabel }, '队列概览里也能看到'), h('code', { style: S.cmdCode }, 'xy_status'),
+            h('span', { style: S.sectionHint }, 'accounts 是启动时快照，导入/扫码后 daemon 会刷新'))),
+        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '已知边界'),
+          ...ACCOUNT_NOTES.map(note => h('div', { key: note, style: S.sectionHint }, '· ' + note))),
+        h('div', { style: S.note },
+          '下一步（未做）：面板里直接点「导入 / 扫码」需要 client→host 的 rpc 通道（host 侧 rpc.handle(\'/bigfish\') + 客户端轮询），采用前先写 ADR；在那之前按钮只出现在工具审批里。'))
+    }
+
+    /** 顶部 tab 的模块清单：一项 = 一个 conversation.view tab + 一个面板。
+     *  插件入口只在侧边栏；顶部 tab 只承载「模块工作台」，加模块就在这一行追加，面板之间互不依赖。 */
+    const VIEW_MODULES = [
+      { id: 'bigfish-publish', order: 20, label: '🐟 自动发布', View: PublishBatchView },
+      { id: 'bigfish-account', order: 30, label: '👤 账号', View: AccountView },
+    ]
 
     /**
      * 浏览器侧插件入口：注册侧边栏栏位与同名主面板。
@@ -390,6 +561,16 @@ window.__ModuleLoader__.load({
         label: 'BigFish 闲鱼运营',
       }, BigFishIcon))
       ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: 'bigfish' }, BigFishPanel))
+      // 会话顶部 tab 栏是 list 插槽：id 必须给，order 决定顺序，label 也接受字符串。
+      // 每个模块一个 tab（模块清单见 VIEW_MODULES）；插件入口仍只在侧边栏，不占顶部。
+      for (const module of VIEW_MODULES) {
+        ctx.slots.inject('conversation.view', () => ctx.slots.register({
+          name: 'conversation.view',
+          id: module.id,
+          order: module.order,
+          label: module.label,
+        }, module.View))
+      }
     }
 
     return { apply, inject: ['slots'] }

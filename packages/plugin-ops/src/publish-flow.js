@@ -48,14 +48,15 @@ export async function healthNote(client) {
 }
 
 /**
- * 入队发布。本地先把能被 daemon 执行器拒绝的草稿挡掉，避免任务进去才 failed。
+ * 单条入队的校验与载荷拼装。批量发布也复用这里：单条与批量必须共用同一份
+ * title/quantity/accountId 校验和 payload 形状，否则两条路径迟早漂移
+ * （例如批量漏校验 title，任务入队后必然 failed）。
  *
- * @param {Record<string, unknown>} args - 工具参数。
+ * @param {Record<string, unknown>} args - 工具参数；批量只传 accountId。
  * @param {object} draft - validatePublishDraft 的结果。
- * @param {{client: object, formatTask: (task: object) => string}} deps - 依赖注入。
- * @returns {Promise<string[]>} 输出行。
+ * @returns {{kind: string, dedupeKey: string, payload: object}} daemon /tasks 的入队体。
  */
-export async function enqueuePublish(args, draft, deps) {
+export function buildPublishEnqueueInput(args, draft) {
   if (draft.title === '') {
     throw new DaemonError('VALIDATION', '入队发布要求草稿 title 非空：在草稿文件里补上 title 再试')
   }
@@ -67,7 +68,7 @@ export async function enqueuePublish(args, draft, deps) {
     throw new DaemonError('VALIDATION', '入队发布必须给 accountId：daemon 按账号载入登录态，这也是防发错号的依据')
   }
   const dedupeKey = typeof args.dedupeKey === 'string' && args.dedupeKey !== '' ? args.dedupeKey : draftDedupeKey(draft)
-  const task = await deps.client.enqueue({
+  return {
     kind: 'publish',
     dedupeKey,
     payload: {
@@ -79,11 +80,28 @@ export async function enqueuePublish(args, draft, deps) {
       // 草稿里显式给了分类就一起入队：否则 daemon 侧只能靠页面 AI 识别，
       // 识别到网页端不支持的类目会在提交时失败。
       ...(draft.category === undefined ? {} : { category: draft.category }),
+      // 地址与包邮必须一起入队：队列任务执行时 daemon 没有草稿文件可读，
+      // 少了 address，「必填项预检」必然 VALIDATION（宝贝所在地为空），任务只会 failed。
+      ...(draft.shipping === undefined ? {} : { shipping: draft.shipping }),
+      ...(draft.address === undefined ? {} : { address: draft.address }),
     },
-  })
+  }
+}
+
+/**
+ * 入队发布。本地先把能被 daemon 执行器拒绝的草稿挡掉，避免任务进去才 failed。
+ *
+ * @param {Record<string, unknown>} args - 工具参数。
+ * @param {object} draft - validatePublishDraft 的结果。
+ * @param {{client: object, formatTask: (task: object) => string}} deps - 依赖注入。
+ * @returns {Promise<string[]>} 输出行。
+ */
+export async function enqueuePublish(args, draft, deps) {
+  const input = buildPublishEnqueueInput(args, draft)
+  const task = await deps.client.enqueue(input)
   return [
     '已入队：' + deps.formatTask(task),
-    '幂等键：' + dedupeKey + '（同一份草稿重复调用只会留一条任务）',
+    '幂等键：' + input.dedupeKey + '（同一份草稿重复调用只会留一条任务）',
     '⚠ 队列发布只有 daemon 以 BF_PUBLISH_SUBMIT=1 启动才会真提交；默认会以 UNSUPPORTED 失败并转 needs_review，不会假装发布成功。',
     '真机校准仍建议先跑 dry-run：' + buildPublishCommand({
       draftPath: args.draftPath,

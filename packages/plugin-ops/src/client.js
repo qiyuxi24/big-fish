@@ -119,6 +119,8 @@ export function createDaemonClient(options) {
     getTask: (id) => request(`/tasks/${encodeURIComponent(id)}`),
     taskAction: (id, action, body = {}) => request(`/tasks/${encodeURIComponent(id)}/${action}`, { method: 'POST', body }),
     listItems: () => request('/items'),
+    // 只读摘要：账号 id / 更新时间 / 字段数 / 是否可用，不含任何 cookie 值。
+    listAccounts: () => request('/accounts'),
     // 登录态导入是写操作（落加密凭据），插件侧门禁会先拦一次人工确认。
     importAccount: (input = {}) => request('/accounts/import', { method: 'POST', body: input }),
   }

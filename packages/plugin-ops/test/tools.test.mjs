@@ -12,11 +12,11 @@ function findTool(tools, name) {
   return tool
 }
 
-test('注册 10 个 xy_ 工具，schema 形态合法', () => {
+test('注册 12 个 xy_ 工具，schema 形态合法', () => {
   const tools = buildTools({ client: createFakeClient({}), config })
   assert.deepEqual(tools.map((tool) => tool.name).sort(), [
-    'xy_copy_plan', 'xy_daemon_health', 'xy_import_account', 'xy_items_list', 'xy_ping',
-    'xy_publish_draft', 'xy_status', 'xy_task_action', 'xy_task_enqueue', 'xy_tasks_list',
+    'xy_accounts_list', 'xy_copy_plan', 'xy_daemon_health', 'xy_import_account', 'xy_items_list', 'xy_ping',
+    'xy_publish_batch', 'xy_publish_draft', 'xy_status', 'xy_task_action', 'xy_task_enqueue', 'xy_tasks_list',
   ])
   for (const tool of tools) {
     assert.equal(tool.parameters.type, 'object')
@@ -27,6 +27,33 @@ test('注册 10 个 xy_ 工具，schema 形态合法', () => {
   const enqueue = findTool(tools, 'xy_task_enqueue')
   assert.deepEqual(enqueue.parameters.required, ['kind', 'dedupeKey'])
   assert.deepEqual(findTool(tools, 'xy_task_action').parameters.properties.action.enum, ['ack', 'fail', 'release'])
+  const batch = findTool(tools, 'xy_publish_batch')
+  assert.deepEqual(batch.parameters.properties.mode.enum, ['dry-run', 'enqueue'])
+  assert.deepEqual(batch.parameters.anyOf, [{ required: ['drafts'] }, { required: ['draftPaths'] }])
+  assert.equal(batch.parameters.properties.maxItems.maximum, 20)
+  // 批量最多 20 条串行入队，单条 daemon 超时 15s，工具总超时必须比单条工具宽。
+  assert.ok(batch.timeoutMs > 25_000)
+})
+
+test('xy_accounts_list 空库/可用/损坏三种文案', async () => {
+  const empty = findTool(buildTools({ client: createFakeClient({ listAccounts: [] }), config }), 'xy_accounts_list')
+  assert.match((await empty.execute({}, {})).text, /还没有可用账号/)
+  assert.match((await empty.execute({}, {})).text, /xy_import_account/)
+
+  const accounts = [
+    { accountId: '2206569289277', updatedAt: 1_700_000_000_000, savedFieldCount: 18, ready: true, unb: '2206569289277', ageMs: 120_000 },
+    { accountId: 'legacy', updatedAt: 1_700_000_000_000, savedFieldCount: 2, ready: false, ageMs: 3 * 3600_000 },
+    { accountId: 'broken-one', updatedAt: 0, savedFieldCount: 0, ready: false, ageMs: 0, broken: true, brokenReason: '凭据文件无法读取或解密（STORAGE）' },
+  ]
+  const tool = findTool(buildTools({ client: createFakeClient({ listAccounts: accounts }), config }), 'xy_accounts_list')
+  const text = (await tool.execute({}, {})).text
+  assert.match(text, /共 3 个账号/)
+  assert.match(text, /2206569289277 \| ✅ 可写/)
+  assert.match(text, /2 分钟前/)
+  assert.match(text, /legacy \| ⚠️ 不可写/)
+  assert.match(text, /3 小时前/)
+  assert.match(text, /broken-one \| ❌ 凭据损坏/)
+  assert.match(text, /AUTH_EXPIRED/)
 })
 
 test('xy_status 把队列与熔断渲染成人话', async () => {
@@ -162,6 +189,15 @@ test('xy_publish_draft 入队前挡住缺 accountId / quantity / 非法 JSON', a
   assert.match(withQuantity.text, /quantity/)
   const broken = await toolFor('{not json').execute({ draftPath: 'a.json' }, {})
   assert.match(broken.text, /合法 JSON/)
+})
+
+test('xy_publish_batch 走 dry-run 计划表，不调 daemon', async () => {
+  const client = createFakeClient({})
+  const tool = findTool(buildTools({ client, config }), 'xy_publish_batch')
+  const value = await tool.execute({ drafts: [validDraft, { ...validDraft }] }, {})
+  assert.match(value.text, /批量发布计划：dry-run/)
+  assert.match(value.text, /#2 \[skipped-duplicate\]/)
+  assert.equal(client.calls.length, 0)
 })
 
 test('xy_copy_plan 给出注入后的提示词，且完全不碰 daemon', async () => {

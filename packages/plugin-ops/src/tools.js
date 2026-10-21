@@ -10,6 +10,7 @@
  *
  * @module @bigfish/plugin-ops/tools
  */
+import { runBatch } from './batch.js'
 import { DaemonError } from './client.js'
 import { CONDITIONS, COPY_STYLE_IDS, planCopy } from './copy.js'
 import { loadPublishDraft } from './draft.js'
@@ -43,7 +44,8 @@ function textTool(spec) {
     name,
     description,
     parameters,
-    timeoutMs: 25_000,
+    // 默认 25s 覆盖单条 daemon 调用（15s 超时 + 余量）；批量工具在 spec 里显式放宽。
+    timeoutMs: spec.timeoutMs ?? 25_000,
     output: {
       schema: OUTPUT_SCHEMA,
       render: (_args, value) => [{ type: 'text', text: String(value?.text ?? '') }],
@@ -111,6 +113,42 @@ function readImportedAccount(value) {
   }
 }
 
+/** 宽化 daemon 的账号摘要；单条结构不对就跳过（列表里一条坏数据不该让整块不可用）。 */
+function readAccountSummary(value) {
+  if (value === null || typeof value !== 'object') return undefined
+  const record = value
+  if (typeof record.accountId !== 'string' || record.accountId === '') return undefined
+  return {
+    accountId: record.accountId,
+    updatedAt: typeof record.updatedAt === 'number' ? record.updatedAt : 0,
+    savedFieldCount: typeof record.savedFieldCount === 'number' ? record.savedFieldCount : 0,
+    ready: record.ready === true,
+    ageMs: typeof record.ageMs === 'number' ? record.ageMs : 0,
+    broken: record.broken === true,
+    ...(typeof record.brokenReason === 'string' ? { brokenReason: record.brokenReason } : {}),
+    ...(typeof record.unb === 'string' ? { unb: record.unb } : {}),
+  }
+}
+
+/** 毫秒 → 人类可读的「多久以前」；只看量级，不追求精确。 */
+function formatAge(ageMs) {
+  const minutes = Math.floor(ageMs / 60_000)
+  if (minutes < 1) return '刚刚'
+  if (minutes < 60) return minutes + ' 分钟前'
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return hours + ' 小时前'
+  return Math.floor(hours / 24) + ' 天前'
+}
+
+/** 人类可读的账号一行摘要。 */
+function formatAccountLine(account) {
+  if (account.broken) return account.accountId + ' | ❌ 凭据损坏：' + (account.brokenReason ?? '无法读取')
+  const head = account.accountId + ' | ' + (account.ready ? '✅ 可写' : '⚠️ 不可写（缺 unb 或 _m_h5_tk）')
+  const detail = [account.savedFieldCount + ' 字段', '更新于 ' + formatAge(account.ageMs)]
+  if (account.unb !== undefined) detail.push('unb=' + account.unb)
+  return head + ' | ' + detail.join(' | ')
+}
+
 /** epoch ms → 本地 'YYYY-MM-DD HH:mm:ss'；非法值原样显示，不为展示抛错。 */
 function formatTime(ms) {
   if (typeof ms !== 'number' || !Number.isFinite(ms)) return String(ms)
@@ -168,6 +206,27 @@ export function buildTools(deps) {
       parameters: NO_PARAMS,
       async handler() {
         return formatStatus(await client.status())
+      },
+    }),
+    textTool({
+      name: 'xy_accounts_list',
+      description: '列出 daemon 凭据库里的账号（只读摘要：账号 id、最后更新时间、登录态字段数、是否具备写操作所需的 unb+_m_h5_tk）。不含任何 cookie 明文。用于回答"现在有几个号、哪个号登录态过期了"。',
+      parameters: NO_PARAMS,
+      async handler() {
+        const raw = await client.listAccounts()
+        const accounts = Array.isArray(raw) ? raw.map(readAccountSummary).filter(account => account !== undefined) : []
+        if (accounts.length === 0) {
+          return [
+            '凭据库里还没有可用账号。',
+            '导入：xy_import_account（从带 --remote-debugging-port 的 Chrome 读登录态，需人工确认）',
+            '扫码：在仓库里跑 npm run daemon:login（打开登录页等扫码）',
+          ].join('\n')
+        }
+        const lines = ['共 ' + accounts.length + ' 个账号：', ...accounts.map(formatAccountLine)]
+        if (accounts.some(account => !account.ready && !account.broken)) {
+          lines.push('⚠️ 有账号登录态不完整：_m_h5_tk 约 2h 过期，过期后写操作会 AUTH_EXPIRED；重新导入或扫码即可刷新。')
+        }
+        return lines.join('\n')
       },
     }),
     textTool({
@@ -328,6 +387,26 @@ export function buildTools(deps) {
           return [summary, '', ...lines].join('\n')
         }
         return [summary, '', ...dryRunLines(args, draft), '', await healthNote(client)].join('\n')
+      },
+    }),
+    textTool({
+      name: 'xy_publish_batch',
+      description: '批量发布：一次性校验多条草稿并逐条入队（自动发布的批量入口）。默认 dry-run（与 xy_publish_draft 一致）：只输出逐条计划（幂等键/标题/价格/状态），不碰 daemon 写队列；mode=enqueue 才逐条写 daemon 队列（写操作，需人工确认；daemon 以 BF_PUBLISH_SUBMIT=1 启动才会逐条真提交）。同一批里内容相同的草稿只入队一次；单条非法不拖垮整批。',
+      parameters: {
+        type: 'object',
+        properties: {
+          drafts: { type: 'array', maxItems: 20, items: { type: 'object', additionalProperties: true }, description: '内联草稿对象数组；与 draftPaths 至少给一个，可同时给。' },
+          draftPaths: { type: 'array', maxItems: 20, items: { type: 'string', minLength: 1 }, description: '草稿 JSON 文件路径数组；与 drafts 至少给一个，可同时给。' },
+          accountId: { type: 'string', minLength: 1, maxLength: 64, description: '发布账号 id；mode=enqueue 必填，dry-run 可选。' },
+          mode: { type: 'string', enum: ['dry-run', 'enqueue'], description: 'dry-run（默认）只出计划；enqueue 才写 daemon 队列。' },
+          maxItems: { type: 'integer', minimum: 1, maximum: 20, description: '本批最多处理多少条，默认 20（上限 20）。' },
+        },
+        anyOf: [{ required: ['drafts'] }, { required: ['draftPaths'] }],
+        additionalProperties: false,
+      },
+      timeoutMs: 60_000,
+      async handler(args) {
+        return runBatch(args, { client, readDraftFile: deps.readDraftFile })
       },
     }),
   ]

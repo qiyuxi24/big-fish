@@ -105,12 +105,18 @@ function mountPanel() {
   const { ctx, registered } = createFakeCtx()
   exports.apply(ctx)
   const Panel = registered[1].component
+  const View = registered[2].component
   return {
     loaded,
     Panel,
+    View,
     render() {
       loaded.react.__hooks.index = 0
       return Panel()
+    },
+    renderView() {
+      loaded.react.__hooks.index = 0
+      return View({})
     },
   }
 }
@@ -137,17 +143,16 @@ test('factory 懒执行：模块体只登记 factory，不提前 require react',
   assert.equal(exports.inject[0], 'slots')
 })
 
-test('apply 通过 inject 注册侧边栏栏位与同名主面板', () => {
+test('apply 通过 inject 注册侧边栏栏位、主面板与两个会话顶部 tab 视图', () => {
   const { registrations, require } = loadBundle()
   const exports = registrations[0].factory(require)
   const { ctx, registered, injected } = createFakeCtx()
   exports.apply(ctx)
 
-  assert.equal(injected.length, 2)
-  assert.equal(injected[0], 'sidebar.panellist')
-  assert.equal(injected[1], 'main')
-  assert.equal(registered.length, 2)
-  const [panelRow, mainPanel] = registered
+  // 插件入口只在侧边栏；顶上每个模块一个 conversation.view（现在：自动发布、账号）。
+  assert.deepEqual(injected, ['sidebar.panellist', 'main', 'conversation.view', 'conversation.view'])
+  assert.equal(registered.length, 4)
+  const [panelRow, mainPanel, publishTab, accountTab] = registered
   // 注意：对象是在 vm 沙箱里造的，原型不同，不能用 deepStrictEqual 直接比整个对象。
   assert.equal(panelRow.definition.name, 'sidebar.panellist')
   assert.equal(panelRow.definition.id, 'bigfish')
@@ -155,8 +160,37 @@ test('apply 通过 inject 注册侧边栏栏位与同名主面板', () => {
   assert.equal(panelRow.definition.label, 'BigFish 闲鱼运营')
   assert.equal(mainPanel.definition.name, 'main')
   assert.equal(mainPanel.definition.key, 'bigfish')
+  // conversation.view 是 list 插槽：name/id 必填，order 决定 tab 顺序，label 收字符串。
+  assert.equal(publishTab.definition.name, 'conversation.view')
+  assert.equal(publishTab.definition.id, 'bigfish-publish')
+  assert.equal(publishTab.definition.order, 20)
+  assert.equal(publishTab.definition.label, '🐟 自动发布')
+  assert.equal(accountTab.definition.name, 'conversation.view')
+  assert.equal(accountTab.definition.id, 'bigfish-account')
+  assert.equal(accountTab.definition.order, 30)
+  assert.equal(accountTab.definition.label, '👤 账号')
   assert.equal(typeof panelRow.component, 'function')
   assert.equal(typeof mainPanel.component, 'function')
+  assert.equal(typeof publishTab.component, 'function')
+  assert.equal(typeof accountTab.component, 'function')
+})
+
+test('账号 tab 面板只读：讲清登录态来源与只读工具，不带任何 cookie 值', () => {
+  const { registrations, require } = loadBundle()
+  const exports = registrations[0].factory(require)
+  const { ctx, registered } = createFakeCtx()
+  exports.apply(ctx)
+  const AccountPanel = registered[3].component
+  const text = toText(AccountPanel({}))
+  // 说明「账号从哪里来」「用哪个工具看」
+  assert.match(text, /账号管理/)
+  assert.match(text, /导入登录态/)
+  assert.match(text, /npm run daemon:login/)
+  assert.match(text, /xy_accounts_list/)
+  assert.match(text, /xy_import_account/)
+  // 面板不读凭据：不出现「登录态/凭据明文」这类值
+  assert.match(text, /不读 cookie/)
+  assert.equal(/cookie=|unb=\d|_m_h5_tk=/i.test(text), false)
 })
 
 test('侧边栏图标渲染 🐟，选中态与未选中态透明度不同', () => {
@@ -289,6 +323,120 @@ test('面板内嵌的风格表与 src/copy.js 权威定义不漂移', () => {
   assert.deepEqual(options.map((option) => option.id), COPY_STYLES.map((style) => style.id))
   assert.deepEqual(options.map((option) => option.label), COPY_STYLES.map((style) => style.label))
   assert.deepEqual(options.map((option) => option.summary), COPY_STYLES.map((style) => style.summary))
+})
+
+test('「自动发布」视图：标题、流水线四步、草稿集与类目矩阵都在', () => {
+  const { renderView } = mountPanel()
+  const tree = renderView()
+  const text = toText(tree)
+  for (const expected of [
+    '自动发布',
+    '批量入队 → daemon 串行执行；面板只组参数，不执行写操作',
+    '流水线',
+    '1 草稿集',
+    '标题 / 文案 / 图片 / 价格 / 成色',
+    '2 文案与图片',
+    '3 批量入队',
+    '幂等 dedupeKey，重复草稿自动跳过',
+    '4 daemon 发布',
+    '单账号串行 CDP；每步截图，失败进待审',
+    '草稿集',
+    '发布前校验',
+    '✅ 电子资料 / 学习笔记 / 课业本；❌ 教材教辅 / 语言与兴趣培训 / 学习资料定制 / 文学 / 考研咨询（网页端不支持发布）',
+    '面板不执行发布：命令由 agent 调 xy_publish_batch / CLI 执行 —— 执行与 UI 解耦',
+  ]) {
+    assert.ok(text.includes(expected), '自动发布视图缺少：' + expected)
+  }
+  const textarea = collectByType(tree, 'textarea')[0]
+  assert.equal(textarea.props['data-role'], 'draft-input')
+  assert.match(toText(tree), /price 单位是分/)
+})
+
+test('草稿集逐行解析：非法 JSON、缺字段、非 .json 路径都报出来', () => {
+  const { renderView } = mountPanel()
+  collectByType(renderView(), 'textarea')[0].props.onChange({
+    target: {
+      value: [
+        '{"title":"笔记","price":990,"images":["D:/pics/1.jpg"]}',
+        '{bad json}',
+        '{"title":"缺图","price":990}',
+        'D:/drafts/note.json',
+        '随便一行',
+      ].join('\n'),
+    },
+  })
+  const tree = renderView()
+  const rows = collectByType(tree, 'div').filter((node) => node.props['data-role'] === 'draft-check')
+  assert.equal(rows.length, 5)
+  const messages = rows.map((node) => toText(node))
+  assert.match(messages[0], /格式通过/)
+  assert.match(messages[1], /JSON 不合法/)
+  assert.match(messages[2], /缺 images/)
+  assert.match(messages[3], /路径条目（host 侧读取，面板不校验内容）/)
+  assert.match(messages[4], /既不是内联 JSON 对象，也不是 \.json 路径/)
+  assert.deepEqual(rows.map((node) => node.props['data-ok']), [true, false, false, true, false])
+})
+
+test('至少 2 条合法草稿才启用「生成批量发布请求」，产出 xy_publish_batch 参数', () => {
+  const { renderView } = mountPanel()
+  let tree = renderView()
+  const submit = () => collectByType(tree, 'button').find((node) => node.props['data-role'] === 'publish-batch-submit')
+  const typeDrafts = (value) => {
+    collectByType(tree, 'textarea')[0].props.onChange({ target: { value } })
+    tree = renderView()
+  }
+
+  assert.equal(submit().props.disabled, true)
+  assert.match(submit().props.title, /先粘贴至少 2 条合法草稿/)
+
+  typeDrafts('{"title":"A","price":100,"images":["D:/a.jpg"]}')
+  assert.equal(submit().props.disabled, true)
+  assert.match(submit().props.title, /至少 2 条合法草稿才能生成（现在 1 条）/)
+
+  typeDrafts([
+    '{"title":"A","price":100,"images":["D:/a.jpg"]}',
+    '{"title":"B","price":200,"images":["D:/b.jpg"]}',
+    'D:/drafts/C.json',
+  ].join('\n'))
+  assert.equal(submit().props.disabled, false)
+  submit().props.onClick()
+  tree = renderView()
+  const request = JSON.parse(toText(collectByType(tree, 'pre')[0]))
+  assert.equal(request.mode, 'dry-run')
+  assert.deepEqual(request.draftPaths, ['D:/drafts/C.json'])
+  assert.deepEqual(request.drafts.map((draft) => draft.title), ['A', 'B'])
+  assert.equal(Object.prototype.hasOwnProperty.call(request, 'accountId'), false)
+
+  // 任何输入变化都撤销已生成的 JSON，避免拿着旧参数去执行。
+  collectByType(tree, 'button').find((node) => node.props['data-role'] === 'publish-mode' && toText(node) === 'enqueue（入队，走审批）').props.onClick()
+  tree = renderView()
+  assert.equal(collectByType(tree, 'pre').length, 0)
+  assert.equal(submit().props.disabled, false)
+
+  collectByType(tree, 'input').find((node) => node.props.placeholder === 'daemon 账号 id，默认唯一账号').props.onChange({ target: { value: 'acc-1' } })
+  tree = renderView()
+  submit().props.onClick()
+  tree = renderView()
+  const enqueued = JSON.parse(toText(collectByType(tree, 'pre')[0]))
+  assert.equal(enqueued.mode, 'enqueue')
+  assert.equal(enqueued.accountId, 'acc-1')
+})
+
+test('有校验不通过的行时按钮保持禁用，不静默丢草稿', () => {
+  const { renderView } = mountPanel()
+  collectByType(renderView(), 'textarea')[0].props.onChange({
+    target: {
+      value: [
+        '{"title":"A","price":100,"images":["D:/a.jpg"]}',
+        '{"title":"B","price":200,"images":["D:/b.jpg"]}',
+        '随便一行',
+      ].join('\n'),
+    },
+  })
+  const tree = renderView()
+  const submit = collectByType(tree, 'button').find((node) => node.props['data-role'] === 'publish-batch-submit')
+  assert.equal(submit.props.disabled, true)
+  assert.match(submit.props.title, /有 1 行校验不通过，先修好再生成/)
 })
 
 test('bundle 不写死 daemon 地址以外的环境值，也不访问 document/localStorage/fetch', () => {
