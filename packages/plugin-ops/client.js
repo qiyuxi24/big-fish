@@ -28,7 +28,7 @@ window.__ModuleLoader__.load({
     const STATUS_CARDS = [
       { title: '登录态导入', value: 'xy_import_account', hint: '从本机 Chrome 读 cookie → daemon 加密落盘；写操作走人工审批' },
       { title: '发布通道', value: '默认 dry-run', hint: '只填表、不点提交；真提交需 daemon 设 BF_PUBLISH_SUBMIT=1' },
-      { title: 'daemon', value: '127.0.0.1:47001 · 本地常驻', hint: '面板不联网；在线状态用 xy_ping / xy_status 读' },
+      { title: 'daemon', value: '127.0.0.1:47001 · 前台进程', hint: '需手动 npm run daemon 起、关终端即停；面板不联网，在线状态用 xy_ping / xy_status 读' },
     ]
 
     /** 面板上的按钮都只能看（原因见 BUTTON_NOTE）。 */

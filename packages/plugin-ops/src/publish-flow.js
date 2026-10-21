@@ -102,7 +102,7 @@ export async function enqueuePublish(args, draft, deps) {
   return [
     '已入队：' + deps.formatTask(task),
     '幂等键：' + input.dedupeKey + '（同一份草稿重复调用只会留一条任务）',
-    '⚠ 队列发布只有 daemon 以 BF_PUBLISH_SUBMIT=1 启动才会真提交；默认会以 UNSUPPORTED 失败并转 needs_review，不会假装发布成功。',
+    '⚠ 队列发布只有 daemon 以 BF_PUBLISH_SUBMIT=1 启动才会真提交；默认会以 UNSUPPORTED 直接失败（failed，不是 needs_review），不会假装发布成功。',
     '真机校准仍建议先跑 dry-run：' + buildPublishCommand({
       draftPath: args.draftPath,
       accountId: args.accountId,
