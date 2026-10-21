@@ -111,8 +111,13 @@ export function tokenMatches(expected: string, given: string | undefined): boole
 /**
  * 读取并解析 JSON 请求体。
  * 超过 limit 抛 VALIDATION + details.httpStatus=413；超过硬上限直接断开连接。
+ * allowEmpty=true 时空请求体返回 {}（扫码登录这类「全部参数可选」的端点允许不传 body）。
  */
-export async function readJsonBody(req: IncomingMessage, limit: number = MAX_BODY_BYTES): Promise<unknown> {
+export async function readJsonBody(
+  req: IncomingMessage,
+  limit: number = MAX_BODY_BYTES,
+  allowEmpty: boolean = false,
+): Promise<unknown> {
   const chunks: Buffer[] = []
   let total = 0
   let exceeded = false
@@ -142,7 +147,10 @@ export async function readJsonBody(req: IncomingMessage, limit: number = MAX_BOD
     })
   }
   const text = Buffer.concat(chunks).toString('utf8')
-  if (text.trim().length === 0) fail('VALIDATION', '请求体不能为空')
+  if (text.trim().length === 0) {
+    if (allowEmpty) return {}
+    fail('VALIDATION', '请求体不能为空')
+  }
   try {
     return JSON.parse(text) as unknown
   } catch {
@@ -176,6 +184,16 @@ export function optionalBoolean(source: Record<string, unknown>, key: string, wh
   const value = source[key]
   if (value === undefined) return undefined
   if (typeof value !== 'boolean') fail('VALIDATION', what + ' 的 ' + key + ' 必须是布尔值')
+  return value
+}
+
+/** 取可选正整数（超时毫秒、条数这类）；出现了就必须是 ≥1 的安全整数。 */
+export function optionalPositiveInt(source: Record<string, unknown>, key: string, what: string): number | undefined {
+  const value = source[key]
+  if (value === undefined) return undefined
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    fail('VALIDATION', what + ' 的 ' + key + ' 必须是正整数')
+  }
   return value
 }
 

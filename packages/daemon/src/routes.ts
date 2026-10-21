@@ -21,10 +21,12 @@ import type {
   TaskState,
 } from '@bigfish/core'
 import {
+  MAX_BODY_BYTES,
   asRecord,
   ok,
   optionalBoolean,
   optionalPort,
+  optionalPositiveInt,
   optionalString,
   readJsonBody,
   requiredString,
@@ -34,9 +36,13 @@ import {
 } from './http.ts'
 import type { RedactFn } from './http.ts'
 import type { ImportAccountInput, ImportedAccount } from './accounts.ts'
+import type { LoginInput, LoginResult } from './login.ts'
 
 /** 账号导入能力的注入签名；未注入时路由返回 UNSUPPORTED（HTTP 500）。 */
 export type ImportAccountHandler = (input: ImportAccountInput) => Promise<ImportedAccount>
+
+/** 扫码登录能力的注入签名；未注入时 POST /accounts/login 返回 UNSUPPORTED。 */
+export type LoginAccountHandler = (input: LoginInput) => Promise<LoginResult>
 
 /** 一次请求的处理上下文：路由参数、URL、队列与时钟都在这里。 */
 export interface RouteContext {
@@ -51,6 +57,8 @@ export interface RouteContext {
   worker: (() => WorkerCounts) | undefined
   /** 账号导入能力；未注入时 POST /accounts/import 返回 UNSUPPORTED。 */
   importAccount: ImportAccountHandler | undefined
+  /** 扫码登录能力；未注入时 POST /accounts/login 返回 UNSUPPORTED。 */
+  loginAccount: LoginAccountHandler | undefined
   now: () => number
   startedAt: number
   version: string
@@ -96,6 +104,7 @@ const ROUTES: readonly Route[] = [
   { method: 'GET', pattern: /^\/health\/?$/, handler: healthHandler, public: true },
   { method: 'GET', pattern: /^\/status\/?$/, handler: statusHandler },
   { method: 'POST', pattern: /^\/accounts\/import\/?$/, handler: importAccountHandler },
+  { method: 'POST', pattern: /^\/accounts\/login\/?$/, handler: loginAccountHandler },
   { method: 'GET', pattern: /^\/tasks\/?$/, handler: listTasksHandler },
   { method: 'POST', pattern: /^\/tasks\/?$/, handler: enqueueHandler },
   { method: 'GET', pattern: /^\/tasks\/([^/]+)\/?$/, handler: getTaskHandler },
@@ -180,6 +189,36 @@ async function healthHandler(ctx: RouteContext): Promise<void> {
 
 async function statusHandler(ctx: RouteContext): Promise<void> {
   await sendJson(ctx.res, 200, ok(buildStatus(ctx)), ctx.redact)
+}
+
+/**
+ * 扫码登录：打开闲鱼登录页并等用户扫码，读到 cookie 后落加密凭据。
+ * 请求体可空（全部参数可选）；长轮询期间用 AbortSignal 响应客户端断开，不阻塞事件循环。
+ * 调用方的 HTTP 超时必须大于 timeoutMs（默认 180s）：DaemonClient 默认 15s，直接调会先超时。
+ * 这是写操作（落加密凭据），插件侧必须走审批门禁。
+ */
+async function loginAccountHandler(ctx: RouteContext): Promise<void> {
+  const login = ctx.loginAccount ?? fail('UNSUPPORTED', 'daemon 未注入扫码登录能力')
+  const body = asRecord(await readJsonBody(ctx.req, MAX_BODY_BYTES, true), '扫码登录请求体')
+  const input: LoginInput = {}
+  const accountId = optionalString(body, 'accountId', '扫码登录请求体')
+  if (accountId !== undefined) input.accountId = accountId
+  const port = optionalPort(body, 'port', '扫码登录请求体')
+  if (port !== undefined) input.port = port
+  const timeoutMs = optionalPositiveInt(body, 'timeoutMs', '扫码登录请求体')
+  if (timeoutMs !== undefined) input.timeoutMs = timeoutMs
+  const controller = new AbortController()
+  // 客户端提前断开（用户关页面/超时撤销）时立刻中止等待，否则会有一个悬挂的扫码轮询。
+  const onClose = (): void => {
+    controller.abort()
+  }
+  ctx.res.once('close', onClose)
+  try {
+    const result = await login({ ...input, signal: controller.signal })
+    await sendJson(ctx.res, 200, ok(result), ctx.redact)
+  } finally {
+    ctx.res.off('close', onClose)
+  }
 }
 
 /**

@@ -12,6 +12,7 @@
     "typecheck": "node scripts/typecheck.mjs",
     "daemon": "node packages/daemon/src/cli.ts",
     "daemon:import-account": "node packages/daemon/src/cli.ts import-account",
+    "daemon:login": "node packages/daemon/src/cli.ts login",
     "daemon:publish": "node packages/daemon/src/cli.ts publish",
     "dsh:dump": "node scripts/dsh-dump.mjs",
     "dsh:dev": "node scripts/dsh-dev.mjs",

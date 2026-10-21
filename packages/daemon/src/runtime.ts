@@ -24,6 +24,7 @@ import type {
 } from '@bigfish/core'
 
 import { importAccountFromChrome } from './accounts.ts'
+import { loginAndSave } from './login.ts'
 import { createExecutors } from './executors.ts'
 import type { OperationPort } from './executors.ts'
 import type { ExecutorDeps } from './executor.ts'
@@ -148,6 +149,15 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
           // /status 的账号列表是启动时快照；导入后立刻刷新，概览面板才不会显示旧列表。
           await refreshAccounts()
           return imported
+        },
+        // 扫码登录与导入共用 CredentialStore，只是多了「开页面 + 等扫码」的轮询。
+        loginAccount: async (input) => {
+          const logged = await loginAndSave(
+            { credentials, ...(options.now === undefined ? {} : { now: options.now }) },
+            input,
+          )
+          await refreshAccounts()
+          return logged
         },
         ...(options.version === undefined ? {} : { version: options.version }),
       })
