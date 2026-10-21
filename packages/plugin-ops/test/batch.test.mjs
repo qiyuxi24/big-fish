@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { buildTools } from '../src/tools.js'
 import {
   DEFAULT_MAX_ITEMS,
+  DEFAULT_PUBLISH_MIN_INTERVAL_MS,
   MAX_ITEMS_LIMIT,
   formatBatchResult,
   normalizeBatchArgs,
@@ -11,6 +12,9 @@ import {
 import { draftDedupeKey, validatePublishDraft } from '../src/draft.js'
 import { DaemonError } from '../src/client.js'
 import { createFakeClient } from './helpers.mjs'
+
+// 让默认 pacing 可预测：测试进程不继承外部配置（显式用例会自己传 minIntervalMs）。
+delete process.env.BF_PUBLISH_MIN_INTERVAL_MS
 
 const config = { daemonUrl: 'http://127.0.0.1:47001', tokenPath: '/tmp/daemon.token' }
 const validDraft = { title: '测试商品', desc: '描述 A', priceCents: 1990, images: ['D:\\pics\\a.png'] }
@@ -92,16 +96,17 @@ test('enqueue：逐条调 daemon 入队，payload 与幂等键按单条口径，
   const text = value.text
   const enqueues = client.calls.filter((call) => call.method === 'enqueue')
   assert.equal(enqueues.length, 2, '批内重复的第三条不应重复入队')
-  assert.deepEqual(enqueues[0].args[0], {
-    kind: 'publish',
-    dedupeKey: keyOf(validDraft),
-    payload: { accountId: 'acc-1', title: '测试商品', desc: '描述 A', priceCents: 1990, images: ['D:\\pics\\a.png'] },
-  })
-  assert.deepEqual(enqueues[1].args[0], {
-    kind: 'publish',
-    dedupeKey: keyOf(otherDraft),
-    payload: { accountId: 'acc-1', title: '另一个商品', desc: '描述 B', priceCents: 2990, images: ['/abs/b.png'] },
-  })
+  const firstInput = enqueues[0].args[0]
+  assert.equal(firstInput.kind, 'publish')
+  assert.equal(firstInput.dedupeKey, keyOf(validDraft))
+  assert.deepEqual(firstInput.payload, { accountId: 'acc-1', title: '测试商品', desc: '描述 A', priceCents: 1990, images: ['D:\\pics\\a.png'] })
+  // enqueue 入队体带账号级预约时间（availableAt），同账号第二条自动错开一个最小间隔。
+  assert.equal(Number.isSafeInteger(firstInput.availableAt), true)
+  const secondInput = enqueues[1].args[0]
+  assert.equal(secondInput.kind, 'publish')
+  assert.equal(secondInput.dedupeKey, keyOf(otherDraft))
+  assert.deepEqual(secondInput.payload, { accountId: 'acc-1', title: '另一个商品', desc: '描述 B', priceCents: 2990, images: ['/abs/b.png'] })
+  assert.equal(secondInput.availableAt, firstInput.availableAt + DEFAULT_PUBLISH_MIN_INTERVAL_MS)
   assert.match(text, /#1 \[queued\] drafts\[0\].*task=abcdef01…/)
   assert.match(text, /#3 \[skipped-duplicate\]/)
   assert.ok(text.includes('合计：入队 2 / 跳过重复 1 / 非法 0 / 失败 0'))

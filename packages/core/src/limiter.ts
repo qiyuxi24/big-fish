@@ -132,6 +132,61 @@ function sumCost(entries: readonly WindowEntry[]): number {
   return total
 }
 
+/** 发布账号级最小间隔默认值（毫秒）。
+ *
+ * 为什么是 180s：真机实测同账号 15s 内连发第二件就被风控（docs/module-architecture.md §5.1），
+ * 而唯一已有的节流是写桶 1 次/60s——60s 仍会踩线。180s 给风控模型留出「同一账号两次发布
+ * 互不相邻」的观察窗口，同时 20 条批量仍能在一小时内排完，不至于慢到不可用。
+ */
+export const DEFAULT_PUBLISH_MIN_INTERVAL_MS = 180_000
+
+/** 允许配置的下限：再小就退化成 60s 写桶，失去账号级 pacing 的意义。 */
+export const PUBLISH_MIN_INTERVAL_MIN_MS = 30_000
+
+/** 允许配置的上限（1 小时）：再大批量发布实际上不可用，宁可让调用方改配置。 */
+export const PUBLISH_MIN_INTERVAL_MAX_MS = 3_600_000
+
+/**
+ * 解析 BF_PUBLISH_MIN_INTERVAL_MS（数字或数字字符串）。
+ *
+ * 非法值回退默认值而不是抛错：这是「节奏」参数，配错了应该退回安全默认，
+ * 而不是让 daemon/插件起不来或整批发布失败；超出上下限则夹到边界值。
+ */
+export function resolvePublishMinIntervalMs(raw?: unknown): number {
+  const fallback = DEFAULT_PUBLISH_MIN_INTERVAL_MS
+  let value = fallback
+  if (typeof raw === 'number') value = raw
+  else if (typeof raw === 'string' && raw.trim() !== '') value = Number(raw)
+  if (!Number.isFinite(value)) value = fallback
+  return Math.min(PUBLISH_MIN_INTERVAL_MAX_MS, Math.max(PUBLISH_MIN_INTERVAL_MIN_MS, Math.trunc(value)))
+}
+
+/**
+ * 账号级发布排队：给出下一个可执行时间。
+ *
+ * 语义：同一账号的 N 条发布分别落在 now、now+interval、now+2*interval……
+ * previousAt 是「该账号上一条已排定的 availableAt」；没有上一条就用 now。
+ * 用 max(now, ...) 是为了批量里混入别的账号/人工插入时，不会把时间排到过去。
+ */
+export function nextPublishAvailableAt(
+  previousAt: number | undefined,
+  nowMs: number,
+  intervalMs: number,
+): number {
+  if (!Number.isSafeInteger(nowMs) || nowMs < 0) {
+    fail('VALIDATION', 'nowMs 必须是 >=0 的整数毫秒: ' + String(nowMs))
+  }
+  if (!Number.isSafeInteger(intervalMs) || intervalMs < 1) {
+    fail('VALIDATION', 'intervalMs 必须是正整数毫秒: ' + String(intervalMs))
+  }
+  if (previousAt === undefined) return nowMs
+  if (!Number.isSafeInteger(previousAt) || previousAt < 0) {
+    fail('VALIDATION', 'previousAt 必须是 >=0 的整数毫秒: ' + String(previousAt))
+  }
+  return Math.max(nowMs, previousAt + intervalMs)
+}
+
+
 function toSnapshot(entries: readonly WindowEntry[], rule: BucketRule, nowMs: number): BucketSnapshot {
   const used = sumCost(entries)
   const oldest = entries[0]

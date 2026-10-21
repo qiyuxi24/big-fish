@@ -20,6 +20,57 @@ export const DEFAULT_MAX_ITEMS = 20
 /** 单批上限：一次工具调用最多 20 条，避免模型一口气塞几百条。 */
 export const MAX_ITEMS_LIMIT = 20
 
+/**
+ * 账号级最小发布间隔默认值（毫秒）。
+ *
+ * 为什么是 180s：真机实测同账号 15s 内连发第二件就被风控（docs/module-architecture.md §5.1），
+ * 而 daemon 写桶只有 1 次/60s——60s 仍会踩线。180s 让同账号两次发布互不相邻，
+ * 20 条批量仍能在一小时内排完，不至于慢到不可用。可用 BF_PUBLISH_MIN_INTERVAL_MS 覆盖。
+ */
+export const DEFAULT_PUBLISH_MIN_INTERVAL_MS = 180_000
+/** 配置下限：再小就退化成写桶的 60s，失去账号级 pacing 的意义。 */
+export const PUBLISH_MIN_INTERVAL_MIN_MS = 30_000
+/** 配置上限（1 小时）：再大批量发布实际上不可用，宁可让调用方改配置。 */
+export const PUBLISH_MIN_INTERVAL_MAX_MS = 3_600_000
+
+/**
+ * 解析 BF_PUBLISH_MIN_INTERVAL_MS（数字或数字字符串）。
+ *
+ * 非法值回退默认值而不是抛错：这是「节奏」参数，配错了应退回安全默认，
+ * 而不是让整批入队失败；超出上下限夹到边界值（与 core 的 resolvePublishMinIntervalMs 同口径）。
+ *
+ * @param {unknown} raw - 环境变量原值（未知类型）。
+ * @returns {number} 夹取后的整数毫秒。
+ */
+export function resolvePublishMinIntervalMs(raw) {
+  let value = DEFAULT_PUBLISH_MIN_INTERVAL_MS
+  if (typeof raw === 'number') value = raw
+  else if (typeof raw === 'string' && raw.trim() !== '') value = Number(raw)
+  if (!Number.isFinite(value)) value = DEFAULT_PUBLISH_MIN_INTERVAL_MS
+  return Math.min(PUBLISH_MIN_INTERVAL_MAX_MS, Math.max(PUBLISH_MIN_INTERVAL_MIN_MS, Math.trunc(value)))
+}
+
+/**
+ * 账号级排队：给同一账号的第 N 条任务算出最早执行时间（now、now+interval、now+2*interval…）。
+ *
+ * 用 max(now, …) 是因为前一条的预约时间可能已经过期（比如批量生成计划后又等了一会儿），
+ * 这时应从当前时刻重新起算，绝不能排到过去。
+ *
+ * @param {number | undefined} previousAt - 该账号上一条已排定的 availableAt。
+ * @param {number} nowMs - 当前时间（整数毫秒）。
+ * @param {number} intervalMs - 最小间隔（整数毫秒，>0）。
+ * @returns {number} 本条任务的 availableAt。
+ */
+export function nextPublishAvailableAt(previousAt, nowMs, intervalMs) {
+  if (!Number.isSafeInteger(nowMs) || nowMs < 0) throw invalid('nowMs 必须是 >=0 的整数毫秒: ' + String(nowMs))
+  if (!Number.isSafeInteger(intervalMs) || intervalMs < 1) throw invalid('intervalMs 必须是正整数毫秒: ' + String(intervalMs))
+  if (previousAt === undefined) return nowMs
+  if (!Number.isSafeInteger(previousAt) || previousAt < 0) {
+    throw invalid('previousAt 必须是 >=0 的整数毫秒: ' + String(previousAt))
+  }
+  return Math.max(nowMs, previousAt + intervalMs)
+}
+
 function invalid(message) {
   return new DaemonError('VALIDATION', message)
 }
@@ -162,9 +213,23 @@ function readTaskId(task) {
   return typeof id === 'string' && id.length > 0 ? id.slice(0, 8) + '…' : '?'
 }
 
-/** daemon /tasks 的入队体已经由 buildPublishEnqueueInput 拼好，这里只负责调用与错误归类。 */
-async function enqueueItems(items, client) {
+/**
+ * daemon /tasks 的入队体已经由 buildPublishEnqueueInput 拼好，这里负责账号级 pacing、
+ * 调用与错误归类。
+ *
+ * 为什么在入队侧排队、而不是 daemon 执行侧：daemon 的 /tasks 已支持 availableAt，
+ * 且队列租约会跳过未到点的任务（不需要新增状态或定时器）；在批量这一层算时间还能让
+ * 整批的预约顺序对模型可见。代价是：直接 POST /tasks（不带 availableAt）的单个任务
+ * 不受这里约束，仍靠 daemon 写桶 1 次/60s 兜底——批量是并发发布的主要入口，先覆盖批量。
+ *
+ * @param {object[]} items - prepareBatch 产出的条目（原地改写 status/taskId/availableAt）。
+ * @param {object} client - daemon 客户端。
+ * @param {{now: () => number, minIntervalMs: number}} options - 注入时钟与最小间隔。
+ */
+async function enqueueItems(items, client, options) {
   let abortedReason
+  /** @type {Map<string, number>} 账号 → 该账号上一条已排定的 availableAt。 */
+  const lastByAccount = new Map()
   for (const item of items) {
     if (item.status !== 'ok') continue
     if (abortedReason !== undefined) {
@@ -172,8 +237,15 @@ async function enqueueItems(items, client) {
       continue
     }
     try {
-      const task = await client.enqueue(item.input)
-      Object.assign(item, { status: 'queued', taskId: readTaskId(task) })
+      const accountId = item.input?.payload?.accountId
+      if (typeof accountId !== 'string' || accountId === '') {
+        throw new DaemonError('VALIDATION', '入队体缺少 accountId，无法做账号级发布 pacing')
+      }
+      const availableAt = nextPublishAvailableAt(lastByAccount.get(accountId), options.now(), options.minIntervalMs)
+      const task = await client.enqueue({ ...item.input, availableAt })
+      // 只有入队成功才占用该账号的预约位：被 daemon 拒绝的条目没有真正排队，不该推迟下一条。
+      lastByAccount.set(accountId, availableAt)
+      Object.assign(item, { status: 'queued', taskId: readTaskId(task), availableAt })
     } catch (error) {
       if (!(error instanceof DaemonError)) throw error
       Object.assign(item, { status: 'failed', reason: '[' + error.code + '] ' + error.message })
@@ -258,11 +330,18 @@ export function formatBatchResult(plan) {
  * 工具入口：先做纯本地计划，enqueue 模式再逐条入队，最后统一渲染。
  *
  * @param {Record<string, unknown>} args - 工具参数。
- * @param {{client: object, readDraftFile?: Function}} deps - daemon 客户端与可注入的文件读取。
+ * @param {{client: object, readDraftFile?: Function, now?: () => number, minIntervalMs?: unknown}} deps
+ *   daemon 客户端、可注入的文件读取 / 时钟 / 最小间隔（后两者用于测试与显式覆盖）。
  * @returns {Promise<string>} 模型可读文本。
  */
 export async function runBatch(args, deps) {
   const plan = await prepareBatch(args, deps)
-  if (plan.mode === 'enqueue') await enqueueItems(plan.items, deps.client)
+  if (plan.mode === 'enqueue') {
+    const minIntervalMs = resolvePublishMinIntervalMs(
+      deps.minIntervalMs === undefined ? process.env.BF_PUBLISH_MIN_INTERVAL_MS : deps.minIntervalMs,
+    )
+    const now = typeof deps.now === 'function' ? deps.now : Date.now
+    await enqueueItems(plan.items, deps.client, { now, minIntervalMs })
+  }
   return formatBatchResult(plan)
 }
