@@ -95,10 +95,10 @@ openStore({path: config.dbPath})
 ### 6.1 发布通道（P1.2）
 
 - 路线决策见 [ADR 0003](adr/0003-publish-automation-path.md)：确定性 CDP 步骤机是唯一写路径，LLM 不进热路径（只做校准、异常归因、人工兜底）；mtop 发布接口保留为将来加速通道；DSH 内置浏览器（bsk）只作兜底演示。
-- 步骤机在 `packages/channel-cdp/src/publish.ts`：打开发布页 → 上传图片（`DOM.setFileInputFiles`，等价用户选文件）→ 文案（contenteditable 富文本走 `Input.insertText`，普通 input 走原生 setter + `input` 事件）→ 计价方式 → 价格/包邮 → 地址（真实键入触发联想，按候选匹配点选并回读表单）→ 必填项预检（分类/所在地非空）→ 提交并验证（URL 含 item id 或页面出现「发布成功」，超时按失败处理且**不自动重试**）。dry-run 在提交前收尾。
+- 步骤机在 `packages/channel-cdp/src/publish.ts`：打开发布页 → 上传图片（`DOM.setFileInputFiles`，等价用户选文件）→ 文案（contenteditable 富文本走 `Input.insertText`，普通 input 走原生 setter + `input` 事件）→ [选择分类（草稿给 `category` 时才跑）] → 计价方式 → 价格/包邮 → 地址（真实键入触发联想，按候选匹配点选并回读表单）→ 必填项预检（分类/所在地非空）→ 提交并验证（URL 含 item id 或页面出现「发布成功」，超时按失败处理且**不自动重试**）。dry-run 在提交前收尾。
 - 装配在 `packages/daemon/src/cdp-publish.ts`：先读浏览器 `unb` 与期望账号比对（防发错号）→ 开空白页跑步骤机 → 返回 `{accountId,dryRun,itemId?,href,durationMs}`。
 - 安全默认：`submit=false` 只填表不点提交；CLI `npm run daemon:publish -- --draft <草稿.json> [--account-id X] [--chrome-port 9222] [--screenshots dir] [--submit]`，daemon 队列发布要 `BF_PUBLISH_SUBMIT=1`（另支持 `BF_CHROME_PORT`、`BF_PUBLISH_SCREENSHOTS`，截图默认 `<data-dir>/publish-shots`）。
-- 选择器与填写方式已在真机（Edge 155 + CDP 9222，测试小号）校准，dry-run 全绿；选择器表、填写原理与**地址搜索限制**见 §13。校准的是「填表」，**真提交链路仍未验证**：首次真发布需用户明确同意，并用测试小号。
+- 选择器与填写方式已在真机（Edge 155 + CDP 9222，测试小号）校准；选择器表、填写原理、**地址搜索限制**、**类目支持矩阵**与**真发布记录**见 §13。2026-10-21 已用测试小号完成一次端到端真发布（itemId `1093817229436`），见 §13.5。
 
 ## 7. IPC 契约
 
@@ -158,8 +158,8 @@ queued ──lease──► leased ──ack──► done
 
 ## 11. 现在明确未实现（不要当 bug）
 
-- **publish 真提交未验证**：步骤机与 daemon 通道都在（§6.1），选择器已在真机 dry-run 校准（§13）；但「点提交 → 成功页 → 解析 item id」整条真发布链路还没跑过，真提交需 `BF_PUBLISH_SUBMIT=1` 且必须由用户点头。
-- **发布页地址搜索在 CDP 下不可用**：联想请求能发出、响应正常，但候选列表 UI 不回显，只能从「常用地址/附近地址」里匹配（§13.3）。类目依赖页面 AI 识别，工具不自动选。
+- **publish 真提交只跑通过一次（测试小号）**：步骤机与 daemon 通道都在（§6.1），2026-10-21 首次真发布成功（§13.5）；但它只验证了「网页端支持的类目」这一条路径，真提交仍需 `BF_PUBLISH_SUBMIT=1` 且必须由用户点头。**别把「跑通过一次」当成「可以批量发」。**
+- **发布页地址搜索在 CDP 下不可用**：联想请求能发出、响应正常，但候选列表 UI 不回显，只能从「常用地址/附近地址」里匹配（§13.3）。类目：页面 AI 自动识别，草稿可用 `category` 覆盖；**网页端只支持部分类目**，不支持时立即失败（§13.5）。
 - **IM 与发货未实现**：`deliver/reply` 是 `UNSUPPORTED`；协议与规则已写进 [im-protocol.md](im-protocol.md)、[delivery-rules.md](delivery-rules.md)。
 - **登录态导入有 CLI/HTTP/插件工具三个入口，缺扫码**：`npm run daemon:import-account`（或 `POST /accounts/import`、插件 `xy_import_account`）从带 `--remote-debugging-port=9222` 的浏览器读 cookie 写入 `CredentialStore`（AES-256-GCM）；accountId 默认取 cookie 里的 `unb`。手机扫码登录还没做。
 - **侧边栏面板是静态占位 + 只读快照**：DSH 宿主没有「面板按钮调 host 工具」的公开 API，面板按钮刻意 disabled；实时推送要等 daemon 常驻方案。
@@ -222,4 +222,26 @@ npm run daemon:publish -- --draft '.scratch/pubtest/draft-addr.json' \
 
 步骤：打开发布页 → 上传图片（2 张）→ 填写文案 → 填写价格（1 元包邮）→ 填写地址（目标「西北工业大学长安校区星天苑」→ 候选「…东祥路1号西北工业大学长安校区」→ 表单回读一致）→ dry-run 收尾，`durationMs≈5.1s`，`{dryRun:true, href:"https://www.goofish.com/publish"}`，截图在 `.scratch/pubtest/shots-addr3/`（01-open / 02-images / 03-text / 05-price / 06-address / 99-dry-run）。
 
-**仍未验证**：点「发布」后的成功页与 item id 解析（`submit=true` 路径），以及真提交后的商品是否真出现在卖家主页。真发布必须用户明确同意后、用测试小号跑一次。
+### 13.5 类目下拉与网页端支持矩阵
+
+分类是 antd Select（`.ant-select-single`），不是原生 select：
+
+- 当前值在 `.ant-select-selection-item` 的 `title` 上；触发器是同一 `.ant-form-item` 里的 `.ant-select-selector`。
+- **必须用可信鼠标事件**（`Input.dispatchMouseEvent` 的 mouseMoved → mousePressed → mouseReleased 打在触发器中心）才能打开下拉；`Runtime.evaluate` 里造的 `MouseEvent` / `el.click()` 都打不开。
+- 选项是 body 级 portal 的 `.ant-select-item-option`，文本就是类目名；点选后 antd 把值写回 `.ant-select-selection-item`。
+- **网页端按类目区分可用性**：选中不支持的类目后，分类下方**立刻**出现「网页版暂不支持发布此分类，请使用闲鱼APP扫码继续发布 点击展示二维码」（不必等提交）。
+- 实测矩阵（2026-10-21，同一份「大学英语教材」草稿，页面先识别成 教材教辅）：
+  | 类目 | 网页端 |
+  | --- | --- |
+  | 电子资料、学习笔记、课业本 | ✅ 可发布 |
+  | 教材教辅、语言与兴趣培训、学习资料定制、文学/小说、考研咨询 | ❌ 提示改用 App 扫码 |
+  | 期刊/杂志、生活百科 | 未取到可信结果（两次点击未生效），**待重测** |
+- 实现：`packages/channel-cdp/src/category.ts`（`stepSelectCategory` / `readCategoryValue` / `assertCategoryPublishable` / `trustedClickAt`）。步骤顺序：等页面 AI 识别落定（避免被随后覆盖）→ 打开下拉 → 点选 `draft.category` → 回读校验 → 检查「不支持」提示；任一环节不符合就 fail-closed，**不点二维码、不退回提交去撞**。
+- 选类目后页面提示「网页版暂不支持」时抛 `VALIDATION`，文案直接给「换类目或改用 App 扫码发布」。
+
+### 13.6 首次真发布记录（成功）
+
+- 草稿：文案「学习资料电子笔记 整理好的电子版资料 / 自动化测试商品，验证完立即下架，请勿拍。」+ 2 张占位 PNG + ¥1 + 包邮 + 地点「西北工业大学长安校区星天苑」（从常用地址点选）。
+- 流程：传图 → 文案 → 等识别（学习资料定制，不支持）→ **手动选「电子资料」** → 价格/包邮 → 地址 → 点 `button[class*="publish-button"]` → URL 变为 `https://www.goofish.com/item?id=1093817229436`，页面出现「管理/下架/删除」。
+- 该次发布抓到的接口事实（mtop 发布载荷字段、poi.get 按坐标取地址、badwords 预检、kgraph.property.recommend 分类候选）记录在 `docs/p1.3-plan.md` §4 与对应抓包脚本；**daemon 侧尚未接 mtop 发布**，CDP 仍是唯一写路径（ADR 0003）。
+- 测试商品 `1093817229436` 需人工下架/删除；真提交默认仍关（`BF_PUBLISH_SUBMIT`/CLI `--submit` 才开）。
