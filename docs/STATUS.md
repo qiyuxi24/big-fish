@@ -28,7 +28,7 @@ P2 自动发货押后到发布这条线跑顺再切。
 | `publish` dry-run（填表不提交） | ✅ 真机 | 发布页 → 传 2 图 → 文案 → 选类目 → 价格/包邮 → 地址 → 必填预检 → 收尾，每步截图。**不带 category/address 时能填表但过不了提交前预检** |
 | 草稿指定类目 + 不支持即失败 | ✅ 真机 | `channel-cdp/src/category.ts`（+ `category-page.ts`）：按 `aria-controls` 绑定当前下拉、点前 `elementFromPoint` 命中测试、**不对 portal 选项 scrollIntoView**（会滚主页面导致点击落空）、连续 2 次回读一致才算选中（最多重试 3 次）；命中「网页版暂不支持」立即 `VALIDATION` |
 | 会话顶部 tab（模块切换） | ✅ 真机（桌面端 GUI 实拍） | `plugin-ops/client.js` 的 `VIEW_MODULES` 逐个注册 slot `conversation.view`：「🐟 自动发布」id `bigfish-publish` order 20、「👤 账号」id `bigfish-account` order 30。纯 UI、不联网、不执行；tab 条只在「非 blank 会话 + main=conversation」时出现；插件入口仍只在侧边栏 |
-| 账号列表摘要（`GET /accounts` / `xy_accounts_list`） | ✅ 单测（未真机） | daemon 只读摘要：accountId / updatedAt / savedFieldCount / ready（`unb`+`_m_h5_tk` 齐备）/ ageMs；单个凭据损坏标 `broken` 不拖垮整表；不带任何 cookie 值。工具只读、不挂门禁。**真实凭据目录下还没真机跑过这个接口** |
+| 账号列表摘要（`GET /accounts` / `xy_accounts_list`） | ✅ 真机 | daemon 只读摘要：accountId / updatedAt / savedFieldCount / ready（`unb`+`_m_h5_tk` 齐备）/ ageMs；单个凭据损坏标 `broken` 不拖垮整表；不带任何 cookie 值。工具只读、不挂门禁。真机：真实数据目录 `%LOCALAPPDATA%/bigfish` 下起 daemon，`GET /accounts` 200 返回 1 个账号（`ready: true`、savedFieldCount 21）；`xy_accounts_list` 仍只有单测 |
 | 批量入队 `xy_publish_batch` | ✅ 单测（未真机批量） | `plugin-ops/src/batch.js`：逐条校验 + `draftDedupeKey` 幂等 + `mode=dry-run` 默认；写类工具挂审批门禁（仅 enqueue 需确认）。缺 daemon 批次概念与 `created` 标志 |
 | 批量上架调度 | ❌ 未做 | 缺「批次 → 串行 pacing → 批次汇总」的批次层；批量只是 N 条独立 publish 任务 |
 | `deliver` 自动发货 | ❌ `UNSUPPORTED` | 规则引擎已就绪，缺订单/消息源与执行接线 |
@@ -93,11 +93,11 @@ node scripts/test-all.mjs     # 647 tests / 647 pass / 23 suites / 64 个测试�
 
 ### 4.1.2 账号模块（第二个做，只读摘要已通）
 
-**已落地（未提交）**：daemon `GET /accounts`（`packages/daemon/src/account-list.ts`）返回只读摘要 `{ accountId, updatedAt, savedFieldCount, ready, unb?, ageMs, broken?, brokenReason? }`——`unb` + `_m_h5_tk` 齐备才算 `ready`，单个凭据损坏只标 `broken` 不拖垮整表，**任何 cookie 值都不出 daemon 进程**；插件第 12 个工具 `xy_accounts_list`（只读、不挂门禁）；顶部 tab「👤 账号」= 登录态来源三张卡 + 两个工具入口 + 三条已知边界，面板不联网、不读 cookie。单测：daemon 12 例（含损坏、load 竞态、ageMs 非负、401/500）+ plugin-ops 1 例。
+**已落地（c01e86e）**：daemon `GET /accounts`（`packages/daemon/src/account-list.ts`）返回只读摘要 `{ accountId, updatedAt, savedFieldCount, ready, unb?, ageMs, broken?, brokenReason? }`——`unb` + `_m_h5_tk` 齐备才算 `ready`，单个凭据损坏只标 `broken` 不拖垮整表，**任何 cookie 值都不出 daemon 进程**；插件第 12 个工具 `xy_accounts_list`（只读、不挂门禁）；顶部 tab「👤 账号」= 登录态来源三张卡 + 两个工具入口 + 三条已知边界，面板不联网、不读 cookie。单测：daemon 12 例（含损坏、load 竞态、ageMs 非负、401/500）+ plugin-ops 1 例。
 
-**没做**：①面板里直接点「导入 / 扫码」——需要 client→host 的 rpc 通道（`ctx.connection.rpc.handle('/bigfish')` + 轮询），属灰区，采用前写 ADR；②多账号切换 / 把账号绑定到发布任务；③凭据备份与恢复；④真机验证（真实凭据目录下还没跑过 `GET /accounts`）。
+**没做**：①面板里直接点「导入 / 扫码」——需要 client→host 的 rpc 通道（`ctx.connection.rpc.handle('/bigfish')` + 轮询），属灰区，采用前写 ADR；②多账号切换 / 把账号绑定到发布任务；③凭据备份与恢复（`daemon.token` / 凭据目录的备份脚本）。
 
-**验收**：全量 647 全绿；真机跑一次 `xy_accounts_list`（daemon + 真实凭据目录），确认 ready / ageMs / broken 三种情况都对。
+**验收**：全量 647 全绿 ✅；真机 `GET /accounts`（daemon + 真实凭据目录）✅ 2026-10-21 实测 ready=true / ageMs 可用；面板内 `xy_accounts_list` 走工具层仍需在 GUI 里点一次（未做）。
 
 ### 4.2 下一步备选：P2 自动发货（等发布线跑顺再切）
 
@@ -127,7 +127,7 @@ node scripts/test-all.mjs     # 647 tests / 647 pass / 23 suites / 64 个测试�
 - **发布真机只成功过两次，都是单件、都是「学习笔记」类目**；批量发布没做过任何真机验证。任何「已稳定支持批量发布」的说法都是假的。
 - **地址搜索在 CDP 下不可用**（候选不回显），只能匹配常用/附近地址。
 - **插件层没有类型门禁**：plugin-ops / ops-bundle 是纯 JS，改动只能靠 86 个测试兜。
-- **账号模块只有单测**：`GET /accounts` / `xy_accounts_list` 没在真实凭据目录上跑过；面板内导入/扫码未做。
+- **账号面板不联网**：`GET /accounts` 已在真实凭据目录真机验证，但面板还只是静态说明 + 工具入口，没有实时数据、没有导入/扫码按钮（要 rpc 通道 + ADR）。
 - **账号风控**：遇到 `x5sec`/滑块不硬刚，停队列 + 截图 + 人工过；真人验证只用测试小号。
 - **第三方材料删除流程**：`research/repos/` 仍在，删之前必须走 AGENTS §6（列清单 → 标靶点 → 等确认），不要「facts 已吸收」就删。
 
