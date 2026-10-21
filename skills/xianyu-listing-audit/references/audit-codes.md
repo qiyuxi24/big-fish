@@ -1,6 +1,6 @@
 # 问题码与 core/policy.ts 的映射
 
-`xianyu-listing-audit` 的问题码是本仓自定的（`COPY_*` 语义），与 `PolicyIssueCode` 的对应关系如下。改任一侧时必须同步另一侧与 skill 的检查表。
+`xianyu-listing-audit` 共 **18 个问题码**：其中 **10 个沿用 `packages/core/src/policy.ts` 的 `PolicyIssueCode` 同名同义**（下表），另 **8 个为 skill 独有**（见下文）。改任一侧时必须同步另一侧与 skill 的检查表。
 
 | audit 码 | core 码 | 级别 | 来源 |
 | --- | --- | --- | --- |

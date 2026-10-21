@@ -6,25 +6,12 @@
 
 ## 0. 当前阶段
 
-P0 **已完成**：workspace 骨架 + core 契约 + daemon HTTP/队列 + plugin-ops 7 个工具，测试/类型检查/真 DSH loader 装配三项验收全绿（见 `docs/architecture.md`、ADR 0002）。
-P0.5 **已完成**：Web GUI 侧边栏栏位「BigFish 闲鱼运营」（`packages/plugin-ops/client.js`，手写 loader bundle），CDP 截图与 HMR 均已实测（见 `docs/client-plugin-sidebar.md`）。
+> **现状、能力矩阵与下一步的唯一事实源是 [`docs/STATUS.md`](docs/STATUS.md)。** 本节只留一句话状态与硬约束；不要在这里或别处重复测试数字/能力状态（历史上同一个数字出现过 6 个版本）。
 
-P1.0 **已完成**：组件拆解——`channel-mtop` / `channel-cdp` / `channel-guanjia` 三个通道包（契约与实施状态见 `docs/component-decomposition.md`）。
-
-P1.1 **已完成**：daemon 运行时装配（`runtime.ts`）+ worker 领租约执行 + 执行器能力矩阵 + `/items` 落库 + `/status` 的 accounts/circuits/worker；`probe/polish` 已接 mtop 真实通道，`publish/deliver/reply` 显式 `UNSUPPORTED`（宁可失败不留假成功）。全仓 379 tests、5 个 TS 包类型检查 0 错误，见 `docs/architecture.md`。
-
-P1.2 **已完成（含真提交）**：
-1. **登录态导入**：`npm run daemon:import-account` / `POST /accounts/import` / 插件 `xy_import_account` 从带 `--remote-debugging-port` 的浏览器读 goofish cookie → `CredentialStore` 加密落盘；accountId 默认取 `unb`。Cookie 读取按 `Storage.getCookies` → `Network.getAllCookies` 自动降级（Edge 155 已移除后者）。**扫码登录**：`npm run daemon:login` / `POST /accounts/login`（轮询 cookie，`unb` + `_m_h5_tk` 齐备才算成功，默认超时 180s）。
-2. **CDP 发布步骤机 + daemon 发布通道**：`packages/channel-cdp/src/publish.ts`（打开发布页 → 传图 → 富文本文案 → **选择分类**（`category.ts`）→ 计价 → 价格/包邮 → 地址 → 必填预检 → 提交校验）；`packages/daemon/src/cdp-publish.ts` 接到 daemon（先比对浏览器 `unb` 与期望账号，防发错号）。**默认 dry-run，只填表不提交**；队列任务只有 `BF_PUBLISH_SUBMIT=1` 才真提交。
-3. **真发布已跑通一次**：2026-10-21 用测试小号发布 itemId `1093817229436`（已下架留档），成功页 URL 带 `item?id=…`。**类目受网页端支持矩阵限制**：电子资料/学习笔记/课业本 ✅，教材教辅/语言与兴趣培训/学习资料定制/文学/考研咨询 ❌（页面会提示「网页版暂不支持发布此分类」），见 `docs/architecture.md` §13.5。发布前可先查违禁词（`mtop.taobao.idleitem.badwords.prepubcheck`）。
-4. **令牌过期自动刷新**：`_m_h5_tk` 约 2h 过期；channel-mtop 在 `FAIL_SYS_TOKEN_EXOIRED` 时用响应 Set-Cookie 合并新 token、重签重试**一次**并回写 `CredentialStore`（`onSessionUpdate`）。
-5. **取商家 ID + 全量商品**：`channel-mtop/src/user.ts`（`user.page.head` → encryptedUserId/昵称/在售数；`xyh.item.list` 分页 1..20 → 商品条目，soldPrice 元转分）。
-6. **插件侧**：9 个 `xy_*` 工具（含 `xy_import_account` / `xy_publish_draft`）与只读侧边栏面板。
-7. **文案与合规**：`skills/xianyu-listing-copy`（改写模板 + 38 违禁词 + 20 禁售类目）与 `skills/xianyu-listing-audit`（17 个审核码映射 `core/policy.ts`）；生图选型见 `docs/copywriting-and-imagegen-plan.md`。
-8. **IM 半成品**：`packages/channel-im` 帧解析/消息归一化/会话状态机已提交（32 tests），**尚未接 daemon**。
-全仓 **592 tests / 592 pass**、6 个 TS 包 tsc 0 错误。
-
-下一步（P1.3/P2）：自动发货（IM 协议 + 发货规则引擎已就绪一半）、批量上架调度、文案 skill 接进 agent 流程、channel-im 接 daemon。**未跑通的路径不得声称成功**（发布只跑通过一次，别写「已稳定支持批量发布」）。
+- **P0 → P1.2 全部完成并提交**（基线 `main @ 46823e5`，2026-10-21）：core 契约 / daemon HTTP + SQLite 队列 + worker + 执行器 / mtop 读通道（详情、擦亮、商家 + 全量商品）/ CDP cookie + 发布步骤机 / 登录态导入 + 扫码登录 + 令牌自动刷新 / 插件 9 个 `xy_*` 工具 + 只读侧边栏 / 2 个文案合规 skill / `channel-im` 解析层（未接线）。
+- **真实能力边界**：`probe`/`polish` 真通 mtop；`publish` 默认 dry-run、`BF_PUBLISH_SUBMIT=1` 才真提交，**只成功过一次**（测试小号，且受网页端类目支持矩阵限制）；`deliver`/`reply` 仍 `UNSUPPORTED`。
+- **下一步是 P2 自动发货**：P2.0 人工确认 → P2.1 IM websocket 接线 → P2.2 全自动；并行的类目矩阵 / 批量上架 / 文案 skill 接线见 `docs/STATUS.md` §4。
+- **未跑通的路径不得声称成功**（发布只跑通过一次，别写「已稳定支持批量发布」）。需要用户拍板的三件事见 `docs/STATUS.md` §4.3。
 
 ## 1. 架构不变量（违反即回退）
 
@@ -70,7 +57,7 @@ P1.2 **已完成（含真提交）**：
 - 只用**公开导出**与稳定扩展点：`ctx.tools.register / defineTool`、`ctx.on('tools/pre-execute')`、settings 卡片、cron → `agent.followup()`、client-module（GUI）、`ctx.jobs.start`。**禁止**引用 `@deepseek-ai/dsh-*` 的 `/src/*`、`/lib/*` 深层路径。
 - 当前**不声明** `peerDependencies`（离线安装解析不了 `@deepseek-ai/*`）；插件按「运行期零依赖 + 只用宿主公开扩展点」写。将来能联网安装时，再 pin 到宿主版本（当前 `0.1.5-rc.2`）并全量回归。
 - `cordis.patch.yml` 里一行是**整段替换 `config`**：覆盖时必须把该行原有 key 全部重述（上游注释明确写了这点）。
-- 工具命名统一 `xy_` 前缀；**写类工具必须挂审批门禁**（`tools/pre-execute` 返回 ask/deny），读类可自动放行。
+- 工具命名统一 `xy_` 前缀；**写闲鱼 / 写磁盘 / 写外部系统的工具必须挂审批门禁**（`tools/pre-execute` 返回 ask/deny），读类可自动放行。**本地队列状态流转不算写外部**：`xy_task_action` 的 ack/fail/release 不挂门禁（2026-10-21 裁决；release 只影响本地队列可达性，不触达闲鱼）。
 - 长任务用 `ctx.jobs.start`，不要在工具 `execute` 里阻塞几十分钟。
 - client 侧代码与 host 侧物理隔离（两个 tsconfig 聚合），client 不得 import host 包。
 - **client bundle 是手写 loader 产物**：`window.__ModuleLoader__.load({ id: '<包名>', factory })`，
@@ -100,7 +87,7 @@ node 'C:/Users/34239/Documents/GitHub/deepseek-harness/node_modules/typescript/b
 - 一个提交一个主题；不留注释掉的代码、调试 `console.log`。
 - 分支 `feat/xxx`、`fix/xxx`；`main` 始终可构建。
 - **禁止提交**：凭据/cookie、`*.db`、`research/repos/`、`.scratch/`、构建产物、任何 > 2MB 文件（先问）。
-- **删除第三方材料（`research/repos/`、下载缓存、逆向证据）前必须**：①先列「尚未逆向完成项」清单并写进 `docs/asset-extraction.md`；②标出还没有结论的靶点（哪条调用链/哪个端点未还原）；③等用户明确确认。**「facts 已吸收」≠「逆向完成」**——2026-10-20 曾因一句「榨干后删除」把 886MB（含 3 套商业包原文件）全部 `rm -rf`，而 A/B 的核心发货、发布调用链当时并未还原；`rm -rf` 不进回收站、无 VSS 权限即不可恢复。
+- **删除第三方材料（`research/repos/`、下载缓存、逆向证据）前必须**：①先列「尚未逆向完成项」清单并写进 `docs/asset-extraction.md`；②标出还没有结论的靶点（哪条调用链/哪个端点未还原）；③等用户明确确认。**「facts 已吸收」≠「逆向完成」**——2026-10-20 曾因一句「榨干后删除」把 886MB 里的大部分（13 个开源仓库 + 雾里商业包）`rm -rf` 掉且不可恢复（只剩 A/B 两套商业包），而 A/B 的核心发货、发布调用链当时并未还原；`rm -rf` 不进回收站、无 VSS 权限即不可恢复。
 
 ## 7. 本机环境的坑（实测，非通用）
 

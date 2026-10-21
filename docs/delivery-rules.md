@@ -1,6 +1,7 @@
 # 自动发货规则引擎（P2 设计依据）
 
-> 目标：把「闲鱼自动发货助手 v4.8.2」的逆向结论落成我们自己的规则引擎设计，作为 P2「虚拟商品自动发货」的实现依据。research/repos/ 之后会删除，事实全部固化在 docs/。
+> 状态（2026-10-21）：规则引擎**已就绪**（`packages/core/src/delivery.ts`，21 个单测），但 daemon `deliver` 仍为 `UNSUPPORTED`（`operations.ts:160-166`）；当前状态见 [STATUS.md](STATUS.md)。
+> 目标：把「闲鱼自动发货助手 v4.8.2」的逆向结论落成我们自己的规则引擎设计，作为 P2「虚拟商品自动发货」的实现依据。`research/repos/` 里仍是 A/B 两套商业包（651MB，不入 git，2026-10-21 实测；开源仓库与雾里套件已删），删除须按 [AGENTS.md §6](../AGENTS.md) 前置清单：列未完成项 → 标未还原靶点 → 用户确认；事实全部固化在 docs/。
 > 上游材料：`research/notes/D-delivery.md`（275 行，带文件偏移的逆向证据）、`docs/xianyu-commercial-tools-analysis.md` §2、`research/notes/B-im.md` §2/§4。
 > 标注：✅ 证实（有静态证据/已在仓库落地）｜🟡 推测（合理推断，无直接证据）｜❓ 不可得（原工具全节加密 + 禁运行，需脱壳或抓包）。
 > 边界：只写设计与契约，不改代码；数据表为建议，落地以 core 的迁移数组为准。

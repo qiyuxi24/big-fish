@@ -1,7 +1,9 @@
 # 闲鱼自动化工具：四问调研（2026-10-20）
 
+> 📦 历史调研快照（2026-10-20）。结论已并入 [STATUS.md](STATUS.md) 与 [architecture.md](architecture.md)，保留作证据；当前状态不必读本文。
+
 > 配套文档：[xianyu-ops-agent-design.md](./xianyu-ops-agent-design.md)（架构设计）
-> 证据来源：本机已解压的 11 个仓库 `research/repos/`，笔记 `research/notes/{A-cores,B-im,C-scraping}.md`（全部带 `文件:行号`）。
+> 证据来源：研究期解压的仓库样本与商业包 `research/repos/`（2026-10-20 已删一部分；逐仓口径以 [asset-extraction.md](asset-extraction.md) §1 为准），笔记 `research/notes/{A-cores,B-im,C-scraping}.md`（全部带 `文件:行号`）。
 > 结论只对"技术是否成立"负责；涉及平台协议的部分见 Q4-1，建议不要对外售卖工具。
 
 ---

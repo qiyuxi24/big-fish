@@ -1,5 +1,7 @@
 # 工具调用失败复盘（2026-10-20）
 
+> 📦 历史调研快照（2026-10-20）。结论已并入 [STATUS.md](STATUS.md) 与 [architecture.md](architecture.md)，保留作证据；当前状态不必读本文。
+
 ## 1. 统计口径
 
 会话日志：`~/.dsh/sessions/--D-Github-big~0020fish--/<sessionId>/session.v4.jsonl.zstd`

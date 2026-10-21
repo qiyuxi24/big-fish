@@ -1,5 +1,7 @@
 # 两个闲鱼商业工具逆向分析（自动发货助手 v4.8.2 / 一键搬运助手 v2.1.9）
 
+> 📦 历史调研快照（2026-10-20）。结论已并入 [STATUS.md](STATUS.md) 与 [architecture.md](architecture.md)，保留作证据；当前状态不必读本文。
+
 > 对象：用户新加的两个 RAR，解压后位于 `research/repos/unpacked/`。
 > 方法：**只读静态分析**（objdump / strings / python 解析 xlsx·txt·mp4·PE 资源）。**全程未运行任何 exe/dll**——两者均为未签名 + VMProtect 全加密的可疑分发版，运行有盗号/木马风险。
 > 细节笔记（带偏移与复现命令）：[`research/notes/D-delivery.md`](../research/notes/D-delivery.md)（275 行）、[`research/notes/E-repost.md`](../research/notes/E-repost.md)（407 行）。

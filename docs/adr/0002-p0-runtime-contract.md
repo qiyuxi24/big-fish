@@ -47,8 +47,6 @@ P0 要证明三件事：插件能被**真的 DSH loader** 装配；daemon 能作
 
 ## 验收（当前状态）
 
-```sh
-node scripts/test-all.mjs      # 122 tests / 122 pass / 0 fail
-node scripts/typecheck.mjs     # core、daemon 通过
-node scripts/dsh-dump.mjs --smoke  # 真 loader 装配 + 7 个工具注册 + 门禁挂载
-```
+本 ADR 只锁 P0 契约（无构建、零第三方依赖、单进程测试入口、真 loader 装配）；阶段、测试数字与类型检查覆盖范围以 [`docs/STATUS.md`](../STATUS.md) 为准，本文不复制会漂移的数字。
+
+复核命令（断言结果见 STATUS.md）：`node scripts/test-all.mjs`、`node scripts/typecheck.mjs`、`node scripts/dsh-dump.mjs --smoke`。

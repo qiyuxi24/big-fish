@@ -1,5 +1,6 @@
 # 闲鱼 IM 协议事实（P1.1 资产）
 
+> 状态（2026-10-21）：`packages/channel-im` 已提交（`7a01bbf`，32 tests），但**尚未接 daemon**（无 websocket 长连/发送/鉴权握手）；本文是协议事实 + P2 设计依据，当前状态见 [STATUS.md](STATUS.md)。
 > 目标：把研究阶段从三个开源实现里读出的闲鱼 IM（钉钉 lwp 长连接）协议事实，沉淀成 P2 的 reply / deliver 执行器可以直接照做的规格。
 > 依据：`research/notes/B-im.md`（三仓只读分析，逐条带 file:line）；行号已用归档源码 `research/tmp/xianyu-*.tgz`（内存解压、只读）二次核对，仓库前缀写作 `<repo>/<相对路径>`。
 > 边界：只记录协议事实与我们自己的流程设计，**不含任何 GPL/AGPL 源码片段**。三仓全部 copyleft（见 `research/notes/B-im.md:88-91`）——协议事实不受版权保护可独立重写，但注释、轨迹 JSON、prompt 文案一律不搬。

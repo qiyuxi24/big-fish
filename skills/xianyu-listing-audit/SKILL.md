@@ -8,7 +8,7 @@ whenToUse: 草稿已写好要发布前自检、用户问"这条 listing 有什�
 
 ## 目标
 
-对一份草稿做**确定性检查**，输出问题码与修复建议。检查逻辑必须与 `packages/core/src/policy.ts` 的 `checkListing` 对齐；skill 只补文案结构类检查（四段、标签数、AI 图声明），不替代 `checkListing`。
+对一份草稿做**确定性检查**，输出问题码与修复建议。检查逻辑必须与 `packages/core/src/policy.ts` 的 `checkListing` 对齐（码名也沿用其 `PolicyIssueCode`，勿改名）；skill 只补文案结构类检查（四段、标签数、AI 图声明），不替代 `checkListing`。
 
 ## 输入
 
@@ -16,6 +16,8 @@ whenToUse: 草稿已写好要发布前自检、用户问"这条 listing 有什�
 - 可选：`marketPriceCents`、`categoryPath`、`imageMeta`（每张图的宽度/高度，用于方形判定）。
 
 ## 检查项
+
+共 **18 个问题码**：10 个与 `packages/core/src/policy.ts` 的 `PolicyIssueCode` 同名同义（error/warn 级别一致），8 个为 skill 独有的文案结构/路径校验。逐条映射见 `references/audit-codes.md`。
 
 | 码 | 级别 | 判定 |
 | --- | --- | --- |
@@ -26,7 +28,7 @@ whenToUse: 草稿已写好要发布前自检、用户问"这条 listing 有什�
 | `DESC_TOO_SHORT` | warn | `Array.from(desc.replace(/\s/g,"")).length < 30` |
 | `DESC_MISSING_PARAGRAPH` | error | `descParagraphs` 不足 4 段或有空段 |
 | `TAGS_COUNT` | warn | `tags` 不是 5 个，或有重复、格式不是 `#词` |
-| `FORBIDDEN_WORD` | error | 命中 `red-lines.md` 词表（38 条） |
+| `DESC_FORBIDDEN_WORD` | error | 描述命中 `xianyu-listing-copy/references/red-lines.md` 的违禁词（38 条，与 `FORBIDDEN_WORDS` 同源） |
 | `CATEGORY_FORBIDDEN` | error | `categoryPath` 任一段命中禁售类目（20 条） |
 | `PRICE_INVALID` | error | 不是 ≥100 的整数分 |
 | `PRICE_DEVIATION` | warn | 与 `marketPriceCents` 偏离 >70% |

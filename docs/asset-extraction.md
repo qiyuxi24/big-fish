@@ -1,12 +1,13 @@
 # 资产交接单：`research/repos/` 的复用结论与删除依据
 
+> 📦 历史调研快照（2026-10-20）。结论已并入 [STATUS.md](STATUS.md) 与 [architecture.md](architecture.md)，保留作证据；当前状态不必读本文。
+>
 > 生成：2026-10-20（P1.1 进行中）｜体积为 `du -sm research/repos/*` 实测｜星数/许可为 2026-10 实测（见 `docs/xianyu-4q-research.md:32-50`）。
 > **决策前提**：用户已定「先把前面几个仓库的价值榨干，然后删除 research/repos（≈886MB）」。
 > **本文件作用**：删除前的唯一交接单——每个来源「给了什么 → 落到本仓哪个文件 → 为什么没吸收」；以及删掉后会失效的路径清单。
 > 边界：本文件只留档，不执行删除、不改其它文件。
 >
-> **执行状态（2026-10-20 晚）**：`research/repos/`（886MB）与 `research/tmp/`（39MB 安装包缓存）已按本文 §3 删除完毕；
-> `research/` 现在只剩 `notes/`（约 124KB，证据层）。仓库总体积从 ≈930MB 降到约 2.5MB（不含 node_modules）。
+> **执行状态（2026-10-21 实测更正）**：2026-10-20 晚的 `rm -rf` 只删掉了一部分——**13 个开源仓库样本与雾里 3.20 套件（§1.2 的 C）已删除且不可恢复**。仓内**仍有 A + B 两套商业包**：`(v4.8.2)闲鱼自动发货助手.rar`（38MB）+ `unpacked/(v4.8.2)闲鱼自动发货助手`（≈100MB）、`C闲鱼一键搬运助手v2.1.9.rar`（144MB）+ `unpacked/C闲鱼一键搬运助手v2.1.9`（≈371MB）；`du -sm research/repos` 实测 **651MB**，`git ls-files research/repos` = 0 行（`.gitignore:13` 忽略），不入库。`research/notes/` 5 篇全在。**真要删除剩余 A/B，必须先按 [AGENTS.md §6](../AGENTS.md) 三步**：①列出「尚未逆向完成项」写进本文 → ②标出还没有结论的靶点（哪条调用链/哪个端点未还原）→ ③等用户明确确认。§3-§4 的删除清单与「失效引用」是**历史口径（886MB 含已删部分）**。
 
 ## 0. 结论速览
 
@@ -14,7 +15,7 @@
 - **代码可复用的只有 2 个仓库**：`xian-guanjia`（MIT，已整套移植到 `packages/channel-guanjia`）、`goofish-cli`（Apache-2.0，已移植签名/信封/关键词表/限流熔断语义）。`pilot-pro`（Apache-2.0）只取协议事实，未移植代码。
 - 其余 10 个仓库（GPL-3.0 ×1、AGPL-3.0 ×2、非商用许可 ×1、无 LICENSE ×6）**只以「事实/思路」吸收，没有一行代码进仓**。
 - 3 个商业包是**只读逆向**：未运行任何 exe/dll、未修改包内文件、未复制其代码或依赖；能力模型已改写为我们自己的设计（`docs/delivery-rules.md`、`docs/xianyu-commercial-tools-analysis.md`）。
-- 删除后**唯一不可再生的物证是偏移级逆向记录**（`research/notes/D-delivery.md`、`E-repost.md`）；要重跑必须重新拿到 38MB / 144MB / 84MB 原包。所有结论的「判据」（哪条串、哪个偏移、哪个接口）都留在这两份笔记里，够复核。
+- 一旦真的删除，**唯一不可再生的物证是偏移级逆向记录**（`research/notes/D-delivery.md`、`E-repost.md`）；要重跑必须重新拿到原包：A（38MB）、B（144MB）仍在仓内；雾里 84MB 包已于 2026-10-20 删除，只能靠 `research/notes/E-repost.md` 复核。所有结论的「判据」（哪条串、哪个偏移、哪个接口）都留在这两份笔记里，够复核。
 
 ## 1. 总表：来源 → 资产 → 已吸收去向 → 未吸收原因
 
@@ -64,7 +65,7 @@
 | ❌ 只借流程 | `XY-Agent`、`xianyu_spider`、`ai-goofish`、`xianyucaiji`（均无 LICENSE）、3 个商业闭源包 | 无许可 = 保留所有权利；商业包还叠加「疑似破解分发」的分发风险，只做行为参考 |
 | ⚠️ 待补手续 | xian-guanjia 的 MIT 原文、goofish-cli 的署名 | ① `research/repos/xian-guanjia/LICENSE` 随目录一起删除，而 MIT 要求分发时保留版权声明 ⇒ **待补**：把 LICENSE 文本 + `Copyright (c) 2025 thefreelight` 落进 `packages/channel-guanjia/`（当前只有文件头提及）；② goofish-cli 扁平副本内**无 NOTICE 文件** ⇒ Apache-2.0 §4(d) 无额外 NOTICE 义务，但建议在 `packages/channel-mtop/README.md` 保留来源段（现在只在 src 头注释）。本轮不改，交给后续「合规补手续」任务 |
 
-**删除后的许可风险**：本仓不再持有任何第三方源码副本，风险归零；残留义务仅是「已移植代码的署名/许可文本」（上表待补项）。
+**若真删除的许可风险**：本仓不再持有任何第三方源码副本，风险归零；残留义务仅是「已移植代码的署名/许可文本」（上表待补项）。
 
 ## 3. 删除清单与保留清单
 
@@ -111,7 +112,7 @@
 | `research/notes/C-scraping.md` | 3 | 「`research/repos/` 下已解压的…」 | 同上 |
 | `research/notes/D-delivery.md` | 3、29、260 | 对象路径、`ls` 命令、复现脚本变量 | 3 加「已删」，29/260 标注「历史命令，包已删」 |
 | `research/notes/E-repost.md` | 3 | 分析对象路径 | 加「已删，证据留在本文」 |
-| `AGENTS.md` | 86 | 「禁止提交 … `research/repos/`」 | 保留为历史规则即可（目录已不存在） |
+| `AGENTS.md` | 86 | 「禁止提交 … `research/repos/`」 | 保留该规则（A/B 两套商业包仍在仓、不入库，正因不入库才要一直禁提交） |
 
 > 除上述 25 处外，`docs/component-decomposition.md`、`A-cores.md`、`B-im.md` 等大量「仓库名 + 事实」引用不依赖目录存在，删除后仍可读。
 
@@ -147,14 +148,14 @@
 
 | 命令 | 结果 |
 |---|---|
-| `du -sm research/repos` | 886 |
+| `du -sm research/repos` | 886（2026-10-20 口径）；2026-10-21 实测 **651**（开源仓库与雾里包已删，余 A/B） |
 | `git ls-files research/repos \| wc -l` | 0（未入库；`.gitignore:13` 已忽略整个目录） |
-| `node scripts/test-all.mjs` | **372 tests / 372 pass / 0 fail**（2026-10-20 交付时实测；P1.1 并行任务仍在加用例，条数会涨） |
+| `node scripts/test-all.mjs` | **592 tests / 592 pass / 21 suites / 61 测试文件（约 5s）**（2026-10-21 实测；见 `docs/STATUS.md`） |
 | `node scripts/typecheck.mjs` | 本会话**无法验证**：`spawnSync node.exe EPERM`（沙箱禁止 node 子进程管道 stdio，是本机限制、非类型错误） |
-| 直接 tsc（绕开脚本） `node <DSH>/node_modules/typescript/bin/tsc -p packages/<pkg>/tsconfig.json --noEmit --typeRoots <DSH>/node_modules/@types` | core / daemon / channel-mtop / channel-cdp / channel-guanjia **5 包 0 错误** |
+| 直接 tsc（绕开脚本） `node <DSH>/node_modules/typescript/bin/tsc -p packages/<pkg>/tsconfig.json --noEmit --typeRoots <DSH>/node_modules/@types` | core / daemon / channel-mtop / channel-cdp / channel-guanjia / channel-im **6 包 0 错误**（plugin-ops / ops-bundle 是纯 ESM JS，无 tsconfig，不在类型检查覆盖内） |
 | 删后自检 | `grep -rn 'research/repos' docs/ packages/ research/notes/` 预期 25 处（§3.3 清单），逐条改成 docs 锚点 |
 | `wc -l research/notes/*.md docs/*.md docs/adr/*.md` | notes 5 篇 963 行；docs 13 篇（含 2 篇 ADR）2,250 行（2026-10-20 快照，含本文件） |
-| `ls research/repos/unpacked/` | 3 个目录：C闲鱼一键搬运助手v2.1.9、(v4.8.2)闲鱼自动发货助手、agiso-plugin |
+| `ls research/repos/unpacked/` | 2026-10-21 实测 2 个目录：C闲鱼一键搬运助手v2.1.9、(v4.8.2)闲鱼自动发货助手（agiso-plugin 随雾里套件已删） |
 
 ## 附录 B：删除动作建议（由用户执行，本任务不删）
 
@@ -163,7 +164,7 @@
 rm -rf "research/repos"
 
 # 2) 可选：顺手清掉三条「历史遗留」
-#    .gitignore:13 的 research/repos/ 条目（目录已不存在）
+#    .gitignore:13 的 research/repos/ 条目（A/B 两套商业包仍在仓、不入库，条目必须保留）
 #    .scratch/wuli/（74MB 雾里截断包前缀 + 解出的 pyc 流；gitignored，可丢）
 ```
 

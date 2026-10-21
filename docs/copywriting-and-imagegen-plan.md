@@ -1,11 +1,11 @@
 # 文案与 AI 生图方案（P1.3 提案）
 
-> 状态：提案，2026-10-21。只写可执行结论、契约与验收，不写愿景。
+> 状态：**选型方案**（2026-10-21）。只写可执行结论、契约与验收，不写愿景。**实现状态见 [STATUS.md](STATUS.md)**——文中「3 个 skill」「xy_imagegen 仅契约」等是当时的计划，勿当作现状。
 > 硬边界：daemon 不调 LLM、不调生图 API（AGENTS.md §1.1）。所有需要模型判断的步骤都在 DSH agent（skill）或插件工具侧完成；daemon 只读已落盘的草稿文件与图片路径。
 
 ## 0. 结论
 
-1. **文案**：3 个 skill 放 `skills/`，纯 JSON 进出。agent 产出发布草稿后调 `xy_publish_draft`（默认 dry-run），人工确认后才 `mode=enqueue` 入队。daemon 不感知文案从哪来。
+1. **文案**：2 个 skill 放 `skills/`（`xianyu-listing-copy` / `xianyu-listing-audit`），纯 JSON 进出。agent 产出发布草稿后调 `xy_publish_draft`（默认 dry-run），人工确认后才 `mode=enqueue` 入队。daemon 不感知文案从哪来。
 2. **生图**：首选火山方舟 **Seedream 5.0 Lite**（约 $0.035/张，中文商品图、多图参考、PNG、2K/4K）；备选阿里云百炼 **通义万相 wan2.7-image**（0.2 元/张，国内合规、异步任务）；再备 **Gemini 3 Pro Image**（约 $0.134/张，图内文字最准，但需外网）；Stability 只用于**去背景/局部重绘**；OpenAI 不作首选（价格与中文商品图无优势）；无 key 或无网时**不生成**，退回实拍——不用占位图、不用网图冒充。
 3. **合规**：主图必须实拍；AI 图只做场景/氛围/多角度示意，并在描述注明；不得使用他人商品图/买家秀；生成图不得复刻品牌 logo、IP 角色。发布前跑 `xianyu-listing-audit` + `checkListing`。
 
@@ -53,7 +53,7 @@ DSH 的 skill 发现只认**根下一层**的 `<name>/SKILL.md` 或 `<name>.md`�
 ### 2.3 改写链（6 步，输入 → 草稿）
 
 0. **归一化**：价格转整数分（≤2 位小数，禁止浮点相乘）；成色映射到 `全新/几乎全新/轻微使用痕迹/明显使用痕迹/有瑕疵`；瑕疵写成「位置 + 现象 + 实拍可证」，没有就写「无」；图片路径只做存在性/格式校验，**不由文案步骤生成**。
-1. **类目判定**：有 `categoryHint` 信 hint，并在输出里回填；没有则给 3 个候选与把握度，不猜死。发布页类目由页面 AI 识别、工具不自动选（`docs/architecture.md:162`），所以这里只做提示。
+1. **类目判定**：有 `categoryHint` 信 hint，并在输出里回填；没有则给 3 个候选与把握度，不猜死。发布页先由页面 AI 识别类目；草稿显式给 `category` 时由 `stepSelectCategory` 点选并校验（`docs/architecture.md` §13.5）。所以这里只做提示，实际选择以发布步骤机为准。
 2. **标题（≤30 字）**：公式 `[品牌/系列] + [品类词] + [核心规格/型号] + [成色或差异点]`；前 15 字放最值钱的检索词；无 emoji（`policy.ts:168` 会 warn）；无极限词；不写价格、不写「包邮」（发布页单独填）。计数用 `Array.from(title).length`，与 `checkListing` 同口径。
 3. **描述 4 段式**（段间用空行，每段 1–3 句）：
    - 第 1 段「是什么」：品牌 + 型号 + 规格 + 成色，第一句就给结论；
@@ -255,7 +255,7 @@ DSH 的 skill 发现只认**根下一层**的 `<name>/SKILL.md` 或 `<name>.md`�
 
 | 任务 | 产出 | 验收 |
 | --- | --- | --- |
-| T1 文案 skill 骨架（本次） | `skills/` 3 个 bundle + 2 个 JSON Schema + 模板/红线 | frontmatter 合法、JSON Schema 可解析、3 个 few-shot 输出符合 schema |
+| T1 文案 skill 骨架（本次） | `skills/` 2 个 bundle + 2 个 JSON Schema + 模板/红线 | frontmatter 合法、JSON Schema 可解析、3 个 few-shot 输出符合 schema |
 | T2 `xy_imagegen` + 审批门禁 | `packages/plugin-ops/src/imagegen.js`、gate 白名单、单测（假 fetch） | 无 key 返回 `UNSUPPORTED`；不打印 key；写盘路径在 `.scratch/` |
 | T3 图片尺寸探测 | `packages/core` 纯函数 + fixture 单测 | PNG/JPEG/WebP 各 1 个 fixture，宽高与方形判定正确 |
 | T4 prompt 模板与评测 | `templates.md` 生图段 + 10 条样本（数码/服饰/家居） | 人评"像实物"≥7/10，文字与水印 0 次 |

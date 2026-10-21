@@ -1,4 +1,4 @@
-# 开发环境与运行方式（P1.1）
+# 开发环境与运行方式（P1.2）
 
 ## 前置
 
@@ -14,25 +14,28 @@
 pnpm install --offline --ignore-scripts
 ```
 
-如果 `.pnpm-store` 里没有需要的包，会报 `ERR_PNPM_NO_OFFLINE_META`。运行时零第三方依赖，workspace 内各包用 `node_modules` 里的符号链接互相引用（daemon 额外依赖 `@bigfish/channel-mtop`，同样走 workspace 链接）。
+如果 `.pnpm-store` 里没有需要的包，会报 `ERR_PNPM_NO_OFFLINE_META`。运行时零第三方依赖，workspace 内各包用 `node_modules` 里的符号链接互相引用（daemon 额外依赖 `@bigfish/channel-mtop` 与 `@bigfish/channel-cdp`，同样走 workspace 链接）。
 
 ## 测试与类型检查
 
 ```sh
-node scripts/test-all.mjs                   # 全量：379 tests / 379 pass
+node scripts/test-all.mjs                   # 全量：592 tests / 592 pass（21 suites / 61 个测试文件，约 5s）
 node scripts/test-all.mjs packages/core     # 只跑某个包（按路径前缀过滤）
 node scripts/test-all.mjs integration       # 只跑跨层集成测试
 ```
 
 | 包 | 用例数 |
 | --- | --- |
-| core | 112 |
-| daemon | 69（含 5 条 runtime 全链路集成） |
-| channel-mtop | 53 |
-| channel-cdp | 49 |
+| core | 131 |
+| daemon | 142（含 5 条 runtime 全链路集成） |
+| channel-mtop | 88 |
+| channel-cdp | 86 |
 | channel-guanjia | 62 |
-| plugin-ops | 32 |
+| channel-im | 32 |
+| plugin-ops | 49 |
 | integration | 2 |
+
+- `ops-bundle` 只声明 bundle patch，无测试。口径以 `docs/STATUS.md` 为准。
 
 - 不用 `node --test`、不用 vitest：沙箱禁止 spawn，脚本在单进程里顺序 import 测试文件再由 `node:test` 汇总。
 - `scripts/typecheck.mjs` 在本沙箱会因 `spawnSync node.exe EPERM` 报错（不是类型错误）。**直跑 tsc**：
@@ -43,7 +46,7 @@ node 'C:/Users/34239/Documents/GitHub/deepseek-harness/node_modules/typescript/b
   --typeRoots 'C:/Users/34239/Documents/GitHub/deepseek-harness/node_modules/@types'
 ```
 
-把 `packages/daemon` 换成 core / channel-mtop / channel-cdp / channel-guanjia 即可逐包检查；plugin-ops 与 ops-bundle 是纯 JS，不参与类型检查。
+把 `packages/daemon` 换成 core / channel-mtop / channel-cdp / channel-guanjia / channel-im 即可逐包检查（6 个 TS 包均 0 错误）；plugin-ops 与 ops-bundle 是纯 ESM JS、没有 tsconfig，**不在类型检查覆盖内**（靠 JSDoc + 单测）。
 
 ## 起 daemon
 
@@ -128,7 +131,7 @@ node scripts/dsh-install.mjs --uninstall   # 撤销（备份文件保留）
 | daemon 起不来，退出码 1 | 端口占用 / 非回环 host / 数据目录不可写 | 看 stderr 的第一行；`--print-config` 核对路径 |
 | 插件返回 `[UNAUTHORIZED]` | token 文件缺失或路径不一致 | 核对 `--token-path` 与插件 `tokenPath` 配置 |
 | 任务一直 `failed` 且错误含 `UNSUPPORTED` | 该操作还没接通道（publish/deliver/reply） | 预期行为，见 architecture §6/§11 |
-| 任务 `failed` 且错误含 `登录态`/`AUTH_EXPIRED` | 没往凭据库写过该账号，或凭据过期 | 先用 `credentials.save()` 导入（P1.2 会有二维码入口） |
+| 任务 `failed` 且错误含 `登录态`/`AUTH_EXPIRED` | 没往凭据库写过该账号，或凭据过期 | 先跑 `npm run daemon:import-account`（从浏览器导入 cookie）或 `npm run daemon:login`（扫码登录，已实现） |
 | `ExperimentalWarning: SQLite` | `node:sqlite` 是实验 API | 正常，忽略 |
 | `bundle <url> loaded without registering "<id>"` | `client.js` 里 `__ModuleLoader__.load({id})` 与包名不一致 | id 必须等于 loader entry 包名 |
 | `layout.selectPanel: main panel "bigfish" is not registered` | 只注册了 `sidebar.panellist` 没注册 `main` | 两个插槽成对注册（见 client-plugin-sidebar.md） |

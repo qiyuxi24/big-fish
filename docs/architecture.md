@@ -1,4 +1,4 @@
-# 架构（P1.1）
+# 架构（P1.2）
 
 > 设计意图与性能预算见 [xianyu-ops-agent-design.md](xianyu-ops-agent-design.md)；组件拆解过程见 [component-decomposition.md](component-decomposition.md)。本文件只描述**当前已实现**的形态，未实现部分集中在 §11。
 
@@ -18,7 +18,7 @@
 │               worker → server                                │
 │  server.ts   HTTP 路由、鉴权、ApiResult 信封、redact          │
 │  worker.ts   租约轮询、按账号串行、失败分类与熔断            │
-│  executors.ts 六个操作的能力矩阵：校验→熔断→限流→凭据→通道   │
+│  executors.ts 五个操作的能力矩阵：校验→熔断→限流→凭据→通道   │
 │  operations.ts mtop 传输与读接口（probe/polish）             │
 │  core        队列/商品/策略/限流/熔断/凭据/脱敏/配置         │
 └──────────────────────────────────────────────────────────────┘
@@ -26,21 +26,22 @@
 
 关键点：**daemon 不调 LLM**，也不 import 任何 DSH 代码；插件不 import `@bigfish/core` 的实现，两者只靠 HTTP 契约耦合。
 
-## 2. 七个包
+## 2. 八个包
 
 | 包 | 语言 | 依赖 | 职责 |
 | --- | --- | --- | --- |
 | `packages/core` | TS | 无 | 领域类型与契约、错误、ret 风控分类、队列/存储、商品仓储、发布前策略校验、限流熔断、凭据、配置、脱敏日志 |
-| `packages/daemon` | TS | core、channel-mtop | HTTP 控制面 + CLI + 运行时装配 + worker + 执行器 + DaemonClient |
-| `packages/plugin-ops` | JS(ESM) | 无（含自带 HTTP client） | 7 个 `xy_*` 工具 + 写操作审批门禁 + 侧边栏面板 |
+| `packages/daemon` | TS | core、channel-mtop、channel-cdp | HTTP 控制面 + CLI + 运行时装配 + worker + 执行器 + DaemonClient |
+| `packages/plugin-ops` | JS(ESM) | 无（含自带 HTTP client） | 9 个 `xy_*` 工具 + 写操作审批门禁 + 侧边栏面板 |
 | `packages/ops-bundle` | JS | plugin-ops | 只声明 `dsh.bundle.patch`，把插件塞进 profile |
 | `packages/channel-mtop` | TS | core | mtop 通道：签名、信封、cookie 归一、ret 分类、读接口与发布接口的 data 构造（**纯函数，无状态**） |
 | `packages/channel-cdp` | TS | core | CDP 会话：启动/attach 真 Chrome、页面操作、拦截 XHR JSON、发布步骤状态机、cookie 读取与登录态校验 |
 | `packages/channel-guanjia` | TS | core | 闲管家开放平台客户端（MIT 移植的签名与 20 个接口） |
+| `packages/channel-im` | TS | core | IM 协议事实层：帧解析、消息归一化、会话状态机（**已提交，未接 daemon**；无 websocket 长连/消息发送/鉴权握手） |
 
-依赖方向单向：`core ← daemon`、`core ← plugin-ops`、`core ← channel-*`；`daemon` 与 `plugin-ops` 互不 import，三个 channel 包之间也互不 import。
+依赖方向单向：`core ← daemon`、`core ← channel-*`；`daemon` 与 `plugin-ops` 互不 import，四个 channel 包之间也互不 import（daemon 只按包名依赖 channel-mtop / channel-cdp 作为执行器通道）。
 
-## 3. 一次写操作的完整路径（以 probe 为例，P1.1 已通）
+## 3. 一次写操作的完整路径（以 probe 为例，已通）
 
 1. 模型调用 `xy_task_enqueue({kind:"probe", dedupeKey:"probe:<accountId>:<itemId>", payload:{accountId, itemId}})`。
 2. 门禁 `tools/pre-execute`：`probe` 是读类，不放行审批；`publish/deliver/polish` 才返回 `{kind:"ask"}` 等用户确认。
@@ -82,11 +83,11 @@ openStore({path: config.dbPath})
 
 统一顺序：校验载荷 → `checkCircuit` → `spend` 限流桶 → `requireSession` 取凭据 → 调 `OperationPort`。错误统一是 `XianyuError`，`code` 决定 worker 的处置。
 
-| kind | 限流桶 | 通道 | P1.1 状态 |
+| kind | 限流桶 | 通道 | 状态 |
 | --- | --- | --- | --- |
 | `probe` | read | mtop 详情 | ✅ 已通，成功后 `items.upsert` |
 | `polish` | write | mtop 擦亮 2.0 | ✅ 已通 |
-| `publish` | write | CDP 发布步骤机（`channel-cdp`） | ⚠️ 默认 `UNSUPPORTED`；`BF_PUBLISH_SUBMIT=1` 才真提交。步骤机已真机 dry-run 校准（见 §13），**真提交尚未在测试小号跑过** |
+| `publish` | write | CDP 发布步骤机（`channel-cdp`） | ⚠️ 默认 `UNSUPPORTED`；`BF_PUBLISH_SUBMIT=1` 才走真链路。2026-10-21 真机成功一次（测试小号，itemId `1093817229436`，见 §13.6）；只验证一条类目路径，不等于可批量发布 |
 | `deliver` | write | IM/闲管家 | ⛔ `UNSUPPORTED`（P2） |
 | `reply` | write | IM | ⛔ `UNSUPPORTED`（P2） |
 
@@ -112,6 +113,7 @@ openStore({path: config.dbPath})
 | GET | `/health` | 免鉴权：`{version,pid,uptimeMs}` |
 | GET | `/status` | 队列五态计数、`accounts`、`circuits`（账号→原因）、`worker` 计数 |
 | POST | `/accounts/import` | 从本机 Chrome（CDP，默认 9222）读 goofish cookie 并加密落盘：`{accountId?, port?}` → `{accountId, savedFieldCount, updatedAt, source}`；未注入导入能力时 `UNSUPPORTED` |
+| POST | `/accounts/login` | 扫码登录：打开登录页等用户扫码，轮询到 `unb` + `_m_h5_tk` 齐备才落加密凭据（默认超时 180s）；未注入能力时 `UNSUPPORTED` |
 | GET | `/tasks?state&kind&limit` | 列表（缺省 50、上限 500） |
 | GET | `/tasks/:id` | 单条 |
 | POST | `/tasks` | 入队，201；幂等键去重 |
@@ -154,14 +156,16 @@ queued ──lease──► leased ──ack──► done
 
 ## 10. 写操作审批门禁
 
-`tools/pre-execute` 钩子对 `xy_task_enqueue` 判定：`kind ∈ {publish, deliver, polish}` → `{kind:"ask", reason}`；`reply/probe` 与读类直接放行（参数不是对象时**保守**按写处理）。`xy_task_action` 不触发门禁（都是本地队列状态流转）。
+`tools/pre-execute` 钩子对 `xy_task_enqueue` 判定：`kind ∈ {publish, deliver, polish}` → `{kind:"ask", reason}`；`reply/probe` 与读类直接放行（参数不是对象时**保守**按写处理）。
+
+**裁决：`xy_task_action`（ack/fail/release）不挂审批门禁。** 它只改本地队列状态（本地流转），不触达闲鱼、不产生平台副作用，不属于「写闲鱼」；门禁只覆盖会写平台的入队动作。`writeGate:false` 是测试逃生阀，默认开启。
 
 ## 11. 现在明确未实现（不要当 bug）
 
 - **publish 真提交只跑通过一次（测试小号）**：步骤机与 daemon 通道都在（§6.1），2026-10-21 首次真发布成功（§13.5）；但它只验证了「网页端支持的类目」这一条路径，真提交仍需 `BF_PUBLISH_SUBMIT=1` 且必须由用户点头。**别把「跑通过一次」当成「可以批量发」。**
 - **发布页地址搜索在 CDP 下不可用**：联想请求能发出、响应正常，但候选列表 UI 不回显，只能从「常用地址/附近地址」里匹配（§13.3）。类目：页面 AI 自动识别，草稿可用 `category` 覆盖；**网页端只支持部分类目**，不支持时立即失败（§13.5）。
-- **IM 与发货未实现**：`deliver/reply` 是 `UNSUPPORTED`；协议与规则已写进 [im-protocol.md](im-protocol.md)、[delivery-rules.md](delivery-rules.md)。
-- **登录态导入有 CLI/HTTP/插件工具三个入口，缺扫码**：`npm run daemon:import-account`（或 `POST /accounts/import`、插件 `xy_import_account`）从带 `--remote-debugging-port=9222` 的浏览器读 cookie 写入 `CredentialStore`（AES-256-GCM）；accountId 默认取 cookie 里的 `unb`。手机扫码登录还没做。
+- **发货未实现、IM 已提交未接线**：`deliver/reply` 仍是 `UNSUPPORTED`；`packages/channel-im` 已提交（32 tests：帧解析/消息归一化/会话状态机）但**未接 daemon**（daemon 无该依赖），websocket 长连/消息发送/鉴权握手均未实现；协议与规则见 [im-protocol.md](im-protocol.md)、[delivery-rules.md](delivery-rules.md)。
+- **登录态导入与扫码登录均已实现**：导入走 `npm run daemon:import-account`（或 `POST /accounts/import`、插件 `xy_import_account`），从带 `--remote-debugging-port=9222` 的浏览器读 cookie；扫码走 `npm run daemon:login` / `POST /accounts/login`，轮询到 `unb` + `_m_h5_tk` 齐备才算成功（默认超时 180s）。两者都写 `CredentialStore`（AES-256-GCM），accountId 默认取 cookie 里的 `unb`。
 - **侧边栏面板是静态占位 + 只读快照**：DSH 宿主没有「面板按钮调 host 工具」的公开 API，面板按钮刻意 disabled；实时推送要等 daemon 常驻方案。
 - **没有打包**：Electron/headless 分发形态待用户决策。
 - **没有真实联调**：所有测试都不发真实网络（AGENTS §5），首次真机验证需小号。
@@ -170,13 +174,15 @@ queued ──lease──► leased ──ack──► done
 
 | 层 | 数量 | 说明 |
 | --- | --- | --- |
-| 全仓 | 477 tests / 477 pass | `node scripts/test-all.mjs` |
+| 全仓 | 592 tests / 592 pass（21 suites / 61 个测试文件） | `node scripts/test-all.mjs`，约 5s |
 | core | 131 | 队列、仓储、策略、限流熔断、凭据、脱敏、配置、发货规则引擎（P2） |
-| daemon | 106 | HTTP、CLI、客户端、执行器、worker、路由、账号导入、CDP 发布通道（含 5 条 `runtime.test.ts` 全链路集成：真 HTTP + 真 SQLite + 假 mtop transport） |
-| channel-mtop / channel-cdp / channel-guanjia | 53 / 75 / 62 | 纯函数、假连接与假页面（channel-cdp 含富文本/地址/预检假页面回放） |
-| plugin-ops | 48 | 插件契约、审批门禁、草稿校验、发布命令生成、client bundle |
+| daemon | 142 | HTTP、CLI、客户端、执行器、worker、路由、账号导入/扫码登录、CDP 发布通道（含 5 条 `runtime.test.ts` 全链路集成：真 HTTP + 真 SQLite + 假 mtop transport） |
+| channel-mtop / channel-cdp / channel-guanjia / channel-im | 88 / 86 / 62 / 32 | 纯函数、假连接与假页面（channel-cdp 含富文本/地址/预检假页面回放；channel-im 帧解析/会话状态机，未接 daemon） |
+| plugin-ops | 49 | 插件契约、审批门禁、草稿校验、发布命令生成、client bundle |
 | integration | 2 | 插件 client ↔ 真 daemon 的跨层端到端 |
-| 类型检查 | 5 个 TS 包 0 错误 | 借 DSH checkout 的 `tsc --noEmit` |
+| 类型检查 | 6 个 TS 包 0 错误 | 借 DSH checkout 的 `tsc --noEmit`；`plugin-ops` / `ops-bundle` 是纯 ESM JS（无 tsconfig，靠 JSDoc + 单测），**不在类型检查覆盖内** |
+
+> 口径：`node:test` 的 `suites 21` 与 61 个测试文件不矛盾（文件数 ≠ suite 数）；`ops-bundle` 只声明 bundle patch，无测试。
 
 集成测试覆盖的关键链路：入队 → worker 领租约 → 解凭据 → 假 mtop → `items.upsert` → ack → `/items` 与 `/status.worker` 可查；无凭据时**不调用通道**且直接 `failed`；`publish` 因 `UNSUPPORTED` 进 `failed`；`dedupeKey` 不产生第二个任务；close 后端口不可达。
 
@@ -211,7 +217,7 @@ queued ──lease──► leased ──ack──► done
 - 页面用高德 `AMap.AutoComplete`（`restapi.amap.com/v3/assistant/inputtips`）。联想请求**确实发出且返回合法 tips**（ASCII 真实按键、中文 IME 合成、原生 setter+dispatch `input` 都能触发，keywords 正确、HTTP 200、JSONP 里含有效条目）。
 - 但**候选列表 UI 在 CDP 下不回显搜索结果**：列表始终只有「常用地址」「附近地址」两块，`body.innerText` 里找不到返回的 tip。试过逐字按键 / IME 合成 / React props.onChange / 点搜索图标，均无效。
 - 所以 `address` 必须能在现有候选里匹配到：`matchIndex` 先整串 `includes`，再退前 3 字前缀；匹配不到 → `VALIDATION`「地址候选里没有匹配…（看到：…）」fail-closed，绝不瞎点第一个。首次要把某地址变成「常用地址」，需人工在网页/App 选一次。
-- 页面会恢复上次草稿（新开 `/publish` 后「宝贝所在地」可能已有值），类目由页面 AI 自动识别（本次识别成「电子资料」）；真发布前 `stepCheckRequired` 等「分类」「宝贝所在地」非空，超时 `VALIDATION`，**不自动选类目**。
+- 页面会恢复上次草稿（新开 `/publish` 后「宝贝所在地」可能已有值）；分类先由页面 AI 识别，缺省时不自动选类目，草稿给 `category` 时由 `stepSelectCategory` 点选并校验（§13.5）；真发布前 `stepCheckRequired` 等「分类」「宝贝所在地」非空，超时 `VALIDATION`。
 
 ### 13.4 校准记录（dry-run 全绿）
 
@@ -244,4 +250,4 @@ npm run daemon:publish -- --draft '.scratch/pubtest/draft-addr.json' \
 - 草稿：文案「学习资料电子笔记 整理好的电子版资料 / 自动化测试商品，验证完立即下架，请勿拍。」+ 2 张占位 PNG + ¥1 + 包邮 + 地点「西北工业大学长安校区星天苑」（从常用地址点选）。
 - 流程：传图 → 文案 → 等识别（学习资料定制，不支持）→ **手动选「电子资料」** → 价格/包邮 → 地址 → 点 `button[class*="publish-button"]` → URL 变为 `https://www.goofish.com/item?id=1093817229436`，页面出现「管理/下架/删除」。
 - 该次发布抓到的接口事实（mtop 发布载荷字段、poi.get 按坐标取地址、badwords 预检、kgraph.property.recommend 分类候选）记录在 `docs/p1.3-plan.md` §4 与对应抓包脚本；**daemon 侧尚未接 mtop 发布**，CDP 仍是唯一写路径（ADR 0003）。
-- 测试商品 `1093817229436` 需人工下架/删除；真提交默认仍关（`BF_PUBLISH_SUBMIT`/CLI `--submit` 才开）。
+- 测试商品 `1093817229436` 已下架留档；真提交默认仍关（`BF_PUBLISH_SUBMIT`/CLI `--submit` 才开）。

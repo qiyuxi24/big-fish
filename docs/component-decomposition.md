@@ -10,7 +10,7 @@
 
 ## 0. 实施状态（P1.0 已完成）
 
-三个 channel 包已按 §4 契约落地，全量 `node scripts/test-all.mjs` = **264 tests / 264 pass**，`node scripts/typecheck.mjs` 五个包全通过。
+三个 channel 包已按 §4 契约落地。**当前全量口径**（P1.2 后）：`node scripts/test-all.mjs` = **592 tests / 592 pass（21 suites / 61 个测试文件）**，6 个 TS 包 tsc 0 错误（`plugin-ops` / `ops-bundle` 是纯 ESM JS，无 tsconfig，**不在类型检查覆盖内**）；当前形态以 [architecture.md](architecture.md) 与 [STATUS.md](STATUS.md) 为准。
 
 | 包 | 条数 | 关键实现 | 偏差（已在包 README 记录） |
 | --- | --- | --- | --- |
@@ -46,7 +46,7 @@
 | 熔断：原子持久化 + 冷却 10 分钟（`core/guard.py`） | `core`（已有 `circuit.ts`） | 已实现，对齐 `circuit.json` 语义 |
 | 浏览器 cookie 直读（`core/browser_cookie.py`） | **不移植** | Node 端读 Chrome `Cookies` 库要 DPAPI/AES，需原生模块或 `browser_cookie3` 等价物；改为 **CDP 导出 cookie**（`Network.getAllCookies`），见 2.2 |
 | 发布流程 / 图片上传（`commands/item/publish.py`） | `packages/channel-mtop`（P1.1） | 只先落 **请求构造 + 字段校验**，真实调用留到 P1.2 |
-| 风控红线文档（`skills/goofish-risk-guard/references/*.md`） | `docs/risk-control.md` | 提炼成操作约束，进 daemon 执行器前置检查 |
+| 风控红线文档（`skills/goofish-risk-guard/references/*.md`） | `packages/core/src/policy.ts`（`checkListing`） | 已提炼成发布前策略校验，进 daemon 执行器前置检查，见 [architecture.md](architecture.md) §6；原计划的独立 `docs/risk-control.md` 从未创建，别再引用 |
 
 ### 2.2 xian-guanjia（MIT，官方闲管家开放平台客户端）
 
@@ -85,7 +85,7 @@ packages/
   channel-cdp/     CDP 会话：连 Chrome、页面操作、响应拦截、步骤状态机
   channel-guanjia/ 闲管家开放平台客户端（MIT 移植）
   daemon/          已有：IPC 控制面                               ← P1.1 接执行器
-  plugin-ops/      已有：7 个工具 + 侧边栏
+  plugin-ops/      已有：9 个工具 + 侧边栏
   ops-bundle/      已有：bundle 组合
 ```
 
@@ -285,8 +285,8 @@ export class GuanJiaClient {
 ## 6. 验收
 
 ```sh
-node scripts/test-all.mjs            # 264 tests / 264 pass（core+daemon+plugin-ops+三个 channel）
-node scripts/typecheck.mjs           # core/daemon + 三个 channel 全通过
+node scripts/test-all.mjs            # 592 tests / 592 pass（21 suites / 61 个测试文件；口径见 STATUS.md）
+node scripts/typecheck.mjs           # 6 个 TS 包全通过；plugin-ops / ops-bundle 是纯 JS，不参与
 ```
 
 每个包必须有 `README.md`（职责、导出、许可来源、测试范围）。

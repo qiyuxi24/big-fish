@@ -49,13 +49,13 @@
 | --- | --- | --- |
 | 页面改版 | 选择器表（architecture §13）+ dry-run 回归 | 每次闲鱼发版后跑一次 dry-run 对截图 |
 | 富文本/联想输入 | 注入 `Input.insertText` + 回读校验 | React/编辑器升级导致注入失效时，重新实验填写方式 |
-| 类目/文案质量 | 页面 AI 识别类目 + 上游文案；工具不自动选类目 | 需要稳定类目时补类目选择步骤（目前刻意不做） |
+| 类目/文案质量 | 页面 AI 先识别类目；草稿给 `category` 时由 `packages/channel-cdp/src/category.ts` 的 `stepSelectCategory` 点选并 `assertCategoryPublishable` 校验（见 architecture §13.5） | 页面改版导致下拉打不开时，重做「可信鼠标事件」实验 |
 | 地址 | 只能从「常用地址/附近地址」匹配（CDP 下联想结果不回显） | 若某次真机验证联想回显可用，扩展为自由搜索 |
 | 速度 | 浏览器串行发布 | 逆向补齐发布链 + 幂等验证后，接 mtop 作为加速通道 |
 | 失败自愈 | agent 诊断 + 人工兜底 | 失败样本显示选择器漂移占多数、且人工成本更高时，做「agent 读截图修选择器」的半自动修复 |
 
 ## 验收（当前状态）
 
-- 全仓 477 tests / 477 pass（core 131、daemon 106、channel-mtop 53、channel-cdp 75、channel-guanjia 62、plugin-ops 48、integration 2），5 个 TS 包 tsc 0 错误。
-- 真机 dry-run 全绿：Edge 155 + CDP 9222，测试小号「同州禹斋」，5.1s，截图见 `.scratch/pubtest/shots-addr3/`（不入 git）。
-- **未验证**：点提交 → 成功页 → 解析 item id。真提交需用户明确同意、用测试小号跑一次；在跑通前，任何代码路径都不得声称「发布成功」。
+阶段、测试数字、类型检查覆盖与真发布记录以 [`docs/STATUS.md`](../STATUS.md) 为准，本文不复制会漂移的数字。
+
+本 ADR 锁的是「CDP 步骤机是唯一写路径」这一决策；真机校准细节（选择器、类目支持矩阵、一次成功的真发布记录）见 architecture §13。**「跑通过一次」不等于稳定能力**：默认仍 dry-run，`BF_PUBLISH_SUBMIT=1` 才真提交。

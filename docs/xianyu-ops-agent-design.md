@@ -1,5 +1,7 @@
 # 闲鱼商家运营 Agent —— 技术方案（v0.1 草案）
 
+> 📦 历史调研快照（2026-10-20）。结论已并入 [STATUS.md](STATUS.md) 与 [architecture.md](architecture.md)，保留作证据；当前状态不必读本文。
+
 > **状态：部分被 [ADR 0001](adr/0001-base-on-dsh.md) 取代。** 本文的三层架构、性能预算、通道策略、风险边界仍然有效；但包名与目录以 ADR 为准（`packages/{core,daemon,plugin-ops,ops-bundle}`，统一 `@bigfish/*`），交付形态是 bundle + Cordis 插件，不是"往 DSH 仓里塞一个 dsh-plugin"。
 >
 > 目标：给个人商家做一条"24 小时在线的运营助手"，形态是 **DSH 插件 + 本地运营内核（daemon）**。

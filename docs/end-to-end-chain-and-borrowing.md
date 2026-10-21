@@ -66,9 +66,9 @@
 | --- | --- | --- | --- |
 | 登录态 | XianYuApis 扫码七步；三仓 cookie 事实 | `packages/daemon/src/accounts.ts`（`saveImportedAccount`/`importAccountFromChrome`）+ `packages/channel-cdp/src/cookies.ts`（`Storage.getCookies`，仅方法不存在才降级 `Network.getAllCookies`） | **不自己补 tfstk 环境**：从真浏览器读 cookie（`et_f.js` 自己算）；凭据 AES-256-GCM 加密落盘（core `CredentialStore`），日志一律脱敏 |
 | 取数 | XianYuApis 详情/搜索接口；MediaCrawler 节奏 | `packages/channel-mtop`（签名/信封/cookie 归一/ret 分类）+ daemon `probe` 执行器 + `items` 落库 | 签名做成**纯函数无状态**包；probe 只读、走 `read` 桶；不把 UA/设备指纹写死 |
-| 文案 | 雾里 `人物设定.txt`（标题≤30 字、4 段式、5 话题标签、纯 JSON） | 未落库（P2 前由 agent 侧生成，daemon 不调 LLM） | 素材工程化模板可进 prompt 库，但生成留在插件/agent 侧 |
+| 文案 | 雾里 `人物设定.txt`（标题≤30 字、4 段式、5 话题标签、纯 JSON） | `skills/xianyu-listing-copy` + `skills/xianyu-listing-audit`（2026-10-21 已落地，实际 2 个 skill；尚未接进 DSH agent 流程） | 素材工程化模板进了 skill 层，生成仍留在插件/agent 侧，daemon 不调 LLM |
 | 发布 | XianYuApis 发布 body（学事实）+ A/B 的「真浏览器里干活」 | `packages/channel-cdp/src/publish.ts` 步骤机 + `daemon/src/cdp-publish.ts` 装配 + CLI `daemon:publish` | **确定性步骤机是唯一写路径，LLM 不进热路径**（ADR 0003）；默认 dry-run；`uniqueCode` 每次生成、绝不复用；提交后必须解析到 itemId 或「发布成功」否则按失败，且不自动重试 |
-| 订单/发货 | B-im 的 IM 协议；A 的规则表数据模型 | `packages/core/src/delivery.ts`（`matchDeliveryRule`，priority 排序、缺上下文 fail-closed、红线词硬拦 38 条）+ `packages/channel-im`（进行中，未提交） | 规则引擎是**纯函数 + 手写窄化校验**，可脱网单测（21 例）；daemon `deliver/reply` 仍 `UNSUPPORTED`（宁可失败不留假成功） |
+| 订单/发货 | B-im 的 IM 协议；A 的规则表数据模型 | `packages/core/src/delivery.ts`（`matchDeliveryRule`，priority 排序、缺上下文 fail-closed、红线词硬拦 38 条）+ `packages/channel-im`（已提交 `7a01bbf`，32 tests；未接 daemon） | 规则引擎是**纯函数 + 手写窄化校验**，可脱网单测（21 例）；daemon `deliver/reply` 仍 `UNSUPPORTED`（宁可失败不留假成功） |
 | 官方通道 | xian-guanjia（MIT） | `packages/channel-guanjia`（签名 + 20 接口，**不含 placeOrder**） | 合规首选通道，需鱼小铺 + 订购 ERP；作为通道矩阵 A 位 |
 | 控制面 | ——（自研） | `plugin-ops` 9 个 `xy_*` 工具 + 审批门禁 + 侧边栏；`daemon` HTTP/队列/worker | daemon 与插件**互不 import**，只靠 HTTP 契约；写类工具挂 `tools/pre-execute` 审批 |
 
@@ -81,16 +81,17 @@
 5. **不复制 GPL/AGPL 代码**：三套 IM 实现只取协议事实；可移植的只有 MIT 的 xian-guanjia。
 6. **金额整数分、时间整数毫秒**：mtop 字段本来就是分。
 
-## 4. 实测状态矩阵（2026-10-21）
+## 4. 实测状态矩阵（2026-10-21，以 [STATUS.md](STATUS.md) 为准）
 
 | 能力 | 状态 | 证据 |
 | --- | --- | --- |
-| mtop 读接口（probe/擦亮） | ✅ 真机通 | `packages/daemon/src/operations.ts`，执行器矩阵 §6 |
-| 登录态导入 | ✅ 真机通 | Edge 155 + CDP 9222，测试小号 `unb=2206569289277` 导入 21 字段 |
-| CDP 发布填表（dry-run） | ✅ 全绿（约 5.1s） | 截图 `.scratch/pubtest/shots-addr3/`；选择器表见 `docs/architecture.md` §13 |
-| CDP 发布真提交 | ❌ 卡住 | 闲鱼按图/文案 AI 识别类目，落到「网页版暂不支持发布此分类，请使用闲鱼APP扫码继续发布」；步骤机按失败处理、不重试、截图 `.scratch/pubtest/shots/07-failed.png` |
-| 发货/回消息 | ⛔ `UNSUPPORTED` | P2；`packages/channel-im` 有半成品（未提交） |
-| 闲管家官方通道 | 🟡 代码就绪未接装配 | `packages/channel-guanjia` 62 测试 |
+| mtop 读接口（probe/擦亮） | ✅ 真机通 | `packages/daemon/src/operations.ts`，执行器矩阵见 `docs/architecture.md` §6 |
+| 登录态导入 + 扫码登录 | ✅ 真机通 | 导入：Edge 155 + CDP 9222；扫码：`npm run daemon:login` / `POST /accounts/login`（`77e9c9f`，轮询 `unb` + `_m_h5_tk`） |
+| 令牌自动刷新 | ✅ 已落地 | `channel-mtop/src/call.ts`（`aa5aec1`）：`FAIL_SYS_TOKEN_EXOIRED` 时合并 Set-Cookie 重签重试一次并回写 |
+| CDP 发布填表（dry-run） | ✅ 全绿 | 默认只填表不提交；步骤机与选择器表见 `docs/architecture.md` §13 |
+| CDP 发布真提交 | 🟡 真机成功一次 | 2026-10-21 测试小号 `itemId 1093817229436`（已下架留档）；受网页端类目支持矩阵限制，**不等于可批量发布**；需 `BF_PUBLISH_SUBMIT=1` |
+| 发货/回消息 | ⛔ `UNSUPPORTED` | daemon `deliver/reply` 硬编码 `UNSUPPORTED`（`operations.ts:160-166`）；`packages/channel-im` 已提交（`7a01bbf`，32 tests）但**未接 daemon**，无 websocket 长连/发送/鉴权握手 |
+| 闲管家官方通道 | 🟡 代码就绪未接装配 | `packages/channel-guanjia` 62 测试；缺企业凭证 |
 
 ## 5. 破局真发布的三个选项
 
@@ -99,6 +100,8 @@
 - **A3 走 APP 扫码续发**：页面给的「点击展示二维码」是官方半自动兜底 → 覆盖面最大，但不再是全自动（需人工扫一次）。
 
 推荐顺序 A1（先证链路）→ A2（通用化）→ A3（兜底），且始终用测试小号、验证通过前不声称发布成功。
+
+> 现状（2026-10-21）：**A2 已实现**（`packages/channel-cdp/src/category.ts` 的 `stepSelectCategory` + `assertCategoryPublishable`，见 `docs/architecture.md` §13.5），真机成功发布一次；A3 扫码兜底仍待做。
 
 ## 6. 风险与边界
 
