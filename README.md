@@ -17,7 +17,7 @@
 | 包 | 形态 | 职责 |
 | --- | --- | --- |
 | `packages/ops-bundle` | 声明 `dsh.bundle.patch` 的 npm 包 | 产品组合（profile）：base + web/headless + 本仓插件 |
-| `packages/plugin-ops` | Cordis 插件（纯 ESM JS，零依赖） | 9 个 `xy_*` 工具、写操作审批门禁、只读侧边栏面板 |
+| `packages/plugin-ops` | Cordis 插件（纯 ESM JS，零依赖） | 10 个 `xy_*` 工具、写操作审批门禁、只读侧边栏面板（含文案风格入口） |
 | `packages/daemon` | 独立 Node 进程（无 LLM） | 队列 + worker + 执行器（限流/熔断/凭据）、登录态、发布、将来的发货 |
 | `packages/core` | 纯 TS 库 | 契约与错误、SQLite 队列/商品仓储、策略校验、限流熔断、凭据加密、脱敏日志、发货规则引擎 |
 | `packages/channel-mtop` | 纯 TS 库（零依赖） | mtop 签名/信封/cookie 归一/ret 分类，详情、擦亮、商家与商品列表 |

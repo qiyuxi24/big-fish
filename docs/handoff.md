@@ -14,7 +14,7 @@
 ## 2. 常用命令
 
 ```bash
-npm test                                   # 592 tests（单进程顺序跑，不能 spawn）
+npm test                                   # 608 tests（单进程顺序跑，不能 spawn）
 node 'C:/Users/34239/Documents/GitHub/deepseek-harness/node_modules/typescript/bin/tsc' \
   --noEmit --pretty false -p packages/<pkg>/tsconfig.json \
   --typeRoots 'C:/Users/34239/Documents/GitHub/deepseek-harness/node_modules/@types'

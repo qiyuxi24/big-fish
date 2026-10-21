@@ -32,7 +32,7 @@
 | --- | --- | --- | --- |
 | `packages/core` | TS | 无 | 领域类型与契约、错误、ret 风控分类、队列/存储、商品仓储、发布前策略校验、限流熔断、凭据、配置、脱敏日志 |
 | `packages/daemon` | TS | core、channel-mtop、channel-cdp | HTTP 控制面 + CLI + 运行时装配 + worker + 执行器 + DaemonClient |
-| `packages/plugin-ops` | JS(ESM) | 无（含自带 HTTP client） | 9 个 `xy_*` 工具 + 写操作审批门禁 + 侧边栏面板 |
+| `packages/plugin-ops` | JS(ESM) | 无（含自带 HTTP client） | 10 个 `xy_*` 工具 + 写操作审批门禁 + 侧边栏面板（含文案风格入口） |
 | `packages/ops-bundle` | JS | plugin-ops | 只声明 `dsh.bundle.patch`，把插件塞进 profile |
 | `packages/channel-mtop` | TS | core | mtop 通道：签名、信封、cookie 归一、ret 分类、读接口与发布接口的 data 构造（**纯函数，无状态**） |
 | `packages/channel-cdp` | TS | core | CDP 会话：启动/attach 真 Chrome、页面操作、拦截 XHR JSON、发布步骤状态机、cookie 读取与登录态校验 |
@@ -138,7 +138,7 @@ queued ──lease──► leased ──ack──► done
 
 不变量：`dedupeKey` 唯一；`ack/fail/release` 必须传 owner 且与租约持有者一致；`needs_review` 只能人工处理，不自动重试；失败不退还限流预算。
 
-## 9. 工具清单（9 个）
+## 9. 工具清单（10 个）
 
 | 工具 | 参数 | 用途 |
 | --- | --- | --- |
@@ -151,12 +151,15 @@ queued ──lease──► leased ──ack──► done
 | `xy_items_list` | 无 | 商品列表 |
 | `xy_import_account` | `accountId?, port?(1..65535, 默认 9222)` | 从带 CDP 端口的 Chrome 导入登录态（**写类**，加密落盘，回显不含 cookie） |
 | `xy_publish_draft` | `draftPath, mode?(dry-run/enqueue), accountId?, chromePort?, screenshotsDir?, dedupeKey?` | 校验草稿并给命令（默认 dry-run 只填表不入队；enqueue **写类**） |
+| `xy_copy_plan` | `styleId?(5 档), productName, condition, priceYuan\|priceCents, shipping?, categoryHint?, specs?, flaws?, accessories?, imagePaths?, variantCount?, usedAiImages?` | 按语言风格把事实注入成文案生成提示词（**只读**：不调模型、不写文件、不碰 daemon） |
 
 所有工具输出统一为 `{ text }` 对象（`additionalProperties:false`），文本里带 emoji 状态前缀；`DaemonError` 转成 `❌ [CODE] message`，不抛给模型当异常。
 
 ## 10. 写操作审批门禁
 
 `tools/pre-execute` 钩子对 `xy_task_enqueue` 判定：`kind ∈ {publish, deliver, polish}` → `{kind:"ask", reason}`；`reply/probe` 与读类直接放行（参数不是对象时**保守**按写处理）。
+
+`xy_copy_plan` 属于读类：只把风格约束与事实渲染成提示词（`packages/plugin-ops/src/copy.js`，纯函数、确定性），不写队列、不写凭据、不发模型请求，因此不挂门禁。文案风格表的唯一权威是该文件里的 `COPY_STYLES`；面板 `client.js` 内嵌展示副本（loader 只能 require 宿主 9 个静态模块），漂移由 `test/client-bundle.test.mjs` 守护。
 
 **裁决：`xy_task_action`（ack/fail/release）不挂审批门禁。** 它只改本地队列状态（本地流转），不触达闲鱼、不产生平台副作用，不属于「写闲鱼」；门禁只覆盖会写平台的入队动作。`writeGate:false` 是测试逃生阀，默认开启。
 
@@ -166,7 +169,7 @@ queued ──lease──► leased ──ack──► done
 - **发布页地址搜索在 CDP 下不可用**：联想请求能发出、响应正常，但候选列表 UI 不回显，只能从「常用地址/附近地址」里匹配（§13.3）。类目：页面 AI 自动识别，草稿可用 `category` 覆盖；**网页端只支持部分类目**，不支持时立即失败（§13.5）。
 - **发货未实现、IM 已提交未接线**：`deliver/reply` 仍是 `UNSUPPORTED`；`packages/channel-im` 已提交（32 tests：帧解析/消息归一化/会话状态机）但**未接 daemon**（daemon 无该依赖），websocket 长连/消息发送/鉴权握手均未实现；协议与规则见 [im-protocol.md](im-protocol.md)、[delivery-rules.md](delivery-rules.md)。
 - **登录态导入与扫码登录均已实现**：导入走 `npm run daemon:import-account`（或 `POST /accounts/import`、插件 `xy_import_account`），从带 `--remote-debugging-port=9222` 的浏览器读 cookie；扫码走 `npm run daemon:login` / `POST /accounts/login`，轮询到 `unb` + `_m_h5_tk` 齐备才算成功（默认超时 180s）。两者都写 `CredentialStore`（AES-256-GCM），accountId 默认取 cookie 里的 `unb`。
-- **侧边栏面板是静态占位 + 只读快照**：DSH 宿主没有「面板按钮调 host 工具」的公开 API，面板按钮刻意 disabled；实时推送要等 daemon 常驻方案。
+- **侧边栏面板：顶部 4 个 tab（文案生成 / 概览 / 发布 / 诊断），只有文案页可交互且不调模型**：skill 入口是第一个 tab 并默认选中；DSH 宿主没有「面板按钮调 host 工具」的公开 API，概览页的操作入口按钮刻意 disabled；文案页只组 `xy_copy_plan` 参数 JSON，出稿仍需 agent 执行；实时推送要等 daemon 常驻方案。
 - **没有打包**：Electron/headless 分发形态待用户决策。
 - **没有真实联调**：所有测试都不发真实网络（AGENTS §5），首次真机验证需小号。
 

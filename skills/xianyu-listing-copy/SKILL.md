@@ -16,6 +16,20 @@ whenToUse: 用户要求写/改闲鱼商品标题或描述、生成发布草稿�
 - 模板与 few-shot：`references/templates.md`；红线：`references/red-lines.md`。
 - 阈值与 `packages/core/src/policy.ts` 对齐：标题 ≤30 字（warn）、描述 ≥30 字（warn）、图片 1–9 张（error）、首图 1:1（warn）、38 条违禁词（error）、20 条禁售类目（error）。
 
+## 语言风格（tone）
+
+风格是**注入变量**：不改变四段式结构与事实来源，只改变措辞与详略。取值与 `xy_copy_plan` 的 `styleId` 同集合：
+
+| id | 名称 | 一句话 |
+| --- | --- | --- |
+| `plain`（默认） | 闲鱼口语 | 短句直给，像老买家聊天，不客套 |
+| `warm` | 亲切安利 | 带使用感受与推荐理由，语气温和 |
+| `professional` | 参数党 | 参数与成色逐条列清楚 |
+| `urgent` | 急出清仓 | 节奏快、直奔交易条件（不写虚假紧迫） |
+| `story` | 场景氛围 | 场景开头，但参数与瑕疵必须完整保留 |
+
+执行要求：**风格与事实冲突时事实优先**（例如 `urgent` 也不能承诺「当天必发」）；风格词不占标题的检索词位置；风格不能挤掉瑕疵与交易说明。
+
 ## 步骤
 
 1. **归一化输入**：价格已是整数分；成色按枚举；瑕疵保留「位置 + 现象 + 实拍可证」；缺必填字段不要猜，记 `warnings` 并输出 `ok:false`。
@@ -39,6 +53,7 @@ whenToUse: 用户要求写/改闲鱼商品标题或描述、生成发布草稿�
 
 ## 与工具衔接
 
+0. 只有最小事实（商品名/成色/价格）时，先调 `xy_copy_plan(styleId, productName, condition, priceYuan)` 拿注入好的提示词；它只读、不调模型，会带出风格约束、契约路径与「待补项」（如图片路径）。
 1. 输出草稿 JSON 后，先调 `xy_publish_draft(mode="dry-run")`，把草稿文件路径传给它；dry-run 只读、不写队列。
 2. 人工确认价格、图片、AI 图声明。
 3. 确认后才 `mode="enqueue"`；`xy_publish_draft` 会走人工审批门禁。**不要自己发布，也不要在 daemon 里调模型。**

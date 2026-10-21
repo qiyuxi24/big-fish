@@ -10,6 +10,8 @@ test('写类判定：只有 publish/deliver/polish 入队需要确认', () => {
   assert.equal(isWriteCall('xy_task_enqueue', { kind: 'probe' }), false)
   assert.equal(isWriteCall('xy_task_enqueue', { kind: 'reply' }), false)
   assert.equal(isWriteCall('xy_tasks_list', {}), false)
+  // 文案请求只产出提示词，不写队列/凭据，属于读类。
+  assert.equal(isWriteCall('xy_copy_plan', { productName: 'x', condition: 'new', priceYuan: '10' }), false)
   // 参数形态无法判断时按最保守处理：要确认（宁可多问一次，也不静默放行写操作）。
   assert.equal(isWriteCall('xy_task_enqueue', null), true)
   assert.equal(WRITE_TOOLS.has('xy_task_enqueue'), true)

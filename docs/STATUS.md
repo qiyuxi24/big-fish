@@ -29,6 +29,7 @@ P0 → P1.2 全部完成并提交；当前站在 P2（自动发货）的门口�
 | `deliver` 自动发货 | ❌ `UNSUPPORTED` | 规则引擎已就绪，缺订单/消息源与执行接线 |
 | `reply` / IM 收发 | ❌ `UNSUPPORTED` | `channel-im` 已提交（帧解析/归一化/会话状态机，32 tests），**未接 daemon**；websocket 长连、发送、握手未实现 |
 | 文案 skill（改写 + 合规审核） | ✅ 2 个 skill | `skills/xianyu-listing-copy`、`xianyu-listing-audit`；**未被 DSH 自动发现**（无 `customSkillDirs`），未接进 agent 流程 |
+| 文案风格注入（面板 + `xy_copy_plan`） | ✅ 真机（面板）/ 单测（工具） | 面板顶部 4 个 tab（文案生成 / 概览 / 发布 / 诊断），skill 入口是第一个 tab：5 档语言风格（plain/warm/professional/urgent/story）、填商品名/价格/成色，组出 `xy_copy_plan` 参数 JSON；工具把风格约束渲染成提示词。**都只产出请求/提示词，不调模型** |
 | AI 生图 | 📝 方案 | 选型与管线见 [copywriting-and-imagegen-plan.md](copywriting-and-imagegen-plan.md)，未实现调用 |
 | 地址库 / 别名匹配 | ❌ 未做 | CDP 下地址搜索候选不回显，只能匹配「常用地址/附近地址」；匹配不到就失败回显候选 |
 | 闲管家开放平台 | 📝 客户端在 | `channel-guanjia`（MIT 移植）无消费者、缺凭证 |
@@ -37,7 +38,7 @@ P0 → P1.2 全部完成并提交；当前站在 P2（自动发货）的门口�
 ## 3. 质量基线（可复现）
 
 ```
-node scripts/test-all.mjs     # 592 tests / 592 pass / 21 suites / 61 个测试文件 / ~5s
+node scripts/test-all.mjs     # 608 tests / 608 pass / 21 suites / 62 个测试文件 / ~47s
 ```
 
 | 范围 | 用例数 | 备注 |
@@ -48,14 +49,14 @@ node scripts/test-all.mjs     # 592 tests / 592 pass / 21 suites / 61 个测试�
 | channel-cdp | 86 | 假连接与假页面回放 |
 | channel-guanjia | 62 | 纯函数 |
 | channel-im | 32 | 帧解析 / 归一化 / 状态机 |
-| plugin-ops | 49 | 插件契约、门禁、草稿校验、client bundle |
+| plugin-ops | 65 | 插件契约、门禁、草稿校验、文案风格注入、client bundle（含 tab） |
 | integration | 2 | 插件 client ↔ 真 daemon 端到端 |
-| **合计** | **592** | ops-bundle 无测试（只声明组合） |
+| **合计** | **608** | ops-bundle 无测试（只声明组合） |
 
 - 类型检查：**6 个 TS 包** tsc 0 错误（core / daemon / channel-mtop / channel-cdp / channel-guanjia / channel-im）。
   **plugin-ops 与 ops-bundle 是纯 ESM JS，无 tsconfig，不在类型检查覆盖内**——改这两个包只能靠测试。
 - 运行时零第三方依赖；全仓 `TODO/FIXME/HACK` 0 条。
-- 仓库 8 个包、daemon 10 条 HTTP 路由、插件 9 个 `xy_*` 工具、5 个 TaskKind（probe/polish/publish/deliver/reply）。
+- 仓库 8 个包、daemon 10 条 HTTP 路由、插件 10 个 `xy_*` 工具、5 个 TaskKind（probe/polish/publish/deliver/reply）。
 
 ## 4. 下一步
 
@@ -79,7 +80,7 @@ node scripts/test-all.mjs     # 592 tests / 592 pass / 21 suites / 61 个测试�
 | --- | --- | --- | --- |
 | 类目矩阵 + APP 扫码兜底（A3） | 补测期刊/杂志、生活百科；检测到二维码提示就截图并存为待人工扫码 | 类目矩阵目前**卡死发布覆盖面**，这是唯一出路 | 需要真机点几次，且必须用测试小号 |
 | 批量上架 | 草稿批次 → 队列 → 串行 → 失败隔离；先在草稿层挡掉「不支持类目」 | 单件已通，批量是量的来源 | 受上面类目矩阵限制；只成功过一次，先别宣称稳定 |
-| 文案 skill 接 agent | 配 `customSkillDirs`，跑「文案 → `xy_publish_draft` dry-run → 人审 → enqueue」 | 已有 2 个 skill，接一下就有产出 | `customSkillDirs` 在 DSH 里的具体接法未验证 |
+| 文案 skill 接 agent | 配 `customSkillDirs`，跑「面板选风格 → `xy_copy_plan` 出提示词 → skill 出稿 → `xy_publish_draft` dry-run → 人审 → enqueue」 | 面板风格入口与注入工具已就位，只差 skill 被发现 | `customSkillDirs` 在 DSH 里的具体接法未验证 |
 | 地址库 | 首次抓常用地址列表落库 + 别名表（家/公司） | 现在每个地址都可能失败 | 需要真机抓一次列表 |
 | 修 `xy_task_action` 门禁口径 | 裁决：本地队列流转（ack/fail/release）不算写闲鱼，不挂审批门禁；把 AGENTS §4 措辞改成这个口径 | 代码与规则字面冲突，属文档债 | 无（已裁决，见 §6） |
 
@@ -93,7 +94,7 @@ node scripts/test-all.mjs     # 592 tests / 592 pass / 21 suites / 61 个测试�
 
 - **发布只成功过一次**，且只覆盖网页端支持的类目。任何「已稳定支持批量发布」的说法都是假的。
 - **地址搜索在 CDP 下不可用**（候选不回显），只能匹配常用/附近地址。
-- **插件层没有类型门禁**：plugin-ops / ops-bundle 是纯 JS，改动只能靠 49 个测试兜。
+- **插件层没有类型门禁**：plugin-ops / ops-bundle 是纯 JS，改动只能靠 65 个测试兜。
 - **账号风控**：遇到 `x5sec`/滑块不硬刚，停队列 + 截图 + 人工过；真人验证只用测试小号。
 - **第三方材料删除流程**：`research/repos/` 仍在，删之前必须走 AGENTS §6（列清单 → 标靶点 → 等确认），不要「facts 已吸收」就删。
 

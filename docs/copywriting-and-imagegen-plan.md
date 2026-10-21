@@ -78,7 +78,7 @@ DSH 的 skill 发现只认**根下一层**的 `<name>/SKILL.md` 或 `<name>.md`�
 | `marketPriceCents` | integer | 否 | 市场均价，用于偏离度提示 |
 | `shipping` | `"free"\|"none"` | 是 | 与草稿契约一致 |
 | `imagePaths` | string[] | 是 | 本机绝对路径，至少 1 张；只校验不生成 |
-| `tone` | `"plain"\|"warm"\|"professional"` | 否 | 默认 `plain`（闲鱼口语化） |
+| `tone` | `"plain"\|"warm"\|"professional"\|"urgent"\|"story"` | 否 | 默认 `plain`（闲鱼口语化）。面板可选，由 `xy_copy_plan` 注入提示词（`styleId` 与它同集合） |
 | `variantCount` | integer | 否 | 1–3，生成几套标题/描述备选 |
 | `usedAiImages` | boolean | 否 | 若含 AI 生成图，强制在描述第 3 段声明 |
 
@@ -109,11 +109,14 @@ DSH 的 skill 发现只认**根下一层**的 `<name>/SKILL.md` 或 `<name>.md`�
 
 ```
 用户 → DSH agent
+  ├─ tool: xy_copy_plan(styleId, facts)     选语言风格 + 注入提示词（只读、不调模型、不写文件）
   ├─ skill: xianyu-listing-copy        产出 draft JSON（纯 JSON）
   ├─ tool: xy_publish_draft(mode=dry-run)   校验草稿 + 打印 daemon 命令（不写队列）
   ├─ 人工确认（价格/图/描述/AI 图声明）
   └─ tool: xy_publish_draft(mode=enqueue)   入队 → daemon 串行执行 CDP 填表
 ```
+
+- **面板入口**（`packages/plugin-ops/client.js`）：侧边栏「文案风格（skill 注入）」可选 5 档风格、填商品名/价格/成色，点「生成文案请求」得到一段 `xy_copy_plan` 参数 JSON。面板不联网、不调模型，只组请求——执行者是谁（agent / 将来的 provider 适配器）与面板无关，这就是与调用方式的解耦点。
 
 - **agent 侧**只做语言与结构；不直接写闲鱼。
 - **插件侧**只做校验、展示、入队；**不调 LLM**（否则等于把 LLM 依赖塞进运行时）。后续若要"一键生成"，也是在 agent 侧串 skill，不在插件里发模型请求。

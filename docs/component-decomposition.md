@@ -85,7 +85,7 @@ packages/
   channel-cdp/     CDP 会话：连 Chrome、页面操作、响应拦截、步骤状态机
   channel-guanjia/ 闲管家开放平台客户端（MIT 移植）
   daemon/          已有：IPC 控制面                               ← P1.1 接执行器
-  plugin-ops/      已有：9 个工具 + 侧边栏
+  plugin-ops/      已有：10 个工具 + 侧边栏（含文案风格入口）
   ops-bundle/      已有：bundle 组合
 ```
 

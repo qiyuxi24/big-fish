@@ -70,7 +70,7 @@
 | 发布 | XianYuApis 发布 body（学事实）+ A/B 的「真浏览器里干活」 | `packages/channel-cdp/src/publish.ts` 步骤机 + `daemon/src/cdp-publish.ts` 装配 + CLI `daemon:publish` | **确定性步骤机是唯一写路径，LLM 不进热路径**（ADR 0003）；默认 dry-run；`uniqueCode` 每次生成、绝不复用；提交后必须解析到 itemId 或「发布成功」否则按失败，且不自动重试 |
 | 订单/发货 | B-im 的 IM 协议；A 的规则表数据模型 | `packages/core/src/delivery.ts`（`matchDeliveryRule`，priority 排序、缺上下文 fail-closed、红线词硬拦 38 条）+ `packages/channel-im`（已提交 `7a01bbf`，32 tests；未接 daemon） | 规则引擎是**纯函数 + 手写窄化校验**，可脱网单测（21 例）；daemon `deliver/reply` 仍 `UNSUPPORTED`（宁可失败不留假成功） |
 | 官方通道 | xian-guanjia（MIT） | `packages/channel-guanjia`（签名 + 20 接口，**不含 placeOrder**） | 合规首选通道，需鱼小铺 + 订购 ERP；作为通道矩阵 A 位 |
-| 控制面 | ——（自研） | `plugin-ops` 9 个 `xy_*` 工具 + 审批门禁 + 侧边栏；`daemon` HTTP/队列/worker | daemon 与插件**互不 import**，只靠 HTTP 契约；写类工具挂 `tools/pre-execute` 审批 |
+| 控制面 | ——（自研） | `plugin-ops` 10 个 `xy_*` 工具 + 审批门禁 + 侧边栏；`daemon` HTTP/队列/worker | daemon 与插件**互不 import**，只靠 HTTP 契约；写类工具挂 `tools/pre-execute` 审批 |
 
 ### 3.1 我们的不变量（参考仓库里没有的）
 

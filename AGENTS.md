@@ -8,7 +8,7 @@
 
 > **现状、能力矩阵与下一步的唯一事实源是 [`docs/STATUS.md`](docs/STATUS.md)。** 本节只留一句话状态与硬约束；不要在这里或别处重复测试数字/能力状态（历史上同一个数字出现过 6 个版本）。
 
-- **P0 → P1.2 全部完成并提交**（基线 `main @ 46823e5`，2026-10-21）：core 契约 / daemon HTTP + SQLite 队列 + worker + 执行器 / mtop 读通道（详情、擦亮、商家 + 全量商品）/ CDP cookie + 发布步骤机 / 登录态导入 + 扫码登录 + 令牌自动刷新 / 插件 9 个 `xy_*` 工具 + 只读侧边栏 / 2 个文案合规 skill / `channel-im` 解析层（未接线）。
+- **P0 → P1.2 全部完成并提交**（基线 `main @ 46823e5`，2026-10-21）：core 契约 / daemon HTTP + SQLite 队列 + worker + 执行器 / mtop 读通道（详情、擦亮、商家 + 全量商品）/ CDP cookie + 发布步骤机 / 登录态导入 + 扫码登录 + 令牌自动刷新 / 插件 10 个 `xy_*` 工具 + 只读侧边栏（含文案风格入口）/ 2 个文案合规 skill / `channel-im` 解析层（未接线）。
 - **真实能力边界**：`probe`/`polish` 真通 mtop；`publish` 默认 dry-run、`BF_PUBLISH_SUBMIT=1` 才真提交，**只成功过一次**（测试小号，且受网页端类目支持矩阵限制）；`deliver`/`reply` 仍 `UNSUPPORTED`。
 - **下一步是 P2 自动发货**：P2.0 人工确认 → P2.1 IM websocket 接线 → P2.2 全自动；并行的类目矩阵 / 批量上架 / 文案 skill 接线见 `docs/STATUS.md` §4。
 - **未跑通的路径不得声称成功**（发布只跑通过一次，别写「已稳定支持批量发布」）。需要用户拍板的三件事见 `docs/STATUS.md` §4.3。

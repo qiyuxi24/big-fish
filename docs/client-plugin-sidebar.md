@@ -92,19 +92,25 @@ node scripts/dsh-dev.mjs --stop    # 停实例
 
 ## 4. 测试
 
-`packages/plugin-ops/test/client-bundle.test.mjs`（6 条）：用 `vm.runInNewContext` 跑 client.js，
-stub `window.__ModuleLoader__.load` 捕获注册、假 `react`、假 `ctx.slots`，断言：
+`packages/plugin-ops/test/client-bundle.test.mjs`（11 条）：用 `vm.runInNewContext` 跑 client.js，
+stub `window.__ModuleLoader__.load` 捕获注册、假 `react`（含按调用顺序分配槽位的 `useState`）、假 `ctx.slots`，断言：
 
 - 只注册一个 id，且 id 与 loader entry 包名一致；
 - factory 懒执行：加载 bundle 时**不**调 `require`，apply 时才 require `react`；
 - `apply` 通过 `inject` 注册 `sidebar.panellist`（id/order/label）与 `main`（key）；
 - 图标 `🐟`、active=true 时 opacity 1、否则 0.72、size 下限 12；
-- 面板文本含三张卡片文案与 `xy_status` 提示；
+- 顶部 4 个 tab（文案生成/概览/发布/诊断），默认选中第一个，点击后内容与 `aria-selected` 同步切换；
+- 标题副标题在任意 tab 都在；
+- 入口按钮 disabled，并用 title 指向对应工具；
+- 文案风格区 5 个 chip、默认选中 `plain`、点击后 `aria-pressed` 转移；
+- 填完商品名 + 价格后「生成文案请求」可用，产出的是 `xy_copy_plan` 参数 JSON（面板不调模型）；
+- 面板内嵌风格表与 `src/copy.js` 的 `COPY_STYLES` 不漂移（id/label/summary 逐项比对）；
 - bundle 里没有 `localStorage`、`document.`、`fetch(`（client 只能通过 ctx 拿能力，不直接摸 DOM/网络）。
 
 ## 5. 未做（P1 再评估）
 
 - 面板还没接真实数据：现在只是占位 UI，实时状态让模型调 `xy_status` / `xy_tasks_list`。
+- 文案风格区只到「可交互组请求」：选风格 → 填商品名/价格/成色 → 产出 `xy_copy_plan` 参数 JSON；**真正的文案生成在 agent 侧**（面板不联网、不调模型），谁执行与面板解耦。
 - 没有服务端推送（SSE/WebSocket）到 client：P1 要展示队列进度时需要一条 daemon → 插件 → client 的通道。
 - 没有 `settings` 卡片（daemonUrl / tokenPath 现在只能写 `cordis.patch.yml`）。
 ## 6. 热调试：在真实 DSH 里看到自己改的效果

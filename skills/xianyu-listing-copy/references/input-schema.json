@@ -88,9 +88,12 @@
       "enum": [
         "plain",
         "warm",
-        "professional"
+        "professional",
+        "urgent",
+        "story"
       ],
-      "default": "plain"
+      "default": "plain",
+      "description": "语言风格：plain 闲鱼口语 / warm 亲切安利 / professional 参数党 / urgent 急出清仓 / story 场景氛围。与 xy_copy_plan 的 styleId 同集合，面板可直选"
     },
     "variantCount": {
       "type": "integer",

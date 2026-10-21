@@ -11,6 +11,7 @@
  * @module @bigfish/plugin-ops/tools
  */
 import { DaemonError } from './client.js'
+import { CONDITIONS, COPY_STYLE_IDS, planCopy } from './copy.js'
 import { loadPublishDraft } from './draft.js'
 import { dryRunLines, enqueuePublish, formatDraftSummary, healthNote } from './publish-flow.js'
 
@@ -272,6 +273,34 @@ export function buildTools(deps) {
           `导入时间：${formatTime(account.updatedAt)}`,
           '下一步：xy_status 确认账号出现在 daemon 的 accounts 里；发布前先用 xy_publish_draft 的 dry-run 校准。',
         ].join('\n')
+      },
+    }),
+    textTool({
+      name: 'xy_copy_plan',
+      description: '按选定的语言风格，把商品事实组装成「listing 文案生成请求」：产出注入好的提示词（skill + 风格约束 + 事实 + 输出契约 + 待补项）。只读、不调模型、不写文件——拿到提示词后由你按 skills/xianyu-listing-copy 出草稿 JSON，再走 xy_publish_draft。',
+      parameters: {
+        type: 'object',
+        properties: {
+          styleId: { type: 'string', enum: COPY_STYLE_IDS, description: '语言风格 id，默认 plain（闲鱼口语）。' },
+          productName: { type: 'string', minLength: 1, maxLength: 120, description: '原始商品名（可含商家话术），只允许基于它和下面的字段改写。' },
+          condition: { type: 'string', enum: CONDITIONS, description: '成色，必填；不允许猜。' },
+          priceYuan: { type: 'string', description: '售价（元），最多两位小数，如 "129.90"；与 priceCents 二选一。' },
+          priceCents: { type: 'integer', minimum: 100, description: '售价（整数分）；与 priceYuan 二选一，两者都给时以它为准。' },
+          shipping: { type: 'string', enum: ['free', 'none'], description: 'free=包邮（默认），none=不包邮。' },
+          categoryHint: { type: 'string', maxLength: 120, description: '类目提示（如「数码/手机」）；不给则由 skill 给候选。' },
+          specs: { type: 'object', additionalProperties: { type: 'string' }, description: '型号/尺寸/材质等键值，值一律字符串。' },
+          flaws: { type: 'array', maxItems: 10, items: { type: 'string' }, description: '瑕疵清单，每条一个；不给表示未填写。' },
+          accessories: { type: 'array', maxItems: 20, items: { type: 'string' }, description: '配件清单。' },
+          imagePaths: { type: 'array', maxItems: 9, items: { type: 'string' }, description: '本机图片绝对路径；面板入口通常暂缺，提示词会标为待补。' },
+          variantCount: { type: 'integer', minimum: 1, maximum: 3, description: '备选套数，默认 1。' },
+          usedAiImages: { type: 'boolean', description: '是否含 AI 生成图；true 时描述第 3 段必须声明。' },
+        },
+        required: ['productName', 'condition'],
+        anyOf: [{ required: ['priceCents'] }, { required: ['priceYuan'] }],
+        additionalProperties: false,
+      },
+      async handler(args) {
+        return planCopy(args).text
       },
     }),
     textTool({

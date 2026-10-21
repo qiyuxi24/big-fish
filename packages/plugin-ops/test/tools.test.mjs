@@ -12,10 +12,10 @@ function findTool(tools, name) {
   return tool
 }
 
-test('注册 9 个 xy_ 工具，schema 形态合法', () => {
+test('注册 10 个 xy_ 工具，schema 形态合法', () => {
   const tools = buildTools({ client: createFakeClient({}), config })
   assert.deepEqual(tools.map((tool) => tool.name).sort(), [
-    'xy_daemon_health', 'xy_import_account', 'xy_items_list', 'xy_ping',
+    'xy_copy_plan', 'xy_daemon_health', 'xy_import_account', 'xy_items_list', 'xy_ping',
     'xy_publish_draft', 'xy_status', 'xy_task_action', 'xy_task_enqueue', 'xy_tasks_list',
   ])
   for (const tool of tools) {
@@ -162,4 +162,24 @@ test('xy_publish_draft 入队前挡住缺 accountId / quantity / 非法 JSON', a
   assert.match(withQuantity.text, /quantity/)
   const broken = await toolFor('{not json').execute({ draftPath: 'a.json' }, {})
   assert.match(broken.text, /合法 JSON/)
+})
+
+test('xy_copy_plan 给出注入后的提示词，且完全不碰 daemon', async () => {
+  const client = createFakeClient({})
+  const tool = findTool(buildTools({ client, config }), 'xy_copy_plan')
+  const value = await tool.execute({
+    styleId: 'warm', productName: '索尼 WH-1000XM4', condition: 'light-wear', priceYuan: '650',
+  }, {})
+  assert.match(value.text, /亲切安利/)
+  assert.match(value.text, /"priceCents": 65000/)
+  assert.match(value.text, /"tone": "warm"/)
+  assert.match(value.text, /【待补】imagePaths/)
+  assert.equal(client.calls.length, 0)
+})
+
+test('xy_copy_plan 参数非法时给 VALIDATION 文本而不是抛错', async () => {
+  const tool = findTool(buildTools({ client: createFakeClient({}), config }), 'xy_copy_plan')
+  const value = await tool.execute({ productName: 'x', condition: 'mint', priceYuan: '10' }, {})
+  assert.match(value.text, /\[VALIDATION\]/)
+  assert.match(value.text, /成色/)
 })
