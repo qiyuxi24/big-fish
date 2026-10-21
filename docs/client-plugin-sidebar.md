@@ -52,47 +52,23 @@ window.__ModuleLoader__.load({
 直接 register 早于声明会在加载期抛错。插槽由 ui-sidebar / ui-layout 声明，所以插件
 `inject` 要包含 `'slots'`。
 
-### 在会话顶部 tab 栏注册视图（`conversation.view`）
+### 模块 tab 放在**面板内**，不注册会话顶部 tab（2026-10-21 纠正）
 
-第三个插槽是会话顶部那条 tab 栏（宿主自带的「对话」「轨迹」就在这）。源码核实（DSH 0.1.5-rc.2）：
+最初把两个模块注册成会话 header 的 tab（slot `conversation.view`）。用户 2026-10-21 明确纠正：
+**主页面要在侧边栏那个面板里**，顶部 tab 不是我们的位置。现在改为面板内 tab：
 
-| 事实 | 位置 / 取值 |
+| 事实 | 取值 |
 | --- | --- |
-| 插槽声明 | `packages/client/ui-conversation/src/client/contract/slots.ts:156`，`kind: 'list'`、`scope: 'session'` |
-| 注册 metadata | `{ name: 'conversation.view', id, order, label }`；`id` **必填**（list 项没有 id 会在注册时抛错），`order` 决定 tab 顺序（升序） |
-| `label` | `SlotLabel = string | (() => string)`（`ui-slots/src/index.ts:513`）；传字符串即可，owner 用 `resolveSlotLabel` 解析 |
-| 其它字段 | `locale` / `children` / `inject` 都可选：只做纯面板时不需要（不传 `locale` 就不能用 `t()`，所以 label 用纯字符串） |
-| owner props | 由会话 owner 传入（`viewRequest / openView / completeViewRequest`），静态面板可以忽略 |
-| 组件 | `(props) => ReactElement`，与 `main` 面板一样，`ctx.slots.register(options, Component)` |
+| 模块清单 | `client.js` 的 `PANEL_TABS`：`publish-batch`（自动发布，默认）/ `account`（账号）/ `copy`（文案）/ `overview`（概览）/ `diagnose`（诊断） |
+| 分发 | `PanelBody({ tab, copyProps })` 按 `tab` 返回对应模块组件；模块组件只返回 section 列表，**不自带页头**（页头 + tab 栏在 `BigFishPanel` 骨架里） |
+| 注册项 | **只有** `sidebar.panellist`（id `bigfish`、order 30、label `BigFish 闲鱼运营`）与 `main`（key `bigfish`）。单测断言 `registered.length === 2` 且**没有** `conversation.view` |
+| 加模块 | `PANEL_TABS` 追加一项 + `PanelBody` 补一行分支 |
 
-**多模块写法（现在是两个 tab）**：一个模块 = 一个 tab + 一个面板组件。模块清单集中在 `client.js` 的
-`VIEW_MODULES`，apply 时循环注册——加模块只改这一处，面板组件之间共享同一个 bundle、状态互不依赖：
-
-```js
-const VIEW_MODULES = [
-  { id: 'bigfish-publish', order: 20, label: '🐟 自动发布', View: PublishBatchView },
-  { id: 'bigfish-account', order: 30, label: '👤 账号', View: AccountView },
-]
-
-for (const module of VIEW_MODULES) {
-  ctx.slots.inject('conversation.view', () => ctx.slots.register({
-    name: 'conversation.view',
-    id: module.id,                // list 项必填，且全局唯一
-    order: module.order,          // 升序排 tab
-    label: module.label,
-  }, module.View))
-}
-```
-
-单个模块直接写 `ctx.slots.register({ name:'conversation.view', id, order, label }, View)` 也可以（等价）。注意
-**插件入口仍只在侧边栏**（`sidebar.panellist` + `main`），顶部 tab 只承载模块工作台——这是 2026-10-21 的产品决定，
-不要在顶部再加「插件入口」类 tab。
-
-**可见条件（实测）**：tab 条只在会话区渲染（`ui-conversation/src/client/skeleton/ConversationSession.tsx:189-198`），并且
-
-1. 当前会话不是 blank（`session.blank && conversationPhase === 'blank'` 时整个 header 隐藏），所以必须有一条真实会话；
-2. `tabs.length > 1`（桌面端实测 header 是四条：对话 / 轨迹 / 上下文 / 🐟 自动发布，order 20 排最后）；
-3. `main` 插槽当前选中的是默认 `conversation` 面板——点侧边栏 BigFish 栏位会把 `main` 换成 `bigfish`，会话连同 tab 条一起离开 DOM。
+**为什么回退（历史存档，别再踩）**：`conversation.view` 是会话 header 的 list 插槽
+（声明于 `packages/client/ui-conversation/src/client/contract/slots.ts:156`，metadata `{ name, id, order, label }`，
+`id` 必填、`label: string | (() => string)`），tab 条只在「非 blank 会话 + `main` 选中 `conversation` + `tabs.length > 1`」
+时渲染——点侧边栏 BigFish 栏位，`main` 换成 `bigfish`，tab 条连同会话一起离开 DOM。也就是说我们的模块 tab
+**天然和「面板」互斥**，用户点到侧边栏入口后反而看不见它们。所以按用户要求收回到面板内部。
 ## 2. 调试（一条命令）
 
 ```sh
@@ -132,31 +108,23 @@ node scripts/dsh-dev.mjs --stop    # 停实例
    `assert.deepStrictEqual` 整对象比较会失败；逐字段 `assert.equal`。函数组件要手动渲染
    （`if (typeof node.type === 'function') return toText(node.type(node.props))`）才能取文本。
 
-7. **`conversation.view` 的 tab 属于会话 header，不属于 BigFish 主面板。** 点侧边栏栏位进的是 `main`
-   插槽里的 BigFish 面板（那里没有顶部 tab 条）；要看「🐟 自动发布」必须先有一条非 blank 会话
-   （新建会话 / 发一条消息）并让主区域回到会话视图。`dsh-dev --fresh` 的隔离 home 里没有会话，
-   截图看不到 tab 不是注册失败。
-8. **list 插槽注册项必须带 `id`。** 漏了会在 `register` 时直接抛错（宿主按 id 去重与选 tab）；
-   `label` 缺了只是退化成用 `id` 当文案——两者都别省。
-9. **本沙箱里点不到真实 GUI 的 tab（浏览器与输入注入全被拒）。** 为了给「🐟 自动发布」拍"点开后的面板"实测：
-   - Chromium 系（Chrome/Edge/Electron 自起）起不来：`platform_channel.cc:112] Check failed ... 拒绝访问 (0x5)`
-     （mojo 依赖命名管道，被沙箱拒），浏览器进程随即退出；
-   - Firefox nightly（解压到无空格 `%TEMP%` 再跑）`-headless -screenshot` 退出码 1/255、不产 PNG，
-     `-marionette` 留进程但端口不监听；
-   - 给桌面端已有窗口注入输入也不行：`SetCursorPos` → Access denied；UIA/MSAA 跨进程取控件 →
-     `Access is denied`；`PostMessage` 的 `WM_MOUSEMOVE/WM_LBUTTONDOWN` 被 Chromium 忽略；
-   - 而切 tab 只能点按钮、或写 localStorage 的 `dsh.conversation.<sessionId>`（`view` 字段）后重载页面
-     （`ui-conversation/src/client/stores.ts:41-52`），两条都需要上面被拒的能力。
-   替代做法（2026-10-21 实测拍到了面板，见下）：
-   - 把桌面端窗口置前台，用 DPI-aware 的 GDI 截图（`SetProcessDpiAwarenessContext(-4)` + `CopyFromScreen`），
-     会话 header 的 tab 条里能看到「🐟 自动发布」（`.scratch/shots/tabbar-crop.png`）；
-   - 想拍"点开后的面板"，借 client 热更新：往 `client.js` 的 `apply` 开头临时插一段
-     `window.setTimeout(() => { const hit = [...window.document.querySelectorAll('[role="tab"]')]
-     .find((n) => (n.textContent ?? '').trim() === '🐟 自动发布'); if (hit) hit.click() }, 400)`
-     （宿主 stat-poll 500ms → `/plugins/events` 推 graph → 页面换 bundle：不需要浏览器、不需要输入注入），
-     截完图立刻把 `client.js` 还原。这段临时代码**不能进提交**（单测断言 bundle 里没有 `document.`）。
-   - 产物：`.scratch/shots/bigfish-publish-tab.png`（整屏）、`.scratch/shots/bigfish-publish-panel.png`（面板裁切，
-     含标题/副标题/流水线四步/草稿集/发布前校验）。
+7. **模块 tab 只存在于 BigFish 面板内部。** 点侧边栏栏位 → `main` 换成 `bigfish` → 看到面板页头 + 5 个模块 tab
+   （自动发布默认 / 账号 / 文案 / 概览 / 诊断）。**不要把模块注册到 `conversation.view`**：那条 tab 只在会话视图里，
+   且与「点了侧边栏入口就进面板」互斥（详见上一节）。
+8. **list 插槽（如 `conversation.view`）注册项必须带 `id`。** 漏了会在 `register` 时直接抛错；
+   `label` 缺了只是退化成用 `id` 当文案。当前实现不再用 list 插槽，保留这条备查。
+9. **本沙箱里点不到真实 GUI 的 tab（浏览器与输入注入全被拒）。** 要给面板拍"点开某模块"的实测：
+   - Chromium 系（Chrome/Edge/Electron 自起）起不来：`platform_channel.cc:112] Check failed ... 拒绝访问 (0x5)`；
+     Firefox nightly `-headless -screenshot` 退出码 1/255、不产 PNG；
+   - 给桌面端已有窗口注入输入也不行：`SetCursorPos` → Access denied；UIA/MSAA 跨进程取控件 → `Access is denied`；
+     `PostMessage` 的 `WM_MOUSEMOVE/WM_LBUTTONDOWN` 被 Chromium 忽略；
+   - 可行做法（2026-10-21 实测）：把桌面端窗口置前台，用 DPI-aware 的 GDI 截图
+     （`SetProcessDpiAwarenessContext(-4)` + `CopyFromScreen`）拍静态画面；想拍"切换后"的面板就借 client 热更新——
+     往 `client.js` 的 `apply` 末尾临时插一段 `window.setTimeout(...)`，在 DOM 里找到
+     `[aria-label="BigFish 闲鱼运营"]`（或 `[data-role="panel-tab"]` 里文案匹配的元素）派发
+     `pointerdown/mousedown/click`，宿主 stat-poll ~500ms 推新 bundle、页面自动重挂（不需要浏览器、不需要输入注入），
+     截完图立刻 `git checkout -- packages/plugin-ops/client.js` 还原。这段临时代码**不能进提交**
+     （单测断言 bundle 里没有 `document.`）。
 10. **新的 DSH_HOME 在本沙箱起不来（boot 阶段要建 fallback junction）。**
    `node scripts/dsh-dev.mjs --fresh` 报 `建 junction 失败 … EPERM`；手工造好 profile 后前台跑
    `dsh --profile bigfish-dev` 报 `EPERM: symlink … @deepseek-ai/dsh`，栈是
@@ -166,22 +134,23 @@ node scripts/dsh-dev.mjs --stop    # 停实例
 ## 4. 测试
 
 `packages/plugin-ops/test/client-bundle.test.mjs`（16 条）：用 `vm.runInNewContext` 跑 client.js，
-stub `window.__ModuleLoader__.load` 捕获注册、假 `react`（含按调用顺序分配槽位的 `useState`）、假 `ctx.slots`，断言：
+stub `window.__ModuleLoader__.load` 捕获注册、假 `react`（`useState` **按组件身份分槽**：`__enter(type)` / `__exit(prev)`
+切换当前组件，父子组件不会串位）、假 `ctx.slots`，断言：
 
 - loader id 与包名一致（`@bigfish/plugin-ops`）；
 - factory 懒执行：加载 bundle 时**不**调 `require`，apply 时才 require `react`；
-- `apply` 通过 `inject` 注册四个项：`sidebar.panellist`（id/order/label）、`main`（key）、两个
-  `conversation.view`（`bigfish-publish` order 20 label `🐟 自动发布`；`bigfish-account` order 30 label `👤 账号`）；
-- 账号 tab 面板只读：文案含登录态来源、`npm run daemon:login`、`xy_accounts_list` / `xy_import_account`，
+- `apply` 通过 `inject` 只注册两项：`sidebar.panellist`（id `bigfish` / order 30 / label `BigFish 闲鱼运营`）与
+  `main`（key `bigfish`），并断言**没有** `conversation.view` 注册；
+- 账号模块只读（`openTab('账号')`）：文案含登录态来源、`npm run daemon:login`、`xy_accounts_list` / `xy_import_account`，
   且不含任何 cookie 值（`cookie=` / `unb=\d` / `_m_h5_tk=`）；
 - 图标 `🐟`、active=true 时 opacity 1、否则 0.72、size 下限 12；
-- 顶部 4 个 tab（文案生成/概览/发布/诊断），默认选中第一个，点击后内容与 `aria-selected` 同步切换；
+- 面板内 5 个 tab（自动发布/账号/文案/概览/诊断），默认选中「自动发布」，点击后内容与 `aria-selected` 同步切换；
 - 标题副标题在任意 tab 都在；
 - 入口按钮 disabled，并用 title 指向对应工具；
 - 文案风格区 5 个 chip、默认选中 `plain`、点击后 `aria-pressed` 转移；
 - 填完商品名 + 价格后「生成文案请求」可用，产出的是 `xy_copy_plan` 参数 JSON（面板不调模型）；
 - 面板内嵌风格表与 `src/copy.js` 的 `COPY_STYLES` 不漂移（id/label/summary 逐项比对）；
-- 「自动发布」视图：标题/副标题、流水线四步、草稿集输入框、类目矩阵、页脚「面板不执行发布」都在；
+- 「自动发布」模块（默认 tab）：流水线四步、草稿集输入框、类目矩阵、发布命令、页脚「面板不执行发布」都在；
 - 草稿集逐行解析：内联 JSON 合法 / JSON 坏 / 缺 `images` / `.json` 路径 / 非法行，逐行给 `data-ok` 与提示；
 - 至少 2 条合法草稿才启用「生成批量发布请求」：禁用时用 title 说明原因；产出 `xy_publish_batch` 参数
   JSON（`mode` dry-run/enqueue、`draftPaths`/`drafts`、可选 `accountId`），任何输入变化都会撤销旧 JSON；
@@ -193,9 +162,9 @@ stub `window.__ModuleLoader__.load` 捕获注册、假 `react`（含按调用顺
 - 文案风格区只到「可交互组请求」：选风格 → 填商品名/价格/成色 → 产出 `xy_copy_plan` 参数 JSON；**真正的文案生成在 agent 侧**（面板不联网、不调模型），谁执行与面板解耦。
 - 没有服务端推送（SSE/WebSocket）到 client：P1 要展示队列进度时需要一条 daemon → 插件 → client 的通道。
 - 没有 `settings` 卡片（daemonUrl / tokenPath 现在只能写 `cordis.patch.yml`）。
-- 「👤 账号」tab 是只读面板：讲清登录态来源（导入 / 扫码 / 加密落盘）与两个工具入口，不读凭据、不联网；
+- 「账号」模块是只读面板：讲清登录态来源（导入 / 扫码 / 加密落盘）与两个工具入口，不读凭据、不联网；
   面板内直接点「导入 / 扫码」需要 client→host 的 rpc 通道（灰区，采用前写 ADR）。
-- 「🐟 自动发布」tab 只到「生成 `xy_publish_batch` 参数 JSON」：批量入队/发布由 agent 调工具或 CLI 执行，
+- 「自动发布」模块只到「生成 `xy_publish_batch` 参数 JSON」：批量入队/发布由 agent 调工具或 CLI 执行，
   面板不联网、不调 daemon（执行与 UI 解耦）。
 - `scripts/dsh-shot.mjs` 还没有「点开自动发布 tab → 断言面板文案」的用例：本沙箱起不了浏览器
   （§3 坑 9），写了也验不了；真实验收这次是借热更新自动点击 + GDI 截图做的（§3 坑 9 末段），

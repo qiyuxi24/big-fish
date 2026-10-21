@@ -9,7 +9,7 @@
 ## 1. 一句话
 
 **能登录、能取品、能单件全自动发布（真机跑通两次：填表 → 选类目 → 地址 → 提交 → 拿到 itemId → 已下架）；批量发布只有工具、没做真机试验；账号只有只读摘要；不能自动发货、IM 未接进 daemon。**
-P0 → P1.2 全部完成并提交。**当前按四模块重构**（用户 2026-10-21 拍板：一个插件、顶部 tab 切换、一个一个做）：发布 → 账号 → 发布前处理 → 采集参考，见 §4.1。
+P0 → P1.2 全部完成并提交。**当前按四模块重构**（用户 2026-10-21 拍板：一个插件、模块 tab 在侧边栏面板内切换、一个一个做）：发布 → 账号 → 发布前处理 → 采集参考，见 §4.1。
 P2 自动发货押后到发布这条线跑顺再切。
 
 ## 2. 能做什么 / 不能做什么
@@ -27,7 +27,7 @@ P2 自动发货押后到发布这条线跑顺再切。
 | `publish` 单件发布（CDP 步骤机，真提交） | ✅ 真机（两次） | 2026-10-21 发成 `1093817229436`；2026-10-21/22 再发成 `1091938715735`（分类「学习笔记」+ 地址全自动填 → 提交 → 14.5s 拿到 itemId），**两次都已下架留档**。真提交需 `--submit` / `BF_PUBLISH_SUBMIT=1`；类目受网页端支持矩阵限制（电子资料/学习笔记/课业本 ✅；教材教辅/语言培训/学习资料定制/文学/考研咨询 ❌）。itemId 是人工试验的产物，仓库代码里没有痕迹 |
 | `publish` dry-run（填表不提交） | ✅ 真机 | 发布页 → 传 2 图 → 文案 → 选类目 → 价格/包邮 → 地址 → 必填预检 → 收尾，每步截图。**不带 category/address 时能填表但过不了提交前预检** |
 | 草稿指定类目 + 不支持即失败 | ✅ 真机 | `channel-cdp/src/category.ts`（+ `category-page.ts`）：按 `aria-controls` 绑定当前下拉、点前 `elementFromPoint` 命中测试、**不对 portal 选项 scrollIntoView**（会滚主页面导致点击落空）、连续 2 次回读一致才算选中（最多重试 3 次）；命中「网页版暂不支持」立即 `VALIDATION` |
-| 会话顶部 tab（模块切换） | ✅ 真机（桌面端 GUI 实拍） | `plugin-ops/client.js` 的 `VIEW_MODULES` 逐个注册 slot `conversation.view`：「🐟 自动发布」id `bigfish-publish` order 20、「👤 账号」id `bigfish-account` order 30。纯 UI、不联网、不执行；tab 条只在「非 blank 会话 + main=conversation」时出现；插件入口仍只在侧边栏 |
+| 面板内模块 tab（切换） | ✅ 真机（桌面端 GUI 实拍） | 插件只注册 `sidebar.panellist` + `main`；面板内 `PANEL_TABS` 切 5 个分区：自动发布（默认）/ 账号 / 文案 / 概览 / 诊断，`PanelBody` 分发。纯 UI、不联网、不执行。**不回退到会话顶部 tab**（`conversation.view`：点侧边栏后 main 换成 bigfish，会话与 tab 条一起离开 DOM） |
 | 账号列表摘要（`GET /accounts` / `xy_accounts_list`） | ✅ 真机 | daemon 只读摘要：accountId / updatedAt / savedFieldCount / ready（`unb`+`_m_h5_tk` 齐备）/ ageMs；单个凭据损坏标 `broken` 不拖垮整表；不带任何 cookie 值。工具只读、不挂门禁。真机：真实数据目录 `%LOCALAPPDATA%/bigfish` 下起 daemon，`GET /accounts` 200 返回 1 个账号（`ready: true`、savedFieldCount 21）；`xy_accounts_list` 仍只有单测 |
 | 批量入队 `xy_publish_batch` | ✅ 单测（未真机批量） | `plugin-ops/src/batch.js`：逐条校验 + `draftDedupeKey` 幂等 + `mode=dry-run` 默认；写类工具挂审批门禁（仅 enqueue 需确认）。缺 daemon 批次概念与 `created` 标志 |
 | 批量上架调度 | ❌ 未做 | 缺「批次 → 串行 pacing → 批次汇总」的批次层；批量只是 N 条独立 publish 任务 |
@@ -54,25 +54,25 @@ node scripts/test-all.mjs     # 647 tests / 647 pass / 23 suites / 64 个测试�
 | channel-cdp | 91 | 假连接与假页面回放（分类下拉 16 例） |
 | channel-guanjia | 62 | 纯函数 |
 | channel-im | 32 | 帧解析 / 归一化 / 状态机 |
-| plugin-ops | 86 | 插件契约、门禁、草稿校验、批量入队、文案风格注入、账号摘要渲染、client bundle（两个顶部 tab） |
+| plugin-ops | 86 | 插件契约、门禁、草稿校验、批量入队、文案风格注入、账号摘要渲染、client bundle（面板内 5 个模块 tab） |
 | integration | 2 | 插件 client ↔ 真 daemon 端到端 |
 | **合计** | **647** | ops-bundle 无测试（只声明组合） |
 
 - 类型检查：**6 个 TS 包** tsc 0 错误（core / daemon / channel-mtop / channel-cdp / channel-guanjia / channel-im）。
   **plugin-ops 与 ops-bundle 是纯 ESM JS，无 tsconfig，不在类型检查覆盖内**——改这两个包只能靠测试。
 - 运行时零第三方依赖；全仓 `TODO/FIXME/HACK` 0 条。
-- 仓库 8 个包、daemon 11 条 HTTP 路由、插件 12 个 `xy_*` 工具、5 个 TaskKind（probe/polish/publish/deliver/reply）、2 个顶部 tab 模块。
+- 仓库 8 个包、daemon 11 条 HTTP 路由、插件 12 个 `xy_*` 工具、5 个 TaskKind（probe/polish/publish/deliver/reply）、面板内 5 个模块 tab。
 
 ## 4. 下一步
 
 ### 4.1 主线：拆成四个模块，一个一个做（用户 2026-10-21 拍板）
 
-**产品结构**：仍然是**一个插件**；四个模块各注册一个顶部 tab（slot `conversation.view`）切换；**插件入口只在侧边栏**，不占顶部。加模块 = 在 `plugin-ops/client.js` 的 `VIEW_MODULES` 追加一项（面板组件之间互不依赖）。
+**产品结构（2026-10-21 纠正）**：仍然是**一个插件**；插件入口只在侧边栏（`sidebar.panellist` + `main`），**四个模块是侧边栏面板内部的 tab**（`client.js` 的 `PANEL_TABS` + `PanelBody` 分发），不占会话顶部；加模块 = `PANEL_TABS` 追加一项 + `PanelBody` 补一行分支（模块组件之间互不依赖）。
 
-| 模块 | 顶部 tab | 现在到哪 | 下一步 |
+| 模块 | 模块 tab（面板内） | 现在到哪 | 下一步 |
 | --- | --- | --- | --- |
 | **发布** | 🐟 自动发布（`bigfish-publish`，order 20） | 单件全链路真机跑通（2 次，均已下架）；批量入队工具已有、**未真机批量** | A3：批量 ≥2 条 + 含不支持类目；之后 B1 批量节流（同号连发第二件已实测被风控） |
-| **账号** | 👤 账号（`bigfish-account`，order 30） | 只读摘要接口 + 第 12 个工具 + 顶部 tab 面板；**只有单测，未真机** | 面板内导入/扫码（需 host rpc + ADR）；多账号绑定；凭据备份 |
+| **账号** | 「账号」tab | 只读摘要接口（**已真机** `GET /accounts` 200）+ 第 12 个工具 + 面板内「账号」模块 | 面板内导入/扫码（需 host rpc + ADR）；多账号绑定；凭据备份 |
 | **发布前处理** | 未注册 | 文案 skill 2 个 + `xy_copy_plan` 风格注入（只产提示词）；生图只有方案 | 文案接进 agent 流程；设置页（先走 tab 内自建）；生图选型 |
 | **采集参考** | 未注册 | 无 | 先等业务红线拍板（能不能存缩略图、参考到什么程度），见 §4.3 |
 
@@ -84,7 +84,7 @@ node scripts/test-all.mjs     # 647 tests / 647 pass / 23 suites / 64 个测试�
 
 | 步骤 | 做什么 | 验收 |
 | --- | --- | --- |
-| **A1 顶部 tab** ✅ | 会话顶部注册「🐟 自动发布」视图：流水线说明 + 草稿集粘贴 + 发布前校验 + 产出请求 JSON（不联网、不执行） | 已在桌面端 GUI 实拍（tab 条 4 条：对话/轨迹/上下文/自动发布），client-bundle 测试覆盖 |
+| **A1 面板内「自动发布」tab** ✅ | 侧边栏面板默认分区：流水线说明 + 草稿集粘贴 + 发布前校验 + 产出请求 JSON + 发布命令（不联网、不执行） | 桌面端 GUI 实拍 + client-bundle 测试覆盖 |
 | **A2 批量入队** ✅ 单测 | `xy_publish_batch`：逐条校验 + `dedupeKey` 幂等入队 + 逐条状态（queued / skipped-duplicate / invalid），默认 `mode=dry-run` | 单测全绿 + 写类工具挂审批门禁；**未做过真机批量** |
 | **A3 真机小批量** 🟡 进行中 | 1 条 dry-run → 1 条真发 → 看队列/截图/itemId；再跑 3 条含一条不支持类目 | 单件 dry-run（含类目+地址）✅、单件真发 + 拿到 itemId + 已下架 ✅（`1091938715735`）；**「批量 ≥2 条」与「含不支持类目」还没跑** |
 | B1–B4（后续） | 批量 pacing（任务间隔、夜间不跑）→ 批次汇总/面板进度 → 类目矩阵补测（A3 扫码兜底）→ 10 件连发回归 | 不跨步；每步都先小批真机 |
@@ -93,7 +93,7 @@ node scripts/test-all.mjs     # 647 tests / 647 pass / 23 suites / 64 个测试�
 
 ### 4.1.2 账号模块（第二个做，只读摘要已通）
 
-**已落地（c01e86e）**：daemon `GET /accounts`（`packages/daemon/src/account-list.ts`）返回只读摘要 `{ accountId, updatedAt, savedFieldCount, ready, unb?, ageMs, broken?, brokenReason? }`——`unb` + `_m_h5_tk` 齐备才算 `ready`，单个凭据损坏只标 `broken` 不拖垮整表，**任何 cookie 值都不出 daemon 进程**；插件第 12 个工具 `xy_accounts_list`（只读、不挂门禁）；顶部 tab「👤 账号」= 登录态来源三张卡 + 两个工具入口 + 三条已知边界，面板不联网、不读 cookie。单测：daemon 12 例（含损坏、load 竞态、ageMs 非负、401/500）+ plugin-ops 1 例。
+**已落地（c01e86e）**：daemon `GET /accounts`（`packages/daemon/src/account-list.ts`）返回只读摘要 `{ accountId, updatedAt, savedFieldCount, ready, unb?, ageMs, broken?, brokenReason? }`——`unb` + `_m_h5_tk` 齐备才算 `ready`，单个凭据损坏只标 `broken` 不拖垮整表，**任何 cookie 值都不出 daemon 进程**；插件第 12 个工具 `xy_accounts_list`（只读、不挂门禁）；面板内「账号」模块 = 登录态来源三张卡 + 两个工具入口 + 三条已知边界，面板不联网、不读 cookie。单测：daemon 12 例（含损坏、load 竞态、ageMs 非负、401/500）+ plugin-ops 1 例。
 
 **没做**：①面板里直接点「导入 / 扫码」——需要 client→host 的 rpc 通道（`ctx.connection.rpc.handle('/bigfish')` + 轮询），属灰区，采用前写 ADR；②多账号切换 / 把账号绑定到发布任务；③凭据备份与恢复（`daemon.token` / 凭据目录的备份脚本）。
 
@@ -119,7 +119,7 @@ node scripts/test-all.mjs     # 647 tests / 647 pass / 23 suites / 64 个测试�
 3. **发货接受「半自动」多久**：先人工确认跑一段，还是必须一步到全自动？（全自动要先逆向订单接口）
 4. **账号面板要不要自己做导入/扫码按钮**：要就得补一条 client→host 的 rpc 通道（灰区，需 ADR 说明为何绕过「面板按钮不调 host 工具」的现状）；不做的话面板只读、导入继续在对话里让 agent 调工具。
 5. （已拍板，存档）首发主打：**自动发布**——用户 2026-10-21 决定「先做自动发布，其他功能一个一个来」。
-6. （已拍板，存档）**一个插件 + 四个顶部 tab**，插件入口只在侧边栏——用户 2026-10-21 定。
+6. （已拍板，存档）**一个插件 + 四个模块**，模块 tab 在侧边栏面板内切换，插件入口只在侧边栏——用户 2026-10-21 定。
 
 
 ## 5. 已知风险（别对外宣称）

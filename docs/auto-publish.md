@@ -42,14 +42,14 @@
 
 | 编号 | 做什么 | 文件 | 验收 |
 | --- | --- | --- | --- |
-| A1 | GUI 会话顶部 tab「🐟 自动发布」：流水线说明 + 草稿集粘贴 + 发布前校验 + 产出请求 JSON（不联网、不执行） | `packages/plugin-ops/client.js`（slot `conversation.view`） | 隔离 dev 实例里真实浏览器点开新 tab 看到面板；`plugin-ops` 测试全绿 |
+| A1 | 侧边栏面板内「自动发布」tab（`PANEL_TABS` 第一项、默认选中）：流水线说明 + 草稿集粘贴 + 发布前校验 + 产出请求 JSON（不联网、不执行） | `packages/plugin-ops/client.js`（面板内模块 tab） | 桌面端 GUI 实拍点开看到面板；`plugin-ops` 测试全绿 |
 | A2 | `xy_publish_batch`：批量校验 + 幂等入队 + 逐条状态汇总；`mode=dry-run` 默认 | `packages/plugin-ops/src/batch.js`、`tools.js`、`gate.js` | 单测（假 daemon client）+ 全量测试；写类工具走审批门禁 |
 | A3 | 真机小批量试验：1 条 dry-run → 1 条真发 → 观察队列/截图/itemId | 无代码（用测试小号） | 见 §5 验收口径 |
 
 后续（不跨步）：B1 批量 pacing（任务间隔、夜间不跑）→ B2 批次汇总端点/面板进度 → B3 类目矩阵补测（A3 扫码兜底）→ B4 一条命令跑 10 件并回归。
 
 **已落地**：
-- **A1 ✅**：`packages/plugin-ops/client.js` 注册 slot `conversation.view`（id `bigfish-publish`、order 20、label「🐟 自动发布」）。面板 = 流水线四步说明 + 草稿集 textarea（每行内联 JSON 或 `.json` 路径）+ 发布前校验（JSON 合法性、缺字段、类目矩阵提示）+ 模式 chips（dry-run / enqueue，默认 dry-run）+ 「生成批量发布请求」产出 `xy_publish_batch` 参数 JSON。纯客户端：不联网、不调模型、不执行写操作。已在桌面端 GUI 实拍（tab 条 4 条：对话/轨迹/上下文/自动发布）。
+- **A1 ✅**：`packages/plugin-ops/client.js` 的 `PANEL_TABS` 第一项 = 自动发布（点侧边栏「BigFish 闲鱼运营」进面板即默认这个分区）。面板 = 流水线四步说明 + 草稿集 textarea（每行内联 JSON 或 `.json` 路径）+ 发布前校验（JSON 合法性、缺字段、类目矩阵提示）+ 模式 chips（dry-run / enqueue，默认 dry-run）+ 「生成批量发布请求」产出 `xy_publish_batch` 参数 JSON + 发布命令清单。纯客户端：不联网、不调模型、不执行写操作。**2026-10-21 曾注册成会话顶部 tab（`conversation.view`），用户要求主页面在侧边栏面板里，已收回面板内**。
 - **A2 ✅ 单测**：`packages/plugin-ops/src/batch.js`（`normalizeBatchArgs` / `prepareBatch` / `runBatch` / `formatBatchResult`）+ 第 11 个工具 `xy_publish_batch` + `gate.js` 审批口径（仅 `mode=enqueue` 需确认）。单条与批量共用 `publish-flow.js` 的 `buildPublishEnqueueInput`，幂等键同口径（`publish:<8hex>`）。
 - **A3 🟡 半程**：单件 dry-run（含类目 + 地址）与**单件真提交**均已真机通过，见 §5.1；**批量（≥2 条）与「含不支持类目」还没跑**。
 

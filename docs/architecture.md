@@ -32,7 +32,7 @@
 | --- | --- | --- | --- |
 | `packages/core` | TS | 无 | 领域类型与契约、错误、ret 风控分类、队列/存储、商品仓储、发布前策略校验、限流熔断、凭据、配置、脱敏日志 |
 | `packages/daemon` | TS | core、channel-mtop、channel-cdp | HTTP 控制面 + CLI + 运行时装配 + worker + 执行器 + DaemonClient |
-| `packages/plugin-ops` | JS(ESM) | 无（含自带 HTTP client） | 12 个 `xy_*` 工具 + 写操作审批门禁 + 侧边栏面板 + 2 个顶部 tab 模块（自动发布 / 账号） |
+| `packages/plugin-ops` | JS(ESM) | 无（含自带 HTTP client） | 12 个 `xy_*` 工具 + 写操作审批门禁 + 侧边栏面板（面板内 5 个模块 tab：自动发布 / 账号 / 文案 / 概览 / 诊断） |
 | `packages/ops-bundle` | JS | plugin-ops | 只声明 `dsh.bundle.patch`，把插件塞进 profile |
 | `packages/channel-mtop` | TS | core | mtop 通道：签名、信封、cookie 归一、ret 分类、读接口与发布接口的 data 构造（**纯函数，无状态**） |
 | `packages/channel-cdp` | TS | core | CDP 会话：启动/attach 真 Chrome、页面操作、拦截 XHR JSON、发布步骤状态机、cookie 读取与登录态校验 |
@@ -176,7 +176,7 @@ queued ──lease──► leased ──ack──► done
 - **发布页地址搜索在 CDP 下不可用**：联想请求能发出、响应正常，但候选列表 UI 不回显，只能从「常用地址/附近地址」里匹配（§13.3）。类目：页面 AI 自动识别，草稿可用 `category` 覆盖；**网页端只支持部分类目**，不支持时立即失败（§13.5）。
 - **发货未实现、IM 已提交未接线**：`deliver/reply` 仍是 `UNSUPPORTED`；`packages/channel-im` 已提交（32 tests：帧解析/消息归一化/会话状态机）但**未接 daemon**（daemon 无该依赖），websocket 长连/消息发送/鉴权握手均未实现；协议与规则见 [im-protocol.md](im-protocol.md)、[delivery-rules.md](delivery-rules.md)。
 - **登录态导入与扫码登录均已实现**：导入走 `npm run daemon:import-account`（或 `POST /accounts/import`、插件 `xy_import_account`），从带 `--remote-debugging-port=9222` 的浏览器读 cookie；扫码走 `npm run daemon:login` / `POST /accounts/login`，轮询到 `unb` + `_m_h5_tk` 齐备才算成功（默认超时 180s）。两者都写 `CredentialStore`（AES-256-GCM），accountId 默认取 cookie 里的 `unb`。
-- **侧边栏面板 + 两个顶部 tab 模块**：侧边栏主面板顶部 4 个 tab（文案生成 / 概览 / 发布 / 诊断），只有文案页可交互且不调模型；另有会话顶部 tab「🐟 自动发布」「👤 账号」（`conversation.view`，见 `plugin-ops/client.js` 的 `VIEW_MODULES`），都是纯 UI、不联网、不读凭据。DSH 宿主没有「面板按钮调 host 工具」的公开 API，所以按钮 disabled 或只产出参数 JSON；面板内导入/扫码要补 client→host rpc（采用前写 ADR）。
+- **侧边栏面板内的模块 tab（2026-10-21 纠正）**：插件只注册 `sidebar.panellist` + `main` 两个插槽；主面板内部用 `PANEL_TABS` 切 5 个分区——自动发布（默认）/ 账号 / 文案 / 概览 / 诊断（见 `plugin-ops/client.js` 的 `PANEL_TABS` 与 `PanelBody` 分发）。**不注册会话顶部 tab**（`conversation.view` 与「点侧边栏进面板」互斥，试过后已移除）。所有分区都是纯 UI：不联网、不读凭据、不调模型，需要执行的动作交给 agent 调工具或 daemon。DSH 宿主没有「面板按钮调 host 工具」的公开 API，所以按钮 disabled 或只产出参数 JSON；面板内导入/扫码要补 client→host rpc（采用前写 ADR）。
 - **没有打包**：Electron/headless 分发形态待用户决策。
 - **没有真实联调**：所有测试都不发真实网络（AGENTS §5），首次真机验证需小号。
 
@@ -188,7 +188,7 @@ queued ──lease──► leased ──ack──► done
 | core | 131 | 队列、仓储、策略、限流熔断、凭据、脱敏、配置、发货规则引擎（P2） |
 | daemon | 155 | HTTP、CLI、客户端、执行器、worker、路由、账号导入/扫码登录、CDP 发布通道（含 5 条 `runtime.test.ts` 全链路集成：真 HTTP + 真 SQLite + 假 mtop transport） |
 | channel-mtop / channel-cdp / channel-guanjia / channel-im | 88 / 91 / 62 / 32 | 纯函数、假连接与假页面（channel-cdp 含富文本/地址/预检假页面回放；channel-im 帧解析/会话状态机，未接 daemon） |
-| plugin-ops | 86 | 插件契约、审批门禁、草稿校验、批量入队、账号摘要渲染、client bundle（含两个顶部 tab） |
+| plugin-ops | 86 | 插件契约、审批门禁、草稿校验、批量入队、账号摘要渲染、client bundle（含面板内 5 个模块 tab） |
 | integration | 2 | 插件 client ↔ 真 daemon 的跨层端到端 |
 | 类型检查 | 6 个 TS 包 0 错误 | 借 DSH checkout 的 `tsc --noEmit`；`plugin-ops` / `ops-bundle` 是纯 ESM JS（无 tsconfig，靠 JSDoc + 单测），**不在类型检查覆盖内** |
 
