@@ -13,43 +13,79 @@ import type { PublishDraft } from '../src/publish.ts'
 import type { DomPage } from '../src/dom.ts'
 import type { PublishContext } from '../src/steps.ts'
 
-const OPEN_POINT = { x: 400, y: 300 }
+const TRIGGER_POINT = { x: 400, y: 300 }
 const OPTION_POINT = { x: 420, y: 360 }
 
 /**
  * 假分类下拉：用脚本标记（bf-category-*）区分不同表达式，模拟 antd Select 的坐标点击行为。
- * - 只有「可信鼠标事件」按在触发器坐标上，才算打开下拉；
- * - 按在选项坐标上时把下拉值改成被点的候选（模拟 antd 的受控回写）。
+ *
+ * 它同时扮演「页面契约的守卫」：
+ * - 选项/候选查询必须带 `ant-select-dropdown-hidden`（否则会把已关闭/别的 Select 的选项扫进来）；
+ * - 选项查询必须带 `ant-select-open`（下拉没打开时不能给坐标）；
+ * - 取选项坐标的脚本不允许出现 `scrollIntoView(`（真机上滚页面会让 antd 重排下拉，点击落空）。
+ * 这些断言让「实现退回到旧写法」时单测直接失败，而不是只靠真机才暴露。
  */
 class FakeSelectPage implements DomPage {
   readonly commands: { method: string; params: Record<string, unknown> }[] = []
   readonly screenshots: string[] = []
   /** 下拉当前选中的值。 */
   value = ''
-  /** 下拉里可选候选文本。 */
-  optionTexts: string[] = ['电子资料', '学习笔记', '教材教辅']
+  /** 当前打开的下拉里的候选文本。 */
+  visibleOptions: string[] = ['电子资料', '学习笔记', '教材教辅']
+  /** 已关闭/别的 Select 的旧下拉里的候选（旧实现会误扫到它们）。 */
+  hiddenOptions: string[] = []
   bodyText = ''
   /** 触发器是否可见（false 模拟页面结构变化）。 */
   triggerVisible = true
-  /** 点了选项后回读到的值（默认等于被点候选；改成别的值可测「点了但没生效」）。 */
-  valueAfterClick: string | undefined
+  /** 触发器是否在视口内（false 时应先滚动再点）。 */
+  triggerInViewport = true
+  /** 可信点击触发器能否打开下拉（false 模拟 antd 没响应）。 */
+  opensOnClick = true
   dropdownOpen = false
+  /** 每次点击选项后回读到的值（按顺序消费；用于模拟「先点错、再点对」）。 */
+  clickValues: string[] = []
+  /** 固定回读值（不消费序列；模拟「点了但值没变」）。 */
+  valueAfterClick: string | undefined
+  scrollCalls = 0
+  /** 下拉没打开时按到选项坐标的次数（应为 0：宁可不点也不能乱点）。 */
+  strayOptionClicks = 0
   private pendingPick = ''
-  private lastMove = { x: 0, y: 0 }
 
   async evaluate<T = unknown>(expression: string): Promise<T> {
     if (expression.includes('innerText')) return this.bodyText as T
-    if (expression.includes('bf-category-select-rect')) {
-      return (this.triggerVisible ? JSON.stringify(OPEN_POINT) : '') as T
+    if (expression.includes('bf-category-select-state')) {
+      if (!this.triggerVisible) return '' as T
+      return JSON.stringify({
+        x: TRIGGER_POINT.x,
+        y: TRIGGER_POINT.y,
+        inViewport: this.triggerInViewport,
+        open: this.dropdownOpen,
+      }) as T
     }
     if (expression.includes('bf-category-value')) return this.value as T
-    if (expression.includes('bf-category-option-texts')) return [...this.optionTexts] as T
+    if (expression.includes('bf-category-scroll')) {
+      this.scrollCalls += 1
+      this.triggerInViewport = true
+      return 'ok' as T
+    }
+    if (expression.includes('bf-category-option-texts')) {
+      assert.ok(expression.includes('ant-select-dropdown-hidden'), '候选查询必须排除已关闭的下拉')
+      return (this.dropdownOpen ? [...this.visibleOptions] : []) as T
+    }
     if (expression.includes('bf-category-option-rect')) {
-      const matched = /const want = "([^"]*)"/.exec(expression)
+      const matched = /optionText\(el\) === "([^"]*)"/.exec(expression)
       const want = matched?.[1] ?? ''
-      if (!this.optionTexts.includes(want)) return '' as T
+      assert.ok(expression.includes('ant-select-dropdown-hidden'), '选项查询必须排除已关闭的下拉')
+      assert.ok(expression.includes('ant-select-open'), '选项查询必须先确认下拉已打开')
+      assert.equal(expression.includes('scrollIntoView('), false, '取选项坐标不能滚动页面（会重排下拉）')
+      if (!this.dropdownOpen) return JSON.stringify({ miss: 'not-open', options: [] }) as T
+      // 隐藏下拉里同名选项不算数：它不在当前打开的列表里，所以只能拿可见候选去比对
+      const options = [...this.visibleOptions]
+      if (!this.visibleOptions.includes(want)) {
+        return JSON.stringify({ miss: 'no-option', options }) as T
+      }
       this.pendingPick = want
-      return JSON.stringify(OPTION_POINT) as T
+      return JSON.stringify({ x: OPTION_POINT.x, y: OPTION_POINT.y }) as T
     }
     throw new Error('未预期的页面脚本：' + expression.slice(0, 80))
   }
@@ -60,21 +96,22 @@ class FakeSelectPage implements DomPage {
 
   async command<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     this.commands.push({ method, params })
-    const point = { x: Number(params['x'] ?? 0), y: Number(params['y'] ?? 0) }
     if (method !== 'Input.dispatchMouseEvent') return {} as T
-    if (params['type'] === 'mouseMoved') {
-      this.lastMove = point
-      return {} as T
-    }
+    const point = { x: Number(params['x'] ?? 0), y: Number(params['y'] ?? 0) }
+    const at = (target: { x: number; y: number }): boolean => target.x === point.x && target.y === point.y
     if (params['type'] !== 'mousePressed') return {} as T
-    const same = (a: { x: number; y: number }): boolean => a.x === this.lastMove.x && a.y === this.lastMove.y
-    if (same(OPEN_POINT)) {
-      this.dropdownOpen = true
+    if (at(TRIGGER_POINT)) {
+      if (this.opensOnClick) this.dropdownOpen = true
       return {} as T
     }
-    if (this.dropdownOpen && same(OPTION_POINT)) {
-      this.value = this.valueAfterClick ?? this.pendingPick
+    if (!at(OPTION_POINT)) return {} as T
+    if (!this.dropdownOpen) {
+      this.strayOptionClicks += 1
+      return {} as T
     }
+    // antd Select 选中后关闭下拉
+    this.dropdownOpen = false
+    this.value = this.clickValues.shift() ?? this.valueAfterClick ?? this.pendingPick
     return {} as T
   }
 
@@ -97,6 +134,16 @@ function baseDraft(overrides: Partial<PublishDraft> = {}): PublishDraft {
   }
 }
 
+function pressCount(page: FakeSelectPage, point: { x: number; y: number }): number {
+  return page.commands.filter(
+    (entry) =>
+      entry.method === 'Input.dispatchMouseEvent' &&
+      entry.params['type'] === 'mousePressed' &&
+      entry.params['x'] === point.x &&
+      entry.params['y'] === point.y,
+  ).length
+}
+
 test('trustedClickAt 依次派发 move/press/release 三个可信鼠标事件', async () => {
   const page = new FakeSelectPage()
   await trustedClickAt(page, { x: 12, y: 34 })
@@ -117,11 +164,12 @@ test('readCategoryValue 读当前选中文本；未选中返回空串', async ()
   assert.equal(await readCategoryValue(page), '电子资料')
 })
 
-test('readCategoryOptionTexts 返回候选文本；页面返回非数组时按空处理', async () => {
+test('readCategoryOptionTexts 只返回当前打开下拉的候选；关闭时为空', async () => {
   const page = new FakeSelectPage()
-  assert.deepEqual(await readCategoryOptionTexts(page), ['电子资料', '学习笔记', '教材教辅'])
-  page.optionTexts = []
+  page.hiddenOptions = ['已关闭下拉里的旧选项']
   assert.deepEqual(await readCategoryOptionTexts(page), [])
+  page.dropdownOpen = true
+  assert.deepEqual(await readCategoryOptionTexts(page), ['电子资料', '学习笔记', '教材教辅'])
 })
 
 test('stepSelectCategory 打开下拉、点选目标类目、回读校验并截图', async () => {
@@ -130,32 +178,100 @@ test('stepSelectCategory 打开下拉、点选目标类目、回读校验并截�
   const logs: string[] = []
   await stepSelectCategory(page, makeCtx(logs), '电子资料', { timeoutMs: 200, screenshotsDir: 'D:/shots' })
   assert.equal(page.value, '电子资料')
-  assert.equal(page.dropdownOpen, true)
+  assert.equal(page.dropdownOpen, false)
   assert.deepEqual(page.screenshots, ['D:/shots/04b-category.png'])
   assert.equal(logs.length, 1)
   assert.match(logs[0] ?? '', /AI 识别为「教材教辅」→ 选为「电子资料」/)
 })
 
-test('stepSelectCategory：页面提示网页端不支持该类目时 fail-closed', async () => {
+test('stepSelectCategory：下拉没打开时先打开，再点选项', async () => {
   const page = new FakeSelectPage()
-  page.bodyText = '分类 ' + CATEGORY_UNSUPPORTED_TEXT + '，请使用闲鱼APP扫码继续发布 点击展示二维码'
-  const logs: string[] = []
+  page.value = '教材教辅'
+  assert.equal(page.dropdownOpen, false)
+  await stepSelectCategory(page, makeCtx([]), '电子资料', { timeoutMs: 400 })
+  const pressTypes = page.commands
+    .filter((entry) => entry.method === 'Input.dispatchMouseEvent' && entry.params['type'] === 'mousePressed')
+    .map((entry) => ({ x: entry.params['x'], y: entry.params['y'] }))
+  assert.deepEqual(pressTypes[0], TRIGGER_POINT)
+  assert.deepEqual(pressTypes[1], OPTION_POINT)
+  assert.equal(page.value, '电子资料')
+  assert.equal(page.strayOptionClicks, 0)
+})
+
+test('stepSelectCategory：触发器不在视口内时先滚到可见处再打开', async () => {
+  const page = new FakeSelectPage()
+  page.value = '教材教辅'
+  page.triggerInViewport = false
+  await stepSelectCategory(page, makeCtx([]), '电子资料', { timeoutMs: 400 })
+  assert.equal(page.scrollCalls, 1)
+  assert.equal(page.value, '电子资料')
+})
+
+test('stepSelectCategory：隐藏 dropdown 里的同名选项不得被选中', async () => {
+  const page = new FakeSelectPage()
+  page.visibleOptions = ['电子资料', '教材教辅']
+  page.hiddenOptions = ['学习笔记']
   await assert.rejects(
-    () => stepSelectCategory(page, makeCtx(logs), '电子资料', { timeoutMs: 200 }),
+    () => stepSelectCategory(page, makeCtx([]), '学习笔记', { timeoutMs: 120 }),
     (error: unknown) => {
       const err = error as { code?: string; message?: string }
       assert.equal(err.code, 'VALIDATION')
-      assert.match(err.message ?? '', /网页版不支持发布/)
-      assert.match(err.message ?? '', /换一个网页端支持的类目/)
+      assert.match(err.message ?? '', /没有「学习笔记」这个选项/)
+      assert.match(err.message ?? '', /电子资料、教材教辅/)
       return true
     },
   )
-  assert.deepEqual(logs, [])
+  assert.equal(page.value, '')
+  assert.equal(page.strayOptionClicks, 0)
+  assert.equal(pressCount(page, OPTION_POINT), 0)
+})
+
+test('stepSelectCategory：点空了回读不一致时会重开下拉重选，第二次成功', async () => {
+  const page = new FakeSelectPage()
+  page.value = '电子资料'
+  // 第一次点击落空（值仍是 AI 识别出来的「学习笔记」），第二次才点中目标
+  page.clickValues = ['学习笔记', '电子资料']
+  const logs: string[] = []
+  await stepSelectCategory(page, makeCtx(logs), '电子资料', { timeoutMs: 800 })
+  assert.equal(page.value, '电子资料')
+  assert.equal(pressCount(page, TRIGGER_POINT) >= 2, true)
+  assert.equal(logs.length, 1)
+})
+
+test('stepSelectCategory：重试耗尽仍回读不一致时 fail-closed', async () => {
+  const page = new FakeSelectPage()
+  page.value = '电子资料'
+  page.valueAfterClick = '学习笔记'
+  await assert.rejects(
+    () => stepSelectCategory(page, makeCtx([]), '电子资料', { timeoutMs: 200 }),
+    (error: unknown) => {
+      const err = error as { code?: string; message?: string }
+      assert.equal(err.code, 'VALIDATION')
+      assert.match(err.message ?? '', /下拉显示的是「学习笔记」/)
+      return true
+    },
+  )
+})
+
+test('stepSelectCategory：下拉点不开时拒绝继续，也不乱点候选', async () => {
+  const page = new FakeSelectPage()
+  page.opensOnClick = false
+  await assert.rejects(
+    () => stepSelectCategory(page, makeCtx([]), '电子资料', { timeoutMs: 150 }),
+    (error: unknown) => {
+      const err = error as { code?: string; message?: string }
+      assert.equal(err.code, 'VALIDATION')
+      assert.match(err.message ?? '', /下拉没有打开/)
+      return true
+    },
+  )
+  assert.equal(page.strayOptionClicks, 0)
+  assert.equal(pressCount(page, OPTION_POINT), 0)
 })
 
 test('stepSelectCategory：下拉里没有目标类目时报出候选列表', async () => {
   const page = new FakeSelectPage()
-  page.optionTexts = ['教材教辅', '文学']
+  page.visibleOptions = ['教材教辅', '文学']
   await assert.rejects(
     () => stepSelectCategory(page, makeCtx([]), '电子资料', { timeoutMs: 120 }),
     (error: unknown) => {
@@ -182,18 +298,21 @@ test('stepSelectCategory：触发器找不到时给出结构变化提示', async
   )
 })
 
-test('stepSelectCategory：点了选项但回读不一致时拒绝继续', async () => {
+test('stepSelectCategory：页面提示网页端不支持该类目时 fail-closed', async () => {
   const page = new FakeSelectPage()
-  page.valueAfterClick = '学习笔记'
+  page.bodyText = '分类 ' + CATEGORY_UNSUPPORTED_TEXT + '，请使用闲鱼APP扫码继续发布 点击展示二维码'
+  const logs: string[] = []
   await assert.rejects(
-    () => stepSelectCategory(page, makeCtx([]), '电子资料', { timeoutMs: 120 }),
+    () => stepSelectCategory(page, makeCtx(logs), '电子资料', { timeoutMs: 200 }),
     (error: unknown) => {
       const err = error as { code?: string; message?: string }
       assert.equal(err.code, 'VALIDATION')
-      assert.match(err.message ?? '', /下拉显示的是「学习笔记」/)
+      assert.match(err.message ?? '', /网页版不支持发布/)
+      assert.match(err.message ?? '', /换一个网页端支持的类目/)
       return true
     },
   )
+  assert.deepEqual(logs, [])
 })
 
 test('assertCategoryPublishable：命中提示才抛，正常页面放行', async () => {

@@ -1,86 +1,74 @@
 /**
  * 闲鱼 PC 发布页的「分类」下拉。
  *
- * 事实来自抓包 + 真机校准（2026-10-21，测试小号）：
- * - 分类是 antd Select（`.ant-select-single`），当前值在 `.ant-select-selection-item` 的 title 上；
- * - JS 的 el.click() 打不开下拉，必须向 `.ant-select-selector` 中心派发**可信鼠标事件**（Input.dispatchMouseEvent）；
- * - 选项是 body 级 portal 的 `.ant-select-item-option`，文本就是类目名；
- * - 网页端只支持部分类目：选中不支持的会**立刻**在分类下方出现「网页版暂不支持发布此分类」，
- *   点提交同样只会被拦。所以这里选完必须回读校验，遇到不支持直接失败，不靠提交去撞。
+ * 事实来自抓包 + 真机校准（2026-10-21/22，测试小号）：
+ * - 分类是 antd Select，值在 `.ant-select-selection-item` 的 title 上；JS 的 el.click() 打不开下拉，
+ *   必须向 `.ant-select-selector` 中心派发可信鼠标事件（Input.dispatchMouseEvent）；
+ * - 选项挂在 body 级 portal `.ant-select-dropdown` 里，**每个 Select 复用一个 portal 节点**：
+ *   关闭后节点不销毁，只加 `ant-select-dropdown-hidden` / leave 动画类、选项仍留在 DOM 中。
+ *   所以绝不能全页扫 `.ant-select-item-option`：会把已关闭或别的 Select 的选项扫进来，点到不属于当前下拉的坐标；
+ * - 下拉打开后**不要对选项调 scrollIntoView**：真机实测它把主页面滚了 65px（scrollY 94→29），
+ *   antd 跟着重排下拉，随后的可信点击落空（选项显示 hover 但值不变、下拉按「点了外面」开始关闭）。
+ *   坐标必须在页面不滚动的状态下取；
+ * - 本机环境下拉 appear 动画永远走不完（class 停在 `ant-slide-up-appear-prepare`、opacity 0），
+ *   但节点 pointer-events:auto、真实鼠标事件能点中。判「打开」只认 `.ant-select-open` + aria-expanded=true，
+ *   不能等动画/可见性；
+ * - 页面会按图片/文案用 AI 识别类目并覆盖下拉值，所以选完必须回读：连续两次读到目标值才算成功，
+ *   不一致就重开下拉重选（有限次），仍不一致才 fail-closed；网页端不支持的类目直接失败。
  *
- * 页面会按图片/文案用 AI 预先识别一个类目，识别完成后会覆盖下拉值；
- * 因此选类目前先等它落定，避免我们选的类目被随后到来的识别结果覆盖。
+ * 页面脚本与返回值窄化放在 category-page.ts，本文件只写流程与决策。
  * @module @bigfish/channel-cdp/category
  */
 import { XianyuError } from '@bigfish/core'
 import { readBodyText } from './dom.ts'
+import {
+  CATEGORY_LABEL,
+  categoryOptionScript,
+  categoryOptionTextsScript,
+  categoryScrollScript,
+  categoryStateScript,
+  categoryValueScript,
+  parseRecord,
+  readNumber,
+  readPoint,
+  readTextList,
+} from './category-page.ts'
 import { readFormFieldText } from './form.ts'
+import type { CategoryOptionProbe, CategorySelectState } from './category-page.ts'
 import type { DomPage } from './dom.ts'
 import type { PublishContext } from './steps.ts'
 
-/**
- * 分类步骤的页面能力面：DOM 助手 + 可选截图。
- * 只声明用到的部分，测试假页面不必实现整个 CdpPage（真调用方传 CdpPage 即可满足）。
- */
+export { CATEGORY_LABEL }
+
+/** 分类步骤的页面能力面：DOM 助手 + 可选截图。 */
 export interface CategoryPage extends DomPage {
   screenshot?(path: string): Promise<void>
 }
 
-/** 「分类」表单项的 label 文本。 */
-export const CATEGORY_LABEL = '分类'
 /** 选中网页端不支持类目时页面出现的提示（原文）。 */
 export const CATEGORY_UNSUPPORTED_TEXT = '网页版暂不支持发布此分类'
-/** 分类下拉选项的选择器（antd portal，挂在 body 上）。 */
-const CATEGORY_OPTION = '.ant-select-item-option'
 const DEFAULT_TIMEOUT_MS = 20_000
 const RECOGNITION_WAIT_MS = 10_000
+const OPEN_WAIT_MS = 8_000
+const OPTION_WAIT_MS = 3_000
+const CONFIRM_MS = 1_200
 const POLL_MS = 300
+/** 点选尝试次数上限：AI 识别可能在点击后把值改回去，重开下拉再选即可，但不能无限重试。 */
+const PICK_ATTEMPTS = 3
 
-/** 找到「分类」表单项里的 antd Select 触发器，返回其中心坐标（找不到返回 undefined）。 */
-async function readSelectTriggerPoint(page: DomPage): Promise<{ x: number; y: number } | undefined> {
-  const script = [
-    '(function () {',
-    '  /* bf-category-select-rect */',
-    '  const want = ' + JSON.stringify(CATEGORY_LABEL) + ';',
-    '  const items = Array.from(document.querySelectorAll(".ant-form-item"));',
-    '  const item = items.find(function (it) {',
-    '    const label = it.querySelector(".ant-form-item-label label");',
-    '    if (label === null) return false;',
-    '    const title = (label.getAttribute("title") || "").trim();',
-    '    return title === want || (label.textContent || "").trim() === want;',
-    '  });',
-    '  if (!item) return "";',
-    '  const trigger = item.querySelector(".ant-select-selector");',
-    '  if (!trigger) return "";',
-    '  const rect = trigger.getBoundingClientRect();',
-    '  if (rect.width <= 0 || rect.height <= 0) return "";',
-    '  return JSON.stringify({ x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) });',
-    '})()',
-  ].join('\n')
-  return parsePoint(await page.evaluate<unknown>(script))
+/** 读「分类」下拉状态；触发器不存在/不可见返回 undefined。 */
+async function readCategorySelectState(page: DomPage): Promise<CategorySelectState | undefined> {
+  const record = parseRecord(await page.evaluate<unknown>(categoryStateScript()))
+  if (record === undefined) return undefined
+  const x = readNumber(record, 'x')
+  const y = readNumber(record, 'y')
+  if (x === undefined || y === undefined) return undefined
+  return { point: { x, y }, inViewport: record['inViewport'] === true, open: record['open'] === true }
 }
 
 /** 读分类下拉当前选中项的文本（没选中返回空串）。 */
 export async function readCategoryValue(page: DomPage): Promise<string> {
-  const script = [
-    '(function () {',
-    '  /* bf-category-value */',
-    '  const want = ' + JSON.stringify(CATEGORY_LABEL) + ';',
-    '  const items = Array.from(document.querySelectorAll(".ant-form-item"));',
-    '  const item = items.find(function (it) {',
-    '    const label = it.querySelector(".ant-form-item-label label");',
-    '    if (label === null) return false;',
-    '    const title = (label.getAttribute("title") || "").trim();',
-    '    return title === want || (label.textContent || "").trim() === want;',
-    '  });',
-    '  if (!item) return "";',
-    '  const selected = item.querySelector(".ant-select-selection-item");',
-    '  if (!selected) return "";',
-    '  const title = (selected.getAttribute("title") || "").trim();',
-    '  return title === "" ? ((selected.textContent || "").trim()) : title;',
-    '})()',
-  ].join('\n')
-  const value = await page.evaluate<unknown>(script)
+  const value = await page.evaluate<unknown>(categoryValueScript())
   return typeof value === 'string' ? value : ''
 }
 
@@ -96,22 +84,25 @@ async function waitRecognitionSettled(page: DomPage, timeoutMs: number): Promise
   return last
 }
 
-/** 找文本完全等于 want 的候选（antd 选项文本就是类目名），返回其中心坐标。 */
-async function readOptionPoint(page: DomPage, want: string): Promise<{ x: number; y: number } | undefined> {
-  const script = [
-    '(function () {',
-    '  /* bf-category-option-rect */',
-    '  const want = ' + JSON.stringify(want) + ';',
-    '  const nodes = Array.from(document.querySelectorAll(' + JSON.stringify(CATEGORY_OPTION) + '));',
-    '  const hit = nodes.find(function (el) { return (el.textContent || "").trim() === want; });',
-    '  if (!hit) return "";',
-    '  hit.scrollIntoView({ block: "center", inline: "center" });',
-    '  const rect = hit.getBoundingClientRect();',
-    '  if (rect.width <= 0 || rect.height <= 0) return "";',
-    '  return JSON.stringify({ x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) });',
-    '})()',
-  ].join('\n')
-  return parsePoint(await page.evaluate<unknown>(script))
+/** 找文本完全等于 want 的候选（限定在当前打开的那个下拉里），返回坐标或没找到的原因。 */
+async function readCategoryOptionPoint(page: DomPage, want: string): Promise<CategoryOptionProbe> {
+  const record = parseRecord(await page.evaluate<unknown>(categoryOptionScript(want)))
+  if (record === undefined) return { options: [] }
+  const options = readTextList(record['options'])
+  const point = readPoint(record)
+  if (point !== undefined) return { point, options }
+  const miss = record['miss']
+  if (miss === 'not-open' || miss === 'no-option' || miss === 'off-screen' || miss === 'obscured') {
+    return { miss, options }
+  }
+  return { options }
+}
+
+/** 当前下拉里出现的候选文本（只用于报错提示）。 */
+export async function readCategoryOptionTexts(page: DomPage): Promise<string[]> {
+  const value = await page.evaluate<unknown>(categoryOptionTextsScript()).catch(() => undefined)
+  if (!Array.isArray(value)) return []
+  return value.filter((entry): entry is string => typeof entry === 'string' && entry !== '')
 }
 
 /**
@@ -125,37 +116,115 @@ export async function trustedClickAt(page: DomPage, point: { x: number; y: numbe
   await page.command('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base, button: 'left', clickCount: 1 })
 }
 
-/** 打开分类下拉（点触发器中心）。 */
-async function openCategorySelect(page: DomPage): Promise<void> {
-  const point = await readSelectTriggerPoint(page)
-  if (point === undefined) {
-    throw new XianyuError({
-      code: 'VALIDATION',
-      message: '页面上找不到「分类」下拉（antd Select 触发器不可见），可能页面结构又改了，需重新校准选择器',
-    })
+/** 轮询直到下拉真的打开（或超时）；返回最后一次状态。 */
+async function waitCategoryOpen(page: DomPage, timeoutMs: number): Promise<CategorySelectState | undefined> {
+  const deadline = Date.now() + timeoutMs
+  let state = await readCategorySelectState(page)
+  while (state !== undefined && !state.open && Date.now() < deadline) {
+    await delay(Math.min(POLL_MS, Math.max(0, deadline - Date.now())))
+    state = await readCategorySelectState(page)
   }
-  await trustedClickAt(page, point)
+  return state
 }
 
-/** 在下拉里点选文本完全等于 category 的选项，并回读确认已选中。 */
-async function clickCategoryOption(page: DomPage, category: string, timeoutMs: number): Promise<void> {
+/**
+ * 打开分类下拉，并断言它真的打开了。
+ * 与旧实现的区别：旧实现点完就走，下拉没打开时会拿全页旧选项坐标去点（本次故障的一半原因）。
+ */
+async function openCategorySelect(page: DomPage, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs
-  let seen: string[] = []
-  while (Date.now() < deadline) {
-    const point = await readOptionPoint(page, category)
-    if (point !== undefined) {
-      await trustedClickAt(page, point)
-      const picked = await readCategoryValue(page)
-      if (picked === category) return
-      throw new XianyuError({
-        code: 'VALIDATION',
-        message: '点了分类「' + category + '」但下拉显示的是「' + picked + '」，拒绝继续（避免发到错误类目）',
-      })
+  let state = await readCategorySelectState(page)
+  if (state === undefined) throw missingTriggerError()
+  if (state.open) return
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (!state.inViewport) {
+      /* 只在打开之前滚：打开后再滚页面会让 antd 重排下拉，坐标失效 */
+      await page.evaluate<unknown>(categoryScrollScript())
+      await delay(POLL_MS)
+      const reread = await readCategorySelectState(page)
+      if (reread === undefined) throw missingTriggerError()
+      if (!reread.inViewport) {
+        throw new XianyuError({
+          code: 'VALIDATION',
+          message: '「分类」下拉在视口外，滚动后仍不可见（可能被弹层遮挡），不继续以免点错位置',
+        })
+      }
+      state = reread
     }
-    seen = await readCategoryOptionTexts(page)
-    await delay(POLL_MS)
+    await trustedClickAt(page, state.point)
+    const opened = await waitCategoryOpen(page, Math.min(OPEN_WAIT_MS, Math.max(POLL_MS, deadline - Date.now())))
+    if (opened !== undefined && opened.open) return
+    if (opened !== undefined) state = opened
   }
   throw new XianyuError({
+    code: 'VALIDATION',
+    message: '点了「分类」下拉但下拉没有打开（antd Select 没响应可信点击）；不继续，避免点到别的候选',
+  })
+}
+
+/** 轮询等选项渲染出坐标（下拉刚打开时虚拟列表可能还没布局完）。 */
+async function waitCategoryOptionPoint(page: DomPage, want: string, timeoutMs: number): Promise<CategoryOptionProbe> {
+  const deadline = Date.now() + timeoutMs
+  let probe = await readCategoryOptionPoint(page, want)
+  while (probe.point === undefined && Date.now() < deadline) {
+    await delay(Math.min(POLL_MS, Math.max(0, deadline - Date.now())))
+    probe = await readCategoryOptionPoint(page, want)
+  }
+  return probe
+}
+
+/**
+ * 点击后等回读落定：连续两次读到目标值才算选中。
+ * 单次读不够——页面 AI 识别可能在点击后的一小段时间内把值改回去。
+ */
+async function waitCategoryPicked(page: DomPage, category: string, timeoutMs: number): Promise<string> {
+  const deadline = Date.now() + Math.min(timeoutMs, CONFIRM_MS)
+  let last = ''
+  let hits = 0
+  while (true) {
+    last = await readCategoryValue(page)
+    if (last === category) {
+      hits += 1
+      if (hits >= 2) return last
+    } else {
+      hits = 0
+    }
+    if (Date.now() >= deadline) return last
+    await delay(Math.min(POLL_MS, Math.max(0, deadline - Date.now())))
+  }
+}
+
+/** 打开下拉 → 点目标选项 → 回读确认；回读不一致时重开重选，最多 PICK_ATTEMPTS 次。 */
+async function pickCategoryOption(page: DomPage, category: string, timeoutMs: number): Promise<void> {
+  let seen: string[] = []
+  let picked = ''
+  for (let attempt = 1; attempt <= PICK_ATTEMPTS; attempt += 1) {
+    await openCategorySelect(page, timeoutMs)
+    const probe = await waitCategoryOptionPoint(page, category, Math.min(timeoutMs, OPTION_WAIT_MS))
+    if (probe.options.length > 0) seen = probe.options
+    if (probe.point === undefined) {
+      await delay(POLL_MS)
+      continue
+    }
+    await trustedClickAt(page, probe.point)
+    picked = await waitCategoryPicked(page, category, timeoutMs)
+    if (picked === category) return
+  }
+  if (picked !== '') throw mismatchError(category, picked)
+  throw missingOptionError(category, seen)
+}
+
+/** 回读值仍不是目标：fail-closed，宁可不发布也不发到错误类目。 */
+function mismatchError(category: string, picked: string): XianyuError {
+  return new XianyuError({
+    code: 'VALIDATION',
+    message: '点了分类「' + category + '」但下拉显示的是「' + picked + '」，拒绝继续（避免发到错误类目）',
+  })
+}
+
+/** 下拉里根本没有该选项：把候选带进报错，方便判断是选错页还是页面结构变了。 */
+function missingOptionError(category: string, seen: string[]): XianyuError {
+  return new XianyuError({
     code: 'VALIDATION',
     message:
       '分类下拉里没有「' + category + '」这个选项（页面当前候选：' +
@@ -164,18 +233,11 @@ async function clickCategoryOption(page: DomPage, category: string, timeoutMs: n
   })
 }
 
-/** 当前下拉里出现的候选文本（只用于报错提示）。 */
-export async function readCategoryOptionTexts(page: DomPage): Promise<string[]> {
-  const script = [
-    '(function () {',
-    '  /* bf-category-option-texts */',
-    '  const nodes = Array.from(document.querySelectorAll(' + JSON.stringify(CATEGORY_OPTION) + '));',
-    '  return nodes.map(function (el) { return (el.textContent || "").trim(); }).filter(function (t) { return t !== ""; });',
-    '})()',
-  ].join('\n')
-  const value = await page.evaluate<unknown>(script).catch(() => undefined)
-  if (!Array.isArray(value)) return []
-  return value.filter((entry): entry is string => typeof entry === 'string')
+function missingTriggerError(): XianyuError {
+  return new XianyuError({
+    code: 'VALIDATION',
+    message: '页面上找不到「分类」下拉（antd Select 触发器不可见），可能页面结构又改了，需重新校准选择器',
+  })
 }
 
 /**
@@ -190,8 +252,7 @@ export async function stepSelectCategory(
 ): Promise<void> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const recognized = await waitRecognitionSettled(page, Math.min(timeoutMs, RECOGNITION_WAIT_MS))
-  await openCategorySelect(page)
-  await clickCategoryOption(page, category, timeoutMs)
+  await pickCategoryOption(page, category, timeoutMs)
   await assertCategoryPublishable(page, category)
   ctx.log('选择分类', 'AI 识别为「' + recognized + '」→ 选为「' + category + '」（网页端支持）')
   if (options.screenshotsDir !== undefined && page.screenshot !== undefined) {
@@ -212,24 +273,6 @@ export async function assertCategoryPublishable(page: DomPage, category: string)
       '类目「' + category + '」网页版不支持发布（页面提示「' + CATEGORY_UNSUPPORTED_TEXT + '」）：' +
       '请换一个网页端支持的类目，或改用 App 扫码发布（本工具不自动点二维码）',
   })
-}
-
-/** 解析页面脚本返回的坐标 JSON；非法一律当没找到（页面重渲染时 rect 会短暂为 0）。 */
-function parsePoint(raw: unknown): { x: number; y: number } | undefined {
-  if (typeof raw !== 'string' || !raw.startsWith('{')) return undefined
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(raw)
-  } catch {
-    return undefined
-  }
-  if (typeof parsed !== 'object' || parsed === null) return undefined
-  const record = parsed as Record<string, unknown>
-  const x = record['x']
-  const y = record['y']
-  if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) return undefined
-  if (x <= 0 || y <= 0) return undefined
-  return { x, y }
 }
 
 /** 表单项读值兜底（仅用于日志；category.ts 的主要回读走 readCategoryValue）。 */
