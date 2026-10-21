@@ -34,7 +34,7 @@
 | --- | --- | --- | --- |
 | `packages/core` | TS | 无 | 领域类型与契约、错误、ret 风控分类、队列/存储、商品仓储、发布前策略校验、限流熔断、凭据、配置、脱敏日志 |
 | `packages/daemon` | TS | core、channel-mtop、channel-cdp | HTTP 控制面 + CLI + 运行时装配 + worker + 执行器 + DaemonClient |
-| `packages/plugin-ops` | JS(ESM) | 无（含自带 HTTP client） | 12 个 `xy_*` 工具 + 写操作审批门禁 + 侧边栏面板（面板内 5 个模块 tab：自动发布 / 账号 / 文案 / 概览 / 诊断） |
+| `packages/plugin-ops` | JS(ESM) | 无（含自带 HTTP client） | 14 个 `xy_*` 工具 + 写操作审批门禁 + 侧边栏面板（面板内 6 个模块 tab：自动发布 / 账号 / 文案 / 采集 / 概览 / 诊断） |
 | `packages/ops-bundle` | JS | plugin-ops | 只声明 `dsh.bundle.patch`，把插件塞进 profile |
 | `packages/channel-mtop` | TS | core | mtop 通道：签名、信封、cookie 归一、ret 分类、读接口与发布接口的 data 构造（**纯函数，无状态**） |
 | `packages/channel-cdp` | TS | core | CDP 会话：启动/attach 真 Chrome、页面操作、拦截 XHR JSON、发布步骤状态机、cookie 读取与登录态校验 |
@@ -89,7 +89,7 @@ openStore({path: config.dbPath})
 | --- | --- | --- | --- |
 | `probe` | read | mtop 详情 | ✅ 已通，成功后 `items.upsert` |
 | `polish` | write | mtop 擦亮 2.0 | ✅ 已通 |
-| `publish` | write | CDP 发布步骤机（`channel-cdp`） | ⚠️ 默认 `UNSUPPORTED`；`BF_PUBLISH_SUBMIT=1` 才走真链路。2026-10-21 真机成功一次（测试小号，itemId `1093817229436`，见 §13.6）；只验证一条类目路径，不等于可批量发布 |
+| `publish` | write | CDP 发布步骤机（`channel-cdp`） | ⚠️ 默认 dry-run；`--submit` / `BF_PUBLISH_SUBMIT=1` 才走真链路。2026-10-21 起真机单件跑通多次（首次 itemId `1093817229436`，记录见 §13.6；次数与证据以 [STATUS.md](STATUS.md) 为准）；只验证「学习笔记」一条类目路径，不等于可批量发布 |
 | `deliver` | write | IM/闲管家 | ⛔ `UNSUPPORTED`（P2） |
 | `reply` | write | IM | ⛔ `UNSUPPORTED`（P2） |
 
@@ -101,7 +101,7 @@ openStore({path: config.dbPath})
 - 步骤机在 `packages/channel-cdp/src/publish.ts`：打开发布页 → 上传图片（`DOM.setFileInputFiles`，等价用户选文件）→ 文案（contenteditable 富文本走 `Input.insertText`，普通 input 走原生 setter + `input` 事件）→ [选择分类（草稿给 `category` 时才跑）] → 计价方式 → 价格/包邮 → 地址（真实键入触发联想，按候选匹配点选并回读表单）→ 必填项预检（分类/所在地非空）→ 提交并验证（URL 含 item id 或页面出现「发布成功」，超时按失败处理且**不自动重试**）。dry-run 在提交前收尾。
 - 装配在 `packages/daemon/src/cdp-publish.ts`：先读浏览器 `unb` 与期望账号比对（防发错号）→ 开空白页跑步骤机 → 返回 `{accountId,dryRun,itemId?,href,durationMs}`。
 - 安全默认：`submit=false` 只填表不点提交；CLI `npm run daemon:publish -- --draft <草稿.json> [--account-id X] [--chrome-port 9222] [--screenshots dir] [--submit]`，daemon 队列发布要 `BF_PUBLISH_SUBMIT=1`（另支持 `BF_CHROME_PORT`、`BF_PUBLISH_SCREENSHOTS`，截图默认 `<data-dir>/publish-shots`）。
-- 选择器与填写方式已在真机（Edge 155 + CDP 9222，测试小号）校准；选择器表、填写原理、**地址搜索限制**、**类目支持矩阵**与**真发布记录**见 §13。2026-10-21 已用测试小号完成一次端到端真发布（itemId `1093817229436`），见 §13.5。
+- 选择器与填写方式已在真机（Edge 155 + CDP 9222，用户大号 `2206569289277`）校准；选择器表、填写原理、**地址搜索限制**、**类目支持矩阵**与**真发布记录**见 §13。2026-10-21 起已用该账号完成端到端真发布（首次 itemId `1093817229436`），见 §13.5。**注意：这个账号不是测试小号**（AGENTS §5），真发必须一次一件、用户点头。
 
 ## 7. IPC 契约
 
@@ -123,6 +123,8 @@ openStore({path: config.dbPath})
 | POST | `/tasks/:id/ack` | 完成（需 owner 匹配） |
 | POST | `/tasks/:id/fail` | 失败：`{error, nonRetryable?, retryAfterMs?}` |
 | POST | `/tasks/:id/release` | 立即退回队列 |
+| POST | `/tasks/:id/retry` | 人工重新排队：只允许 `failed` / `needs_review`；`queue.requeue` 把 attempts 归零、清空 lastError 与旧租约、保留 dedupeKey 与 payload；未注入能力时 `UNSUPPORTED` |
+| POST | `/reference` | 参考分析（只读）：`{accountId, itemIds?, sellerId?}` → 价格带/标题长度/类目分布/高频卖点词/图片数/商家量级；单件失败进 `skipped`，`AUTH_EXPIRED`/`RISK_CONTROL`/`UNAUTHORIZED` 中止整批；未注入能力时 `UNSUPPORTED` |
 | GET | `/items?state&accountId&limit` | 本地商品快照；`state ∈ online/offline/unknown` |
 | POST | `/circuits/reset` | `{accountId}` → `{accountId, reset:boolean}`（未注入熔断器时 `reset:false`） |
 
@@ -141,7 +143,7 @@ queued ──lease──► leased ──ack──► done
 
 不变量：`dedupeKey` 唯一；`ack/fail/release` 必须传 owner 且与租约持有者一致；`needs_review` 只能人工处理，不自动重试；失败不退还限流预算。
 
-## 9. 工具清单（12 个）
+## 9. 工具清单（14 个）
 
 | 工具 | 参数 | 用途 |
 | --- | --- | --- |
@@ -151,12 +153,14 @@ queued ──lease──► leased ──ack──► done
 | `xy_tasks_list` | `state? kind? limit?(1..200, 默认 20)` | 查任务 |
 | `xy_task_enqueue` | `kind, dedupeKey, payload?, availableAt?, maxAttempts?(1..10)` | 入队（**写类**） |
 | `xy_task_action` | `id, action(ack/fail/release), owner?, error?, nonRetryable?` | 任务流转 |
+| `xy_task_retry` | `taskId` | 人工重新排队 `failed` / `needs_review`（attempts 归零、清租约与 lastError、保留 dedupeKey/payload；**写类**，挂审批门禁——`BF_PUBLISH_SUBMIT=1` 下会真重放发布） |
 | `xy_items_list` | 无 | 商品列表 |
 | `xy_accounts_list` | 无 | 账号只读摘要（id / 更新于 / 登录态字段数 / 是否可写；坏凭据单独标 `broken`，不含任何 cookie 值） |
 | `xy_import_account` | `accountId?, port?(1..65535, 默认 9222)` | 从带 CDP 端口的 Chrome 导入登录态（**写类**，加密落盘，回显不含 cookie） |
 | `xy_publish_draft` | `draftPath, mode?(dry-run/enqueue), accountId?, chromePort?, screenshotsDir?, dedupeKey?` | 校验草稿并给命令（默认 dry-run 只填表不入队；enqueue **写类**） |
 | `xy_publish_batch` | `drafts?, draftPaths?, accountId?(enqueue 必填), mode?(dry-run/enqueue), maxItems?(1..20)` | 批量发布：逐条校验 + 内容哈希幂等 + 批内去重，dry-run 出计划 / enqueue 逐条入队（**写类**，仅 enqueue 需审批；单条非法不拖垮整批，`NETWORK/UNAUTHORIZED` 中止剩余条目） |
 | `xy_copy_plan` | `styleId?(5 档), productName, condition, priceYuan\|priceCents, shipping?, categoryHint?, specs?, flaws?, accessories?, imagePaths?, variantCount?, usedAiImages?` | 按语言风格把事实注入成文案生成提示词（**只读**：不调模型、不写文件、不碰 daemon） |
+| `xy_reference_collect` | `accountId, itemIds?(≤20) \| sellerId?` | 参考分析只读统计（价格带 / 标题长度 / 类目分布 / 高频卖点词 / 图片数 / 商家量级）；不下载图片、不产出草稿（**只读**，不挂门禁，超时 100s） |
 
 所有工具输出统一为 `{ text }` 对象（`additionalProperties:false`），文本里带 emoji 状态前缀；`DaemonError` 转成 `❌ [CODE] message`，不抛给模型当异常。
 
@@ -170,15 +174,17 @@ queued ──lease──► leased ──ack──► done
 
 `xy_publish_batch` 与 `xy_publish_draft` 同口径：只有 `mode='enqueue'` 才算写操作、才走审批；`dry-run` 只读草稿文件并出计划（`packages/plugin-ops/src/gate.js` 的 `isWriteCall`）。
 
+`xy_task_retry` 是写类（`gate.js` 的 `WRITE_TOOLS`）：它把 failed / needs_review 任务重新排队并清零 attempts，daemon 以 `BF_PUBLISH_SUBMIT=1` 启动时下一轮就会**真的重放这次发布**，所以挂审批门禁，拒绝理由里明说这一点。`xy_reference_collect` 只读（不下载图片、不写库、不产出草稿），不挂门禁。
+
 **裁决：`xy_task_action`（ack/fail/release）不挂审批门禁。** 它只改本地队列状态（本地流转），不触达闲鱼、不产生平台副作用，不属于「写闲鱼」；门禁只覆盖会写平台的入队动作。`writeGate:false` 是测试逃生阀，默认开启。
 
 ## 11. 现在明确未实现（不要当 bug）
 
-- **publish 真提交只跑通过两次、都是单件（测试小号，均已下架）**：步骤机与 daemon 通道都在（§6.1），2026-10-21 首次成功（§13.5），随后 itemId `1091938715735` 在分类选择修复后又跑通一次；两次都只验证了「学习笔记」这一条类目路径，真提交需 `--submit` / `BF_PUBLISH_SUBMIT=1` 且必须由用户点头。**别把「单件跑通」当成「可以批量发」。**
+- **publish 真提交跑通过 3 次、都是单件（用户大号 `2206569289277`，均已下架）**：步骤机与 daemon 通道都在（§6.1），2026-10-21 首次成功（§13.5，`1093817229436`），随后 itemId `1091938715735` 在分类选择修复后又跑通一次（CLI 直发）；另有一次走队列路径（`POST /tasks` → worker → `1091940243200`）。3 次都只验证了「学习笔记」这一条类目路径，真提交需 `--submit` / `BF_PUBLISH_SUBMIT=1` 且必须由用户点头。**别把「单件跑通」当成「可以批量发」。**
 - **发布页地址搜索在 CDP 下不可用**：联想请求能发出、响应正常，但候选列表 UI 不回显，只能从「常用地址/附近地址」里匹配（§13.3）。类目：页面 AI 自动识别，草稿可用 `category` 覆盖；**网页端只支持部分类目**，不支持时立即失败（§13.5）。
 - **发货未实现、IM 已提交未接线**：`deliver/reply` 仍是 `UNSUPPORTED`；`packages/channel-im` 已提交（32 tests：帧解析/消息归一化/会话状态机）但**未接 daemon**（daemon 无该依赖），websocket 长连/消息发送/鉴权握手均未实现；协议与规则见 [im-protocol.md](im-protocol.md)、[delivery-rules.md](delivery-rules.md)。
 - **登录态导入与扫码登录均已实现**：导入走 `npm run daemon:import-account`（或 `POST /accounts/import`、插件 `xy_import_account`），从带 `--remote-debugging-port=9222` 的浏览器读 cookie；扫码走 `npm run daemon:login` / `POST /accounts/login`，轮询到 `unb` + `_m_h5_tk` 齐备才算成功（默认超时 180s）。两者都写 `CredentialStore`（AES-256-GCM），accountId 默认取 cookie 里的 `unb`。
-- **侧边栏面板内的模块 tab（2026-10-21 纠正）**：插件只注册 `sidebar.panellist` + `main` 两个插槽；主面板内部用 `PANEL_TABS` 切 5 个分区——自动发布（默认）/ 账号 / 文案 / 概览 / 诊断（见 `plugin-ops/client.js` 的 `PANEL_TABS` 与 `PanelBody` 分发）。**不注册会话顶部 tab**（`conversation.view` 与「点侧边栏进面板」互斥，试过后已移除）。所有分区都是纯 UI：不联网、不读凭据、不调模型，需要执行的动作交给 agent 调工具或 daemon。DSH 宿主没有「面板按钮调 host 工具」的公开 API，所以按钮 disabled 或只产出参数 JSON；面板内导入/扫码要补 client→host rpc（采用前写 ADR）。
+- **侧边栏面板内的模块 tab（2026-10-21 纠正）**：插件只注册 `sidebar.panellist` + `main` 两个插槽；主面板内部用 `PANEL_TABS` 切 6 个分区——自动发布（默认）/ 账号 / 文案 / 采集 / 概览 / 诊断（见 `plugin-ops/client.js` 的 `PANEL_TABS` 与 `PanelBody` 分发）。**不注册会话顶部 tab**（`conversation.view` 与「点侧边栏进面板」互斥，试过后已移除）。所有分区都是纯 UI：不联网、不读凭据、不调模型，需要执行的动作交给 agent 调工具或 daemon。DSH 宿主没有「面板按钮调 host 工具」的公开 API，所以按钮 disabled 或只产出参数 JSON；面板内导入/扫码要补 client→host rpc（采用前写 ADR）。
 - **没有打包**：Electron/headless 分发形态待用户决策。
 - **没有真实联调**：所有测试都不发真实网络（AGENTS §5），首次真机验证需小号。
 
@@ -186,21 +192,21 @@ queued ──lease──► leased ──ack──► done
 
 | 层 | 数量 | 说明 |
 | --- | --- | --- |
-| 全仓 | 647 tests / 647 pass（23 suites / 64 个测试文件） | `node scripts/test-all.mjs`，约 12s |
-| core | 131 | 队列、仓储、策略、限流熔断、凭据、脱敏、配置、发货规则引擎（P2） |
-| daemon | 155 | HTTP、CLI、客户端、执行器、worker、路由、账号导入/扫码登录、CDP 发布通道（含 5 条 `runtime.test.ts` 全链路集成：真 HTTP + 真 SQLite + 假 mtop transport） |
-| channel-mtop / channel-cdp / channel-guanjia / channel-im | 88 / 91 / 62 / 32 | 纯函数、假连接与假页面（channel-cdp 含富文本/地址/预检假页面回放；channel-im 帧解析/会话状态机，未接 daemon） |
-| plugin-ops | 86 | 插件契约、审批门禁、草稿校验、批量入队、账号摘要渲染、client bundle（含面板内 5 个模块 tab） |
+| 全仓 | 709 tests / 709 pass（27 suites / 73 个测试文件） | `node scripts/test-all.mjs`，约 12s |
+| core | 144 | 队列、仓储、策略、限流熔断与账号级 pacing、凭据、脱敏、配置、发货规则引擎（P2）、参考分析统计 |
+| daemon | 177 | HTTP、CLI、客户端、执行器、worker、路由、账号导入/扫码登录、CDP 发布通道（含 5 条 `runtime.test.ts` 全链路集成：真 HTTP + 真 SQLite + 假 mtop transport）、参考采集、失败重排 |
+| channel-mtop / channel-cdp / channel-guanjia / channel-im | 95 / 100 / 62 / 32 | 纯函数、假连接与假页面（channel-mtop 含参考解析；channel-cdp 含富文本/地址/预检假页面回放与发布侧风控探测；channel-im 帧解析/会话状态机，未接 daemon） |
+| plugin-ops | 97 | 插件契约、审批门禁、草稿校验、批量入队与 pacing、账号摘要渲染、参考采集客户端、client bundle（含面板内 6 个模块 tab） |
 | integration | 2 | 插件 client ↔ 真 daemon 的跨层端到端 |
 | 类型检查 | 6 个 TS 包 0 错误 | 借 DSH checkout 的 `tsc --noEmit`；`plugin-ops` / `ops-bundle` 是纯 ESM JS（无 tsconfig，靠 JSDoc + 单测），**不在类型检查覆盖内** |
 
-> 口径：`node:test` 的 `suites 23` 与 64 个测试文件不矛盾（文件数 ≠ suite 数）；`ops-bundle` 只声明 bundle patch，无测试。
+> 口径：`node:test` 的 `suites 27` 与 73 个测试文件不矛盾（文件数 ≠ suite 数）；`ops-bundle` 只声明 bundle patch，无测试。**真实能力边界比测试数重要**：失败重排、发布侧风控识别、账号级 pacing 目前都只有单测（未真机验证）；采集只有单件真机 200。
 
 集成测试覆盖的关键链路：入队 → worker 领租约 → 解凭据 → 假 mtop → `items.upsert` → ack → `/items` 与 `/status.worker` 可查；无凭据时**不调用通道**且直接 `failed`；`publish` 因 `UNSUPPORTED` 进 `failed`；`dedupeKey` 不产生第二个任务；close 后端口不可达。
 
 ## 13. CDP 发布页真机校准（2026-10-21）
 
-环境：Edge `155.0.4283.62`，`--remote-debugging-port=9222`，`--user-data-dir` 专用 profile；测试小号「同州禹斋」（accountId `2206569289277`）；页面 `https://www.goofish.com/publish`（标题「发闲置_闲鱼」）。Cookie 起读改用 `Storage.getCookies`（Edge 155 把浏览器级 cookie 读取从 `Network.getAllCookies` 挪走，后者报 `wasn't found`；代码按「方法不存在」自动降级，见 `packages/channel-cdp/src/cookies.ts`）。
+环境：Edge `155.0.4283.62`，`--remote-debugging-port=9222`，`--user-data-dir` 专用 profile；用户大号「同州禹斋」（accountId `2206569289277`，**不是测试小号**，见 AGENTS §5）；页面 `https://www.goofish.com/publish`（标题「发闲置_闲鱼」）。Cookie 起读改用 `Storage.getCookies`（Edge 155 把浏览器级 cookie 读取从 `Network.getAllCookies` 挪走，后者报 `wasn't found`；代码按「方法不存在」自动降级，见 `packages/channel-cdp/src/cookies.ts`）。
 
 ### 13.1 默认选择器（`DEFAULT_SELECTORS`）
 

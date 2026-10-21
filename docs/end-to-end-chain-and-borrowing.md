@@ -89,7 +89,10 @@
 | 登录态导入 + 扫码登录 | ✅ 真机通 | 导入：Edge 155 + CDP 9222；扫码：`npm run daemon:login` / `POST /accounts/login`（`77e9c9f`，轮询 `unb` + `_m_h5_tk`） |
 | 令牌自动刷新 | ✅ 已落地 | `channel-mtop/src/call.ts`（`aa5aec1`）：`FAIL_SYS_TOKEN_EXOIRED` 时合并 Set-Cookie 重签重试一次并回写 |
 | CDP 发布填表（dry-run） | ✅ 全绿 | 默认只填表不提交；步骤机与选择器表见 `docs/architecture.md` §13 |
-| CDP 发布真提交 | 🟡 真机成功一次 | 2026-10-21 测试小号 `itemId 1093817229436`（已下架留档）；受网页端类目支持矩阵限制，**不等于可批量发布**；需 `BF_PUBLISH_SUBMIT=1` |
+| CDP 发布真提交 | 🟡 真机单件跑通多次（首次 2026-10-21） | 首次 `itemId 1093817229436`（已下架留档；账号 `2206569289277` 是用户大号、非测试小号）；受网页端类目支持矩阵限制，**不等于可批量发布**；需 `--submit` / `BF_PUBLISH_SUBMIT=1`；次数与证据以 STATUS.md 为准 |
+| 失败重放 | 🟡 单测级 | `queue.requeue` + `POST /tasks/:id/retry` + `xy_task_retry`（写类挂审批，`BF_PUBLISH_SUBMIT=1` 下会真重放）；**未真机重放发布** |
+| 发布侧风控识别 + pacing | 🟡 单测级 | `channel-cdp/src/risk.ts` 每步探测（命中 `RISK_CONTROL`、daemon 熔断 600s）；`core/src/limiter.ts` 账号级 pacing 默认 180s（推导值、未真机校准）；均**未真机验证** |
+| 采集参考 R1（只读统计） | 🟡 真机单件 | `POST /reference` 真机 200 / 241ms（`itemIds:['1091933071728']`）；不下载图片、不照抄文案；R2 自有商品搬家未实现待拍板 |
 | 发货/回消息 | ⛔ `UNSUPPORTED` | daemon `deliver/reply` 硬编码 `UNSUPPORTED`（`operations.ts:160-166`）；`packages/channel-im` 已提交（`7a01bbf`，32 tests）但**未接 daemon**，无 websocket 长连/发送/鉴权握手 |
 | 闲管家官方通道 | 🟡 代码就绪未接装配 | `packages/channel-guanjia` 62 测试；缺企业凭证 |
 
@@ -99,7 +102,7 @@
 - **A2 加「分类」下拉选择**：步骤机显式选类目再提交 → 通用，但要维护类目枚举与前端交互，且分类是否对网页端开放不可控。
 - **A3 走 APP 扫码续发**：页面给的「点击展示二维码」是官方半自动兜底 → 覆盖面最大，但不再是全自动（需人工扫一次）。
 
-推荐顺序 A1（先证链路）→ A2（通用化）→ A3（兜底），且始终用测试小号、验证通过前不声称发布成功。
+推荐顺序 A1（先证链路）→ A2（通用化）→ A3（兜底），且始终用已导入的账号、默认 dry-run、真发须用户点头；验证通过前不声称发布成功。
 
 > 现状（2026-10-21）：**A2 已实现**（`packages/channel-cdp/src/category.ts` 的 `stepSelectCategory` + `assertCategoryPublishable`，见 `docs/architecture.md` §13.5），真机成功发布一次；A3 扫码兜底仍待做。
 

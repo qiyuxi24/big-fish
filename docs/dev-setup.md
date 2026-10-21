@@ -19,20 +19,20 @@ pnpm install --offline --ignore-scripts
 ## 测试与类型检查
 
 ```sh
-node scripts/test-all.mjs                   # 全量：647 tests / 647 pass（23 suites / 64 个测试文件，约 12s）
+node scripts/test-all.mjs                   # 全量：709 tests / 709 pass（27 suites / 73 个测试文件，约 12s）
 node scripts/test-all.mjs packages/core     # 只跑某个包（按路径前缀过滤）
 node scripts/test-all.mjs integration       # 只跑跨层集成测试
 ```
 
 | 包 | 用例数 |
 | --- | --- |
-| core | 131 |
-| daemon | 142（含 5 条 runtime 全链路集成） |
-| channel-mtop | 88 |
-| channel-cdp | 86 |
+| core | 144 |
+| daemon | 177（含 5 条 runtime 全链路集成） |
+| channel-mtop | 95 |
+| channel-cdp | 100 |
 | channel-guanjia | 62 |
 | channel-im | 32 |
-| plugin-ops | 49 |
+| plugin-ops | 97 |
 | integration | 2 |
 
 - `ops-bundle` 只声明 bundle patch，无测试。口径以 `docs/STATUS.md` 为准。

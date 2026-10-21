@@ -1,7 +1,7 @@
 # Client 插件与侧边栏栏位（P0.5）
 
 本文件记录「在 DSH Web GUI 侧边栏注册 big fish 栏位」的完整机制、调试方法与实测坑。
-代码只有一处：`packages/plugin-ops/client.js`（手写 loader bundle、约 510 行、零依赖、无构建）。
+代码只有一处：`packages/plugin-ops/client.js`（手写 loader bundle、约 580 行、零依赖、无构建；四模块面板都在这一个 bundle 里，行数上限放宽到 700）。
 
 ## 1. 机制（源码核实，DSH 0.1.5-rc.2）
 
@@ -59,10 +59,11 @@ window.__ModuleLoader__.load({
 
 | 事实 | 取值 |
 | --- | --- |
-| 模块清单 | `client.js` 的 `PANEL_TABS`：`publish-batch`（自动发布，默认）/ `account`（账号）/ `copy`（文案）/ `overview`（概览）/ `diagnose`（诊断） |
+| 模块清单 | `client.js` 的 `PANEL_TABS`：`publish-batch`（自动发布，默认）/ `account`（账号）/ `copy`（文案）/ `reference`（采集）/ `overview`（概览）/ `diagnose`（诊断） |
 | 分发 | `PanelBody({ tab, copyProps })` 按 `tab` 返回对应模块组件；模块组件只返回 section 列表，**不自带页头**（页头 + tab 栏在 `BigFishPanel` 骨架里） |
 | 注册项 | **只有** `sidebar.panellist`（id `bigfish`、order 30、label `BigFish 闲鱼运营`）与 `main`（key `bigfish`）。单测断言 `registered.length === 2` 且**没有** `conversation.view` |
 | 加模块 | `PANEL_TABS` 追加一项 + `PanelBody` 补一行分支 |
+| 「采集」分区（第 4 个 tab） | 只读统计入口：填 `itemIds` / `sellerId` 生成 `xy_reference_collect` 参数 JSON，展示价格带 / 标题长度 / 类目分布 / 高频卖点词 / 图片数 / 商家量级字段说明 + 三条红线（不下载他人图片、不照抄文案、不跨账号复制）。纯 UI：不联网、不调工具、不产出可发布草稿 |
 
 **为什么回退（历史存档，别再踩）**：`conversation.view` 是会话 header 的 list 插槽
 （声明于 `packages/client/ui-conversation/src/client/contract/slots.ts:156`，metadata `{ name, id, order, label }`，
@@ -108,8 +109,8 @@ node scripts/dsh-dev.mjs --stop    # 停实例
    `assert.deepStrictEqual` 整对象比较会失败；逐字段 `assert.equal`。函数组件要手动渲染
    （`if (typeof node.type === 'function') return toText(node.type(node.props))`）才能取文本。
 
-7. **模块 tab 只存在于 BigFish 面板内部。** 点侧边栏栏位 → `main` 换成 `bigfish` → 看到面板页头 + 5 个模块 tab
-   （自动发布默认 / 账号 / 文案 / 概览 / 诊断）。**不要把模块注册到 `conversation.view`**：那条 tab 只在会话视图里，
+7. **模块 tab 只存在于 BigFish 面板内部。** 点侧边栏栏位 → `main` 换成 `bigfish` → 看到面板页头 + 6 个模块 tab
+   （自动发布默认 / 账号 / 文案 / 采集 / 概览 / 诊断）。**不要把模块注册到 `conversation.view`**：那条 tab 只在会话视图里，
    且与「点了侧边栏入口就进面板」互斥（详见上一节）。
 8. **list 插槽（如 `conversation.view`）注册项必须带 `id`。** 漏了会在 `register` 时直接抛错；
    `label` 缺了只是退化成用 `id` 当文案。当前实现不再用 list 插槽，保留这条备查。
@@ -133,7 +134,7 @@ node scripts/dsh-dev.mjs --stop    # 停实例
    `--dump-config` 不触发 heal，仍可用来核对装配。
 ## 4. 测试
 
-`packages/plugin-ops/test/client-bundle.test.mjs`（16 条）：用 `vm.runInNewContext` 跑 client.js，
+`packages/plugin-ops/test/client-bundle.test.mjs`（17 条）：用 `vm.runInNewContext` 跑 client.js，
 stub `window.__ModuleLoader__.load` 捕获注册、假 `react`（`useState` **按组件身份分槽**：`__enter(type)` / `__exit(prev)`
 切换当前组件，父子组件不会串位）、假 `ctx.slots`，断言：
 
@@ -144,7 +145,8 @@ stub `window.__ModuleLoader__.load` 捕获注册、假 `react`（`useState` **�
 - 账号模块只读（`openTab('账号')`）：文案含登录态来源、`npm run daemon:login`、`xy_accounts_list` / `xy_import_account`，
   且不含任何 cookie 值（`cookie=` / `unb=\d` / `_m_h5_tk=`）；
 - 图标 `🐟`、active=true 时 opacity 1、否则 0.72、size 下限 12；
-- 面板内 5 个 tab（自动发布/账号/文案/概览/诊断），默认选中「自动发布」，点击后内容与 `aria-selected` 同步切换；
+- 面板内 6 个 tab（自动发布/账号/文案/采集/概览/诊断），默认选中「自动发布」，点击后内容与 `aria-selected` 同步切换；
+- 「采集」模块只读：讲清统计口径与红线，不出现图片直链、不产出可发布草稿；
 - 标题副标题在任意 tab 都在；
 - 入口按钮 disabled，并用 title 指向对应工具；
 - 文案风格区 5 个 chip、默认选中 `plain`、点击后 `aria-pressed` 转移；
@@ -166,6 +168,8 @@ stub `window.__ModuleLoader__.load` 捕获注册、假 `react`（`useState` **�
   面板内直接点「导入 / 扫码」需要 client→host 的 rpc 通道（灰区，采用前写 ADR）。
 - 「自动发布」模块只到「生成 `xy_publish_batch` 参数 JSON」：批量入队/发布由 agent 调工具或 CLI 执行，
   面板不联网、不调 daemon（执行与 UI 解耦）。
+- 「采集」模块只到「生成 `xy_reference_collect` 参数 JSON」：真正采集由 agent 调工具（daemon `POST /reference`），
+  面板不联网；真机只跑过单件 itemIds 路径，sellerId / 多件 / 面板点击调工具都没验证。
 - `scripts/dsh-shot.mjs` 还没有「点开自动发布 tab → 断言面板文案」的用例：本沙箱起不了浏览器
   （§3 坑 9），写了也验不了；真实验收这次是借热更新自动点击 + GDI 截图做的（§3 坑 9 末段），
   正式用例留给有浏览器 / danger-full-access 的环境按同一套 `clickTab` 思路补。

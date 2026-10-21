@@ -262,7 +262,7 @@ DSH 的 skill 发现只认**根下一层**的 `<name>/SKILL.md` 或 `<name>.md`�
 | T2 `xy_imagegen` + 审批门禁 | `packages/plugin-ops/src/imagegen.js`、gate 白名单、单测（假 fetch） | 无 key 返回 `UNSUPPORTED`；不打印 key；写盘路径在 `.scratch/` |
 | T3 图片尺寸探测 | `packages/core` 纯函数 + fixture 单测 | PNG/JPEG/WebP 各 1 个 fixture，宽高与方形判定正确 |
 | T4 prompt 模板与评测 | `templates.md` 生图段 + 10 条样本（数码/服饰/家居） | 人评"像实物"≥7/10，文字与水印 0 次 |
-| T5 真机验证 | 测试小号 1 次发布（dry-run → 真提交需用户同意） | 首图方形、1–9 张、无平台图片报错 |
+| T5 真机验证 | 1 次发布（dry-run → 真提交需用户同意） | 首图方形、1–9 张、无平台图片报错 |
 
 ## 6. 待验证清单
 

@@ -5,7 +5,7 @@
 
 ## 1. 环境快照（2026-10-21 收尾时）
 
-- Edge 专用 profile 在 `.scratch/edge-cal/profile`（已登录测试小号「同州禹斋」，accountId `2206569289277`）。
+- Edge 专用 profile 在 `.scratch/edge-cal/profile`（已登录账号「同州禹斋」，accountId `2206569289277`；这是用户大号、**不是测试小号**，见 AGENTS §5 账号纪律）。
 - 登录态已加密落库：`%LOCALAPPDATA%/bigfish/credentials`（21 字段）。
 - daemon **未常驻**；插件已装进 desktop profile。
 - 真机测试商品全部已下架：`1093817229436`、`1091938715735`、`1091940243200`（本项目名下无在售测试商品）。
@@ -14,7 +14,7 @@
 ## 2. 常用命令
 
 ```bash
-npm test                                   # 647 tests（单进程顺序跑，不能 spawn）
+npm test                                   # 709 tests（单进程顺序跑，不能 spawn）
 node 'C:/Users/34239/Documents/GitHub/deepseek-harness/node_modules/typescript/bin/tsc' \
   --noEmit --pretty false -p packages/<pkg>/tsconfig.json \
   --typeRoots 'C:/Users/34239/Documents/GitHub/deepseek-harness/node_modules/@types'
@@ -31,7 +31,7 @@ npm run dsh:install                        # 装进真实 profile（--dry-run / 
 
 单包测试：`node scripts/test-all.mjs packages/core`（前缀过滤；ops-bundle 没有测试）。
 
-真机发布前先起 Edge（专用 profile，已登录测试小号；路径带空格整体加引号）：
+真机发布前先起 Edge（专用 profile，已登录用户大号 `2206569289277`——不是测试小号，真发须用户点头；路径带空格整体加引号）：
 
 ```powershell
 Start-Process msedge.exe -ArgumentList '--remote-debugging-port=9222','--user-data-dir="D:\Github\big fish\.scratch\edge-cal\profile"','--no-first-run','about:blank'
@@ -56,4 +56,4 @@ Start-Process msedge.exe -ArgumentList '--remote-debugging-port=9222','--user-da
 1. 先读 [STATUS.md](STATUS.md) §4（主线是 P2 自动发货，P2.0 → P2.1 → P2.2 三步）。
 2. 发货动手前读：[delivery-rules.md](delivery-rules.md)（规则引擎已实现）+ [im-protocol.md](im-protocol.md)（发消息帧、心跳、ACK、解密顺序都是现成的施工规格）。
 3. 写操作（`deliver`）记得：幂等 `uniqueCode`、单账号写串行、失败进 `needs_review` 人工队列、审批门禁。
-4. 真机验证只用测试小号；发布前确认 `BF_PUBLISH_SUBMIT` 不是误开。
+4. 真机验证只用已导入的账号且默认 dry-run（`2206569289277` 是用户大号，不是测试小号）；发布前确认 `BF_PUBLISH_SUBMIT` 不是误开。

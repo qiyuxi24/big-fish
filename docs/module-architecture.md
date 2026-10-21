@@ -9,18 +9,18 @@
 ## 1. 一句话
 
 一个 DSH 插件（`@bigfish/plugin-ops`）+ 一个独立 daemon。插件负责**面板与工具**（组参数、审批、展示），daemon 负责**所有确定性写操作**（队列、串行、限流、CDP、落库），通道包负责**协议**（mtop / CDP / 闲管家 / IM）。
-**四个模块没有一个达到「可正式使用」**（A 级）；最好的是账号模块（46/100，只读摘要质量不错），发布 38、发布前处理 32，采集参考 8 分（未开始）。
+**四个模块没有一个达到「可正式使用」**（A 级）；最好的是账号模块（46/100，只读摘要质量不错），发布 38、发布前处理 32；采集参考 R1 已落地（只读统计 + 真机单件，见 §5.4），但整体仍未达可用。
 
 ## 2. 分层与数据流
 
 ```
-[侧边栏面板]  packages/plugin-ops/client.js（PANEL_TABS 五个分区，只组参数，不执行写）
+[侧边栏面板]  packages/plugin-ops/client.js（PANEL_TABS 六个分区：自动发布/账号/文案/采集/概览/诊断，只组参数，不执行写）
       │  用户把面板生成的 JSON / 命令贴给 agent
       ▼
-[host 插件]   packages/plugin-ops/src/tools.js（12 个 xy_* 工具）+ gate.js（写操作 ask 审批）
+[host 插件]   packages/plugin-ops/src/tools.js（14 个 xy_* 工具）+ gate.js（写操作 ask 审批）
       │  HTTP + Bearer token（daemon.token）
       ▼
-[daemon]      routes.ts（11 条路由）→ queue.ts（SQLite，dedupe_key 幂等）
+[daemon]      routes.ts（13 条路由）→ queue.ts（SQLite，dedupe_key 幂等；`requeue` 支持人工重排）
       │  worker.ts：concurrency 1、同账号最多一个在飞、lease 60s
       ▼
 [执行器]      executors.ts（probe / polish / publish / deliver / reply 五种 TaskKind）
@@ -36,16 +36,16 @@
 1. **daemon 不调 LLM。** 需要模型判断的事在插件/agent 侧做完，daemon 只执行确定性动作。
 2. **写操作有两个入口，且行为不一致**：① daemon 队列（工具 → `POST /tasks` → worker，有幂等/限流/落库）；② CLI 直连（`node packages/daemon/src/cli.ts publish --draft …`，**不走限流、不走队列、不落 items**）。面板本身没有任何写能力。这个割裂是最需要收口的架构债之一。
 3. **默认 dry-run。** `--submit` 或 `BF_PUBLISH_SUBMIT=1` 才真提交；没拿到 itemId 一律按失败处理（绝不假成功）。
-4. **失败语义要说准**：只有 `RATE_LIMITED` / `NETWORK` / `STORAGE` 会自动重试；`VALIDATION` / `AUTH_EXPIRED` / `UNSUPPORTED` / `INTERNAL` 直接 `failed`（**不是 needs_review**，needs_review 只在重试用尽时出现）；`RISK_CONTROL` 只有 mtop 读接口会产生，**发布侧识别不到风控**。
+4. **失败语义要说准**：只有 `RATE_LIMITED` / `NETWORK` / `STORAGE` 会自动重试；`VALIDATION` / `AUTH_EXPIRED` / `UNSUPPORTED` / `INTERNAL` 直接 `failed`（**不是 needs_review**，needs_review 只在重试用尽时出现）。发布侧风控已能识别（`channel-cdp/src/risk.ts` 的 `detectPublishRisk` / `withRiskGuards` 每步探测，命中抛 `RISK_CONTROL`，daemon 侧熔断 600s），但**只有单测、没在真机故意触发过**。
 
 ## 3. 四模块总览与可用度
 
 | 模块 | 面板分区 | 判定 | 分数 | 一句话依据 |
 | --- | --- | --- | --- | --- |
-| 自动发布 | 自动发布 | **C 半成品** | 38 | 单件 CLI 真机成功 2 次；队列/批量零真机；无批次层、无 pacing、失败无人工收尾、发布侧无风控处理、daemon 无常驻 |
+| 自动发布 | 自动发布 | **C 半成品** | 38 | 单件真机成功 2 次（另有 1 次队列路径真机记录，见 §5.1）；批量零真机；失败重排 / pacing / 发布侧风控识别已有代码但只有单测；批次层仍缺、daemon 无常驻 |
 | 账号 | 账号 | **C 半成品** | 46 | 只读摘要真机 200；CLI 导入可用；扫码只有 CLI/HTTP 且无真机留档；面板无按钮；多账号未进发布路径 |
 | 发布前处理 | 文案 | **C 半成品** | 32 | `xy_copy_plan` 只渲染提示词；2 个 skill 未被宿主发现；缺草稿落盘、发布前合规、生图 |
-| 采集参考 | 无 | **D 未开始** | 8 | 无工具、无 daemon 接线；`channel-mtop` 有 2 个未接线的只读解析器；items 只有 6 列 |
+| 采集参考 | 采集 | **R1 已落地（只读统计）** | — | 解析层 95 测试 + `POST /reference` 真机单件 200（241ms）；缺批量/多账号/面板点击验证；R2 自有商品搬家未实现、待拍板 |
 
 **底座能力（不是模块，但确实可用）**：登录态导入、取商家 + 全量商品、probe 单条详情落库、polish 擦亮、`GET /accounts` 只读摘要、令牌自动刷新（仅 mtop 路径）。这些都是真机验证过的「单点」，但没被组织成模块的日常流程。
 
@@ -75,14 +75,14 @@
 | 3 | 准备登录态 | 导入（CLI/工具/HTTP）或扫码（只有 CLI/HTTP） |
 | 4 | 跑发布 | CLI 直发（绕过队列/限流/items）或队列（工具 enqueue → worker） |
 | 5 | 看结果 | `xy_tasks_list` 逐条看 state/lastError（只显示前 80 字）、`xy_status` 计数、items 表；**截图路径没有任何入口能列** |
-| 6 | 失败收尾 | **没有可用入口**：ack/release/fail 要求任务处于 leased 且 owner 匹配，插件 owner 与 worker owner 不一致；无 retry 端点；failed 后用同一草稿重新入队会被 dedupe 命中、不新建 |
+| 6 | 失败收尾 | **已有入口（单测级）**：`POST /tasks/:id/retry` + `xy_task_retry`（写类、挂审批）把 failed / needs_review 重新排队（attempts 归零、清租约、保留 dedupeKey/payload）；**还没在真机上重放过一次发布** |
 
 **已有真机证据**：单件 dry-run 多次；单件真提交 2 次（`1093817229436`、`1091938715735`，均已下架）；队列路径真提交 1 次（`1091940243200`，已下架）。类目只验证过「学习笔记」。
 
 **到 A 还差（按影响排序）**：
-1. **失败收尾通道**——failed/needs_review 任务目前只能改 SQLite 或换 dedupeKey，必须先补 retry/重新入队。
-2. **发布侧风控识别**——风控只会变成 INTERNAL/VALIDATION → failed，worker 不会 trip 熔断、不会停队列；「遇 x5sec/滑块停队列等人工」目前只是策略，没有代码。
-3. **账号级 pacing**——唯一节流是写桶 1 次/60s，真机实测同号连发第二件仍被风控；批量入队不带间隔，20 条同时可跑，靠限流偶然错开。
+1. ✅ **失败收尾通道**（单测级）：`queue.requeue` + `POST /tasks/:id/retry` + `xy_task_retry`；**缺真机重放验证**与「整批重试」。
+2. ✅ **发布侧风控识别**（单测级）：`channel-cdp/src/risk.ts` 每步探测，命中抛 `RISK_CONTROL` 并熔断 600s；**缺真机故意触发验证**。
+3. ✅ **账号级 pacing**（单测级）：`core/src/limiter.ts` 默认 180s（夹 30s..3600s），批量工具逐条预约 `availableAt`；**180s 是推导值、未真机校准**，且单条 enqueue 不受约束（写桶 1/60s 兜底）。
 4. **批次层**——无 batchId / 批次进度 / 批次汇总；结果粒度=单条任务 + 入队瞬间文本。
 5. **daemon 常驻与日志文件**——否则关终端就丢现场。
 6. **队列路径端到端真机 ≥2 条**（含一条不支持类目），目前为零。
@@ -120,12 +120,14 @@
 
 **边界**：参考别人的商品做「标题结构 / 卖点 / 价格区间 / 图片风格」的判断；**不搬运商品、不下载原图入库、不照抄文案**（AGENTS §1.6）。
 
-**现状**：items 只有 `item_id / account_id / title / price_cents / state / updated_at` 六列，**没有描述、图片、卖家、类目、销量**；probe 只解析 itemId/title/priceCents/state（详情响应里的 desc/soldPrice 未解析）。`channel-mtop/src/user.ts` 里有他人主页/在售列表的纯函数解析器（`parseUserHead`/`parseItemList`/`pickSellerIdFromDetail`），但 **daemon 与插件零接线**；搜索接口只有常量 `mtop.taobao.idlemtopsearch.pc.search`，没有 build/parse 实现。
+**现状（R1 已落地）**：`channel-mtop/src/reference.ts`（`parseItemReference` / `extractTitleKeywords` / `summarizeReferences`，只读统计、**绝不返回图片直链**）+ daemon `POST /reference`（head→itemList→detail；单件失败进 `skipped`，`AUTH_EXPIRED`/`RISK_CONTROL`/`UNAUTHORIZED` 中止整批）+ 工具 `xy_reference_collect`（只读、不挂门禁、100s 超时）+ 面板「采集」分区（纯 UI，不联网）。**真机**：2026-10-21 `POST /reference {accountId, itemIds:['1091933071728']}` → 200 / 241ms，item「AI工作流咨询」priceCents 10000、categoryId `50023914`、imageCount 3、seller 西安/在售 7/注册年 2012、siblings 2 条（3000/15000）；keywords 为空是因为只有 1 件、卖点词要求出现次数 ≥2。
+
+仍缺：items 表仍只有 `item_id / account_id / title / price_cents / state / updated_at` 六列（采集结果不落 items）；sellerId 路径、多件汇总、面板点击、GUI 内工具调用都**没真机验证**；搜索接口只有常量 `mtop.taobao.idlemtopsearch.pc.search`，没有 build/parse 实现。
 
 **到 A 还差**：
-1. 业务红线拍板：能不能抓、抓到什么粒度、能不能存缩略图。
-2. 采集入口（列表遍历 + 限流 + 去重）与 `items` 扩字段。
-3. 特征提取（价格带、标题字数、类目分布）——需要模型判断的部分按 ADR 0001 放插件/agent 侧，不进 daemon。
+1. 业务红线拍板：R2「自有商品搬家」未实现、**待用户明确授权**（不碰他人素材）。
+2. 真机验证覆盖面：sellerId 路径、多件汇总、面板「采集」分区点击（GUI 里调工具）都还没跑过；批量商品与限流/去重未做。
+3. `items` 扩字段（描述/图片数/卖家/类目）——需要先定「存什么粒度」，见红线。
 
 ## 6. 公共底座（改动前先看影响面）
 
@@ -134,8 +136,8 @@
 | 契约 | `packages/core` | 任务机、队列、凭据接口、policy、限流、熔断、delivery 规则 | daemon、channel-* |
 | 队列与 worker | `packages/daemon/src/{queue,worker}.ts` | 幂等入队、领租约、重试语义 | 所有写模块 |
 | 通道 | `packages/channel-*` | mtop / CDP / 闲管家 / IM 协议 | daemon 执行器 |
-| 工具与门禁 | `packages/plugin-ops/src/{tools,gate}.js` | 12 个 `xy_*` 工具、写操作审批 | 所有模块入口 |
-| 面板 | `packages/plugin-ops/client.js` | `PANEL_TABS` 五分区（自动发布/账号/文案/概览/诊断） | 所有模块 UI |
+| 工具与门禁 | `packages/plugin-ops/src/{tools,gate}.js` | 14 个 `xy_*` 工具、写操作审批 | 所有模块入口 |
+| 面板 | `packages/plugin-ops/client.js` | `PANEL_TABS` 六分区（自动发布/账号/文案/采集/概览/诊断） | 所有模块 UI |
 
 ## 7. 完工标准与加模块步骤
 
