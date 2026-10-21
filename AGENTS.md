@@ -8,10 +8,11 @@
 
 > **现状、能力矩阵与下一步的唯一事实源是 [`docs/STATUS.md`](docs/STATUS.md)。** 本节只留一句话状态与硬约束；不要在这里或别处重复测试数字/能力状态（历史上同一个数字出现过 6 个版本）。
 
-- **P0 → P1.2 全部完成并提交**（基线 `main @ 46823e5`，2026-10-21）：core 契约 / daemon HTTP + SQLite 队列 + worker + 执行器 / mtop 读通道（详情、擦亮、商家 + 全量商品）/ CDP cookie + 发布步骤机 / 登录态导入 + 扫码登录 + 令牌自动刷新 / 插件 10 个 `xy_*` 工具 + 只读侧边栏（含文案风格入口）/ 2 个文案合规 skill / `channel-im` 解析层（未接线）。
-- **真实能力边界**：`probe`/`polish` 真通 mtop；`publish` 默认 dry-run、`BF_PUBLISH_SUBMIT=1` 才真提交，**只成功过一次**（测试小号，且受网页端类目支持矩阵限制）；`deliver`/`reply` 仍 `UNSUPPORTED`。
-- **下一步是 P2 自动发货**：P2.0 人工确认 → P2.1 IM websocket 接线 → P2.2 全自动；并行的类目矩阵 / 批量上架 / 文案 skill 接线见 `docs/STATUS.md` §4。
-- **未跑通的路径不得声称成功**（发布只跑通过一次，别写「已稳定支持批量发布」）。需要用户拍板的三件事见 `docs/STATUS.md` §4.3。
+- **P0 → P1.2 全部完成并提交**（基线 `main @ 081d3fb`，2026-10-21）：core 契约 / daemon HTTP + SQLite 队列 + worker + 执行器 / mtop 读通道（详情、擦亮、商家 + 全量商品）/ CDP cookie + 发布步骤机 / 登录态导入 + 扫码登录 + 令牌自动刷新 / 插件 12 个 `xy_*` 工具 + 只读侧边栏 / 2 个文案合规 skill / `channel-im` 解析层（未接线）。
+- **产品结构（用户 2026-10-21 拍板）**：**一个插件**，四个模块各注册一个顶部 tab（`conversation.view`）切换：发布 / 账号 / 发布前处理 / 采集参考；**插件入口只在侧边栏**，不占顶部。已注册「🐟 自动发布」「👤 账号」两个 tab，加模块就在 `plugin-ops/client.js` 的 `VIEW_MODULES` 追加一项。
+- **真实能力边界**：`probe`/`polish` 真通 mtop；`publish` 默认 dry-run、`--submit` / `BF_PUBLISH_SUBMIT=1` 才真提交，**真机只成功过两次、都是单件、都是「学习笔记」类目**（受网页端类目支持矩阵限制，两次均已下架）；`deliver`/`reply` 仍 `UNSUPPORTED`；账号模块只有只读摘要（面板内导入/扫码未做，需 host rpc + ADR）。
+- **当前主线**：先把模块拆开、一个一个做——发布（单件真机已通、批量未真机）→ 账号（只读摘要已通）→ 发布前处理（文案/生图/设置页）→ 采集参考（先等业务红线拍板）。验收口径见 `docs/auto-publish.md`，状态看 `docs/STATUS.md` §4.1。P2 自动发货押后。
+- **未跑通的路径不得声称成功**（批量发布、账号面板内导入、预处理、采集都没跑通/没做）。需要用户拍板的事见 `docs/STATUS.md` §4.3。
 
 ## 1. 架构不变量（违反即回退）
 
@@ -33,6 +34,7 @@
 | `packages/channel-mtop` | TS 库（纯函数） | `core`；mtop 签名/信封/cookie 归一/ret 分类，不发请求 |
 | `packages/channel-cdp` | TS 库 | `core`；CDP 连接/页面/启动/发布步骤机，传输与 spawn 可注入 |
 | `packages/channel-guanjia` | TS 库 | `core`；闲管家开放平台客户端（MIT 移植），**不含 placeOrder** |
+| `packages/channel-im` | TS 库 | `core`；IM 帧解析 / 消息归一化 / 会话状态机，**未接 daemon** |
 
 - 包名统一 `@bigfish/*`。
 - 语言边界：`core`/`daemon` 用 TS（Node 24 直接跑，无构建）；`plugin-ops`/`ops-bundle` 用纯 ESM JS + JSDoc（它们被宿主直接 import，见 ADR 0002）。
@@ -47,7 +49,7 @@
 - 错误：只用 `class XianyuError extends Error`，带稳定 `code`（`VALIDATION | AUTH_EXPIRED | RISK_CONTROL | RATE_LIMITED | CIRCUIT_OPEN | NETWORK | STORAGE | UNSUPPORTED | INTERNAL | UNAUTHORIZED | UNKNOWN`）。禁止裸 `throw "字符串"`、禁止 `catch {}` 吞异常。
 - **金额一律整数分（cent），时间一律整数毫秒**，禁止浮点相乘（mtop 字段本身就是分）。
 - 所有 IO 必须有超时（默认 15s）并透传 `AbortSignal`；重试只对幂等请求，退避用 `min(60 * 2^(n-1), 1800)` 秒。
-- 文件 ≤ 400 行、函数 ≤ 60 行。复杂分支写"为什么"，不写"做了什么"。
+- 文件 ≤ 400 行、函数 ≤ 60 行（`packages/plugin-ops/client.js` 例外：loader 每个包只下发**一个** client bundle、无构建步骤，拆文件就要引 bundler，故上限 700 行——四模块面板都挤在这一个 bundle 里；超了先说明再谈）。复杂分支写"为什么"，不写"做了什么"。
 - 标识符/commit 用英文，注释与用户可见文案用中文。
 - 不新增依赖除非必要（禁 lodash/moment/dayjs，用原生）；新依赖需在 PR 说明体积与替代方案。
 - 日志用结构化 JSON（稳定字段名），INFO 以上才落盘。

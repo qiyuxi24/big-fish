@@ -150,7 +150,7 @@
 |---|---|
 | `du -sm research/repos` | 886（2026-10-20 口径）；2026-10-21 实测 **651**（开源仓库与雾里包已删，余 A/B） |
 | `git ls-files research/repos \| wc -l` | 0（未入库；`.gitignore:13` 已忽略整个目录） |
-| `node scripts/test-all.mjs` | **592 tests / 592 pass / 21 suites / 61 测试文件（约 5s）**（2026-10-21 实测；见 `docs/STATUS.md`） |
+| `node scripts/test-all.mjs` | **647 tests / 647 pass / 23 suites / 64 测试文件（约 12s）**（2026-10-21 实测；以 `docs/STATUS.md` 为准） |
 | `node scripts/typecheck.mjs` | 本会话**无法验证**：`spawnSync node.exe EPERM`（沙箱禁止 node 子进程管道 stdio，是本机限制、非类型错误） |
 | 直接 tsc（绕开脚本） `node <DSH>/node_modules/typescript/bin/tsc -p packages/<pkg>/tsconfig.json --noEmit --typeRoots <DSH>/node_modules/@types` | core / daemon / channel-mtop / channel-cdp / channel-guanjia / channel-im **6 包 0 错误**（plugin-ops / ops-bundle 是纯 ESM JS，无 tsconfig，不在类型检查覆盖内） |
 | 删后自检 | `grep -rn 'research/repos' docs/ packages/ research/notes/` 预期 25 处（§3.3 清单），逐条改成 docs 锚点 |

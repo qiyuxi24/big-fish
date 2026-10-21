@@ -19,7 +19,7 @@ pnpm install --offline --ignore-scripts
 ## 测试与类型检查
 
 ```sh
-node scripts/test-all.mjs                   # 全量：592 tests / 592 pass（21 suites / 61 个测试文件，约 5s）
+node scripts/test-all.mjs                   # 全量：647 tests / 647 pass（23 suites / 64 个测试文件，约 12s）
 node scripts/test-all.mjs packages/core     # 只跑某个包（按路径前缀过滤）
 node scripts/test-all.mjs integration       # 只跑跨层集成测试
 ```

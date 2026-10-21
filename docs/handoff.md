@@ -8,18 +8,18 @@
 - Edge 专用 profile 在 `.scratch/edge-cal/profile`（已登录测试小号「同州禹斋」，accountId `2206569289277`）。
 - 登录态已加密落库：`%LOCALAPPDATA%/bigfish/credentials`（21 字段）。
 - daemon **未常驻**；插件已装进 desktop profile。
-- 测试商品 itemId `1093817229436` 已下架留档。
+- 真机测试商品全部已下架：`1093817229436`、`1091938715735`、`1091940243200`（本项目名下无在售测试商品）。
 - 本会话 `danger-full-access`（approval 关闭），所以 `dsh:dump` 能跑、junction 正常。
 
 ## 2. 常用命令
 
 ```bash
-npm test                                   # 608 tests（单进程顺序跑，不能 spawn）
+npm test                                   # 647 tests（单进程顺序跑，不能 spawn）
 node 'C:/Users/34239/Documents/GitHub/deepseek-harness/node_modules/typescript/bin/tsc' \
   --noEmit --pretty false -p packages/<pkg>/tsconfig.json \
   --typeRoots 'C:/Users/34239/Documents/GitHub/deepseek-harness/node_modules/@types'
 
-npm run daemon                             # 起 daemon（默认 127.0.0.1:47001）
+node packages/daemon/src/cli.ts            # 起 daemon（默认子命令就是 serve，别显式传；127.0.0.1:47001）
 npm run daemon:login -- --chrome-port 9222 # 扫码登录等待（打开 Edge 登录后自动收尾）
 npm run daemon:import-account -- --chrome-port 9222   # 从本机 Chrome 导入登录态
 npm run daemon:publish -- --draft .scratch/draft.json --screenshots .scratch/shots  # dry-run（加 --submit 才真提交）

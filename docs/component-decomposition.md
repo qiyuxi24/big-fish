@@ -10,7 +10,7 @@
 
 ## 0. 实施状态（P1.0 已完成）
 
-三个 channel 包已按 §4 契约落地。**当前全量口径**（P1.2 后）：`node scripts/test-all.mjs` = **592 tests / 592 pass（21 suites / 61 个测试文件）**，6 个 TS 包 tsc 0 错误（`plugin-ops` / `ops-bundle` 是纯 ESM JS，无 tsconfig，**不在类型检查覆盖内**）；当前形态以 [architecture.md](architecture.md) 与 [STATUS.md](STATUS.md) 为准。
+三个 channel 包已按 §4 契约落地。**当前全量口径**（以 [STATUS.md](STATUS.md) 为准）：`node scripts/test-all.mjs` = **647 tests / 647 pass（23 suites / 64 个测试文件）**，6 个 TS 包 tsc 0 错误（`plugin-ops` / `ops-bundle` 是纯 ESM JS，无 tsconfig，**不在类型检查覆盖内**）；当前形态以 [architecture.md](architecture.md) 与 [STATUS.md](STATUS.md) 为准。
 
 | 包 | 条数 | 关键实现 | 偏差（已在包 README 记录） |
 | --- | --- | --- | --- |
@@ -85,7 +85,7 @@ packages/
   channel-cdp/     CDP 会话：连 Chrome、页面操作、响应拦截、步骤状态机
   channel-guanjia/ 闲管家开放平台客户端（MIT 移植）
   daemon/          已有：IPC 控制面                               ← P1.1 接执行器
-  plugin-ops/      已有：10 个工具 + 侧边栏（含文案风格入口）
+  plugin-ops/      已有：11 个工具 + 侧边栏（含文案风格入口）
   ops-bundle/      已有：bundle 组合
 ```
 
@@ -285,7 +285,7 @@ export class GuanJiaClient {
 ## 6. 验收
 
 ```sh
-node scripts/test-all.mjs            # 592 tests / 592 pass（21 suites / 61 个测试文件；口径见 STATUS.md）
+node scripts/test-all.mjs            # 647 tests / 647 pass（23 suites / 64 个测试文件；口径见 STATUS.md）
 node scripts/typecheck.mjs           # 6 个 TS 包全通过；plugin-ops / ops-bundle 是纯 JS，不参与
 ```
 
