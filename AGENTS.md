@@ -13,13 +13,18 @@ P1.0 **已完成**：组件拆解——`channel-mtop` / `channel-cdp` / `channel
 
 P1.1 **已完成**：daemon 运行时装配（`runtime.ts`）+ worker 领租约执行 + 执行器能力矩阵 + `/items` 落库 + `/status` 的 accounts/circuits/worker；`probe/polish` 已接 mtop 真实通道，`publish/deliver/reply` 显式 `UNSUPPORTED`（宁可失败不留假成功）。全仓 379 tests、5 个 TS 包类型检查 0 错误，见 `docs/architecture.md`。
 
-P1.2 **填表链路已完成并真机校准，真提交未验证**：
-1. **登录态导入**：`npm run daemon:import-account` / `POST /accounts/import` / 插件 `xy_import_account` 从带 `--remote-debugging-port` 的浏览器读 goofish cookie → `CredentialStore` 加密落盘；accountId 默认取 `unb`。Cookie 读取按 `Storage.getCookies` → `Network.getAllCookies` 自动降级（Edge 155 已移除后者）。
-2. **CDP 发布步骤机 + daemon 发布通道**：`packages/channel-cdp/src/publish.ts`（打开发布页 → 传图 → 富文本文案 → 计价 → 价格/包邮 → 地址 → 必填预检 → 提交校验）；`packages/daemon/src/cdp-publish.ts` 接到 daemon（先比对浏览器 `unb` 与期望账号，防发错号）。**默认 dry-run，只填表不提交**；队列任务只有 `BF_PUBLISH_SUBMIT=1` 才真提交。
-3. **插件侧**：`xy_publish_draft`（默认只给命令，`mode=enqueue` 才入队）与侧边栏面板；共 9 个 `xy_*` 工具。
-4. **真机校准（2026-10-21，Edge 155 + CDP 9222）**：dry-run 全绿；选择器/填写原理/限制见 `docs/architecture.md` §13。**地址搜索在 CDP 下不回显结果**，只能从「常用地址/附近地址」匹配；类目由页面 AI 识别，工具不自动选。全仓 477 tests、5 个 TS 包类型检查 0 错误。
+P1.2 **已完成（含真提交）**：
+1. **登录态导入**：`npm run daemon:import-account` / `POST /accounts/import` / 插件 `xy_import_account` 从带 `--remote-debugging-port` 的浏览器读 goofish cookie → `CredentialStore` 加密落盘；accountId 默认取 `unb`。Cookie 读取按 `Storage.getCookies` → `Network.getAllCookies` 自动降级（Edge 155 已移除后者）。**扫码登录**：`npm run daemon:login` / `POST /accounts/login`（轮询 cookie，`unb` + `_m_h5_tk` 齐备才算成功，默认超时 180s）。
+2. **CDP 发布步骤机 + daemon 发布通道**：`packages/channel-cdp/src/publish.ts`（打开发布页 → 传图 → 富文本文案 → **选择分类**（`category.ts`）→ 计价 → 价格/包邮 → 地址 → 必填预检 → 提交校验）；`packages/daemon/src/cdp-publish.ts` 接到 daemon（先比对浏览器 `unb` 与期望账号，防发错号）。**默认 dry-run，只填表不提交**；队列任务只有 `BF_PUBLISH_SUBMIT=1` 才真提交。
+3. **真发布已跑通一次**：2026-10-21 用测试小号发布 itemId `1093817229436`（已下架留档），成功页 URL 带 `item?id=…`。**类目受网页端支持矩阵限制**：电子资料/学习笔记/课业本 ✅，教材教辅/语言与兴趣培训/学习资料定制/文学/考研咨询 ❌（页面会提示「网页版暂不支持发布此分类」），见 `docs/architecture.md` §13.5。发布前可先查违禁词（`mtop.taobao.idleitem.badwords.prepubcheck`）。
+4. **令牌过期自动刷新**：`_m_h5_tk` 约 2h 过期；channel-mtop 在 `FAIL_SYS_TOKEN_EXOIRED` 时用响应 Set-Cookie 合并新 token、重签重试**一次**并回写 `CredentialStore`（`onSessionUpdate`）。
+5. **取商家 ID + 全量商品**：`channel-mtop/src/user.ts`（`user.page.head` → encryptedUserId/昵称/在售数；`xyh.item.list` 分页 1..20 → 商品条目，soldPrice 元转分）。
+6. **插件侧**：9 个 `xy_*` 工具（含 `xy_import_account` / `xy_publish_draft`）与只读侧边栏面板。
+7. **文案与合规**：`skills/xianyu-listing-copy`（改写模板 + 38 违禁词 + 20 禁售类目）与 `skills/xianyu-listing-audit`（17 个审核码映射 `core/policy.ts`）；生图选型见 `docs/copywriting-and-imagegen-plan.md`。
+8. **IM 半成品**：`packages/channel-im` 帧解析/消息归一化/会话状态机已提交（32 tests），**尚未接 daemon**。
+全仓 **592 tests / 592 pass**、6 个 TS 包 tsc 0 错误。
 
-下一步：真提交跑一次（`--submit`，测试小号，需用户同意）验证「发布成功页 → item id」链路。**在真提交验证通过前，不要让任何代码路径声称「发布成功」。**
+下一步（P1.3/P2）：自动发货（IM 协议 + 发货规则引擎已就绪一半）、批量上架调度、文案 skill 接进 agent 流程、channel-im 接 daemon。**未跑通的路径不得声称成功**（发布只跑通过一次，别写「已稳定支持批量发布」）。
 
 ## 1. 架构不变量（违反即回退）
 
