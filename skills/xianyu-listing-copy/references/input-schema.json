@@ -1,0 +1,108 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://bigfish.local/skills/xianyu-listing-copy/input-schema.json",
+  "title": "xianyu-listing-copy 输入契约",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "productName",
+    "condition",
+    "priceCents",
+    "shipping",
+    "imagePaths"
+  ],
+  "properties": {
+    "productName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120,
+      "description": "原始商品名，可含商家话术"
+    },
+    "categoryHint": {
+      "type": "string",
+      "description": "用户给定的类目路径（用 / 分隔）；为空时由 skill 输出候选"
+    },
+    "condition": {
+      "type": "string",
+      "enum": [
+        "new",
+        "like-new",
+        "light-wear",
+        "visible-wear",
+        "flawed"
+      ],
+      "description": "成色枚举"
+    },
+    "specs": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "型号/尺寸/材质/容量等键值，值一律字符串"
+    },
+    "flaws": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 10,
+      "description": "每条一个瑕疵；空数组表示无瑕疵"
+    },
+    "accessories": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 20,
+      "description": "配件清单"
+    },
+    "priceCents": {
+      "type": "integer",
+      "minimum": 100,
+      "description": "售价，整数分；禁止浮点"
+    },
+    "marketPriceCents": {
+      "type": "integer",
+      "minimum": 100,
+      "description": "同款市场均价，整数分，仅用于偏离度提示"
+    },
+    "shipping": {
+      "type": "string",
+      "enum": [
+        "free",
+        "none"
+      ],
+      "description": "free=包邮，none=不包邮"
+    },
+    "imagePaths": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 9,
+      "items": {
+        "type": "string"
+      },
+      "description": "本机绝对路径；扩展名限 png/jpg/jpeg/heic/webp"
+    },
+    "tone": {
+      "type": "string",
+      "enum": [
+        "plain",
+        "warm",
+        "professional"
+      ],
+      "default": "plain"
+    },
+    "variantCount": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3,
+      "default": 1,
+      "description": "生成几套备选标题/描述"
+    },
+    "usedAiImages": {
+      "type": "boolean",
+      "default": false,
+      "description": "是否包含 AI 生成图；true 时必须在第 3 段声明"
+    }
+  }
+}

@@ -1,0 +1,163 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://bigfish.local/skills/xianyu-listing-copy/output-schema.json",
+  "title": "xianyu-listing-copy 输出契约（发布草稿）",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "ok",
+    "draft",
+    "variants",
+    "warnings"
+  ],
+  "properties": {
+    "ok": {
+      "type": "boolean",
+      "description": "false 表示存在 error 级问题，不得直接入队"
+    },
+    "draft": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "desc",
+        "descParagraphs",
+        "tags",
+        "priceCents",
+        "shipping",
+        "images"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60,
+          "description": "目标 ≤30 字（按 Array.from 计）"
+        },
+        "desc": {
+          "type": "string",
+          "minLength": 30,
+          "description": "四段正文 + 末尾标签行，发布页唯一文本字段"
+        },
+        "descParagraphs": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "纯正文四段，不含标签行"
+        },
+        "tags": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {
+            "type": "string",
+            "pattern": "^#[^#\\s]{1,20}$"
+          },
+          "description": "5 个话题标签，含 # 前缀"
+        },
+        "categoryCandidates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "confidence"
+            ],
+            "properties": {
+              "path": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            }
+          }
+        },
+        "priceCents": {
+          "type": "integer",
+          "minimum": 100
+        },
+        "shipping": {
+          "type": "string",
+          "enum": [
+            "free",
+            "none"
+          ]
+        },
+        "quantity": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "images": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 9,
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "variants": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "desc"
+        ],
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "desc": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "field",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "field": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "warn",
+              "error"
+            ]
+          }
+        }
+      }
+    }
+  }
+}
