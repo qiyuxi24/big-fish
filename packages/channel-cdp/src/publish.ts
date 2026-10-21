@@ -31,7 +31,7 @@ import { assertCategoryPublishable, stepSelectCategory } from './category.ts'
 import { readFormFieldText, waitFormFieldText } from './form.ts'
 import type { DomPage } from './dom.ts'
 import type { CdpPage } from './page.ts'
-import { runPublishSteps } from './steps.ts'
+import { runRiskGuardedSteps } from './risk.ts'
 import type { PublishContext, PublishRunResult, PublishStep } from './steps.ts'
 
 /** 闲鱼 PC 发布页；发布请求的 Referer 也是它（research/notes/A-cores.md）。 */
@@ -190,7 +190,8 @@ export async function publishItem(
   ctx: PublishContext,
   options: PublishOptions = {},
 ): Promise<PublishRunResult & { itemId?: string }> {
-  const result = await runPublishSteps(page, createPublishSteps(draft, options), ctx)
+  // 用带风控检查的包装执行：页面级风控要翻译成 RISK_CONTROL（daemon 靠它 trip 熔断）。
+  const result = await runRiskGuardedSteps(page, createPublishSteps(draft, options), ctx)
   if (!result.ok) return result
   if (options.dryRun !== false) return { ok: true }
   const itemId = extractItemId(await readLocationHref(page))

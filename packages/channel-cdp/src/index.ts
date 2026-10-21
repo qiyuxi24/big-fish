@@ -39,6 +39,19 @@ export type {
   PublishStep,
 } from './steps.ts'
 export { runPublishSteps } from './steps.ts'
+export type { PublishRisk, RiskSignals } from './risk.ts'
+export {
+  classifyPublishRisk,
+  detectPublishRisk,
+  parsePublishRiskProbe,
+  publishRiskProbeScript,
+  RISK_ELEMENT_SELECTORS,
+  RISK_PROBE_MARKER,
+  RISK_TEXT_MARKERS,
+  RISK_URL_MARKERS,
+  runRiskGuardedSteps,
+  withRiskGuards,
+} from './risk.ts'
 export type { DomPage, DomWaitOptions } from './dom.ts'
 export {
   clickByText,

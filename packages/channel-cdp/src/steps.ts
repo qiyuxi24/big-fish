@@ -2,6 +2,9 @@
  * 发布步骤状态机：步骤顺序执行，失败立即返回并停止（写操作不自动重试）。
  * @module @bigfish/channel-cdp/steps
  */
+import { XianyuError } from '@bigfish/core'
+import type { ErrorCode } from '@bigfish/core'
+
 import type { CdpPage } from './page.ts'
 
 /** 一个发布步骤：名称用于失败定位与日志。 */
@@ -16,7 +19,8 @@ export interface PublishContext {
   signal?: AbortSignal
 }
 
-export type PublishRunResult = { ok: true } | { ok: false; step: string; error: string }
+/** 失败时带上原始 XianyuError 的 code（仅 XianyuError 才有）：上层要据此决定是否 trip 熔断。 */
+export type PublishRunResult = { ok: true } | { ok: false; step: string; error: string; code?: ErrorCode }
 
 /**
  * 顺序执行发布步骤。
@@ -39,7 +43,10 @@ export async function runPublishSteps(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       ctx.log(step.name, '失败：' + message)
-      return { ok: false, step: step.name, error: message }
+      // 保留 code：只有 XianyuError 有稳定 code（如 RISK_CONTROL），字符串/普通 Error 不加字段，
+      // 免得改变既有调用方对失败结果的 deepEqual 预期。
+      const code = error instanceof XianyuError ? error.code : undefined
+      return { ok: false, step: step.name, error: message, ...(code === undefined ? {} : { code }) }
     }
     ctx.log(step.name, '完成')
   }
