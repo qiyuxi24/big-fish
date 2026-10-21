@@ -24,4 +24,13 @@ export {
   parseItemDetail,
 } from './api.ts'
 export type { ItemDetailInput, PolishInput } from './api.ts'
+export {
+  USER_MTOP_APIS,
+  buildItemListData,
+  buildUserHeadData,
+  extractSellerIdFromDetail,
+  parseItemList,
+  parseUserHead,
+} from './user.ts'
+export type { ItemListInput, ItemListPage, UserHeadInput, UserHeadProfile } from './user.ts'
 export type { MtopCallOptions, MtopHttpRequest, MtopHttpResponse, MtopSession, MtopTransport } from './types.ts'

@@ -148,8 +148,11 @@ function yuanTextToCents(text: string): number | undefined {
   return cents * times
 }
 
-/** 「元」字段 → 分；字段存在但解析不出数字时抛 VALIDATION（宁可报错也不写 0）。 */
-function centsFromYuan(value: unknown, field: string): number | undefined {
+/**
+ * 「元」字段 → 分；字段存在但解析不出数字时抛 VALIDATION（宁可报错也不写 0）。
+ * 导出给 user.ts 的商家商品列表复用，避免价格换算逻辑出现第二份实现。
+ */
+export function centsFromYuan(value: unknown, field: string): number | undefined {
   const text = yuanText(value)
   if (text === undefined) return undefined
   const cents = yuanTextToCents(text)
