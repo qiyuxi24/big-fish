@@ -223,6 +223,26 @@ describe('daemon 执行器', () => {
     assert.equal(items.upserts[0]?.priceCents, 1000)
   })
 
+  it('publish：草稿 category 原样透传给通道，非字符串 → VALIDATION', async () => {
+    const port = makePort()
+    const seen: string[] = []
+    const executors = createExecutors({
+      ports: { ...port, async publishItem(input) { seen.push(input.draft.category ?? ''); return { itemId: 'new-2' } } },
+    })
+    const credentials = makeCredentialStore({ acc1: { accountId: 'acc1', cookies: {}, updatedAt: 1 } })
+    const ok = makeCtx({
+      payload: { accountId: 'acc1', title: 'T', desc: 'D', priceCents: 1000, images: ['a.png'], category: '电子资料' },
+      credentials,
+    })
+    await executors.publish?.execute(ok.task, ok)
+    assert.deepEqual(seen, ['电子资料'])
+    const bad = makeCtx({
+      payload: { accountId: 'acc1', title: 'T', desc: 'D', priceCents: 1000, images: ['a.png'], category: 42 },
+      credentials,
+    })
+    await assert.rejects(executors.publish?.execute(bad.task, bad) as Promise<void>, /category/)
+  })
+
   it('publish：priceCents 非整数 → VALIDATION；images 非法 → VALIDATION', async () => {
     const executors = createExecutors({ ports: makePort() })
     const credentials = makeCredentialStore({ acc1: { accountId: 'acc1', cookies: {}, updatedAt: 1 } })

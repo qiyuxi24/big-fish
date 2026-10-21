@@ -95,6 +95,14 @@ describe('parsePublishDraftFile', () => {
     assert.match(catchOf((): unknown => parsePublishDraftFile({ ...VALID_DRAFT, quantity: 0 })).message, /quantity/)
     assert.match(catchOf((): unknown => toCdpDraft(withQuantity)).message, /quantity/)
   })
+
+  it('category 可选：字符串透传给步骤机，非字符串拒绝', () => {
+    const withCategory = parsePublishDraftFile({ ...VALID_DRAFT, category: '电子资料' })
+    assert.equal(withCategory.category, '电子资料')
+    assert.equal(toCdpDraft(withCategory).category, '电子资料')
+    assert.equal(toCdpDraft(parsePublishDraftFile(VALID_DRAFT)).category, undefined)
+    assert.match(catchOf((): unknown => parsePublishDraftFile({ ...VALID_DRAFT, category: 1 })).message, /category/)
+  })
 })
 
 describe('publishViaCdp', () => {

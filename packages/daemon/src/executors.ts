@@ -40,6 +40,8 @@ export interface PublishDraft {
   priceCents: number
   images: string[]
   quantity?: number
+  /** 闲鱼类目名（如「电子资料」）；不给就走页面 AI 识别结果。 */
+  category?: string
 }
 
 /** 发货请求：规格双键（itemId+specId）用于卡密匹配。 */
@@ -246,12 +248,18 @@ function requireDraft(payload: Record<string, unknown>): PublishDraft {
   if (quantity !== undefined && (typeof quantity !== 'number' || !Number.isSafeInteger(quantity) || quantity < 1)) {
     fail('VALIDATION', '任务载荷的 quantity 必须是正整数')
   }
+  // 分类决定网页端能不能发：选错类目会被判「网页版暂不支持发布此分类」。
+  const category = payload['category']
+  if (category !== undefined && typeof category !== 'string') {
+    fail('VALIDATION', '任务载荷的 category 必须是字符串')
+  }
   return {
     title,
     desc,
     priceCents,
     images: images as string[],
     ...(quantity === undefined ? {} : { quantity }),
+    ...(category === undefined ? {} : { category }),
   }
 }
 

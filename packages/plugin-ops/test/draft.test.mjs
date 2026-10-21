@@ -25,6 +25,7 @@ test('合法草稿被规范化：可选字段不出现即 undefined', () => {
   assert.equal(draft.shipping, undefined)
   assert.equal(draft.pricingMode, undefined)
   assert.equal(draft.address, undefined)
+  assert.equal(draft.category, undefined)
 })
 
 test('priceCents 必须是正整数分（拒绝浮点、0、字符串、超安全整数）', () => {
@@ -59,6 +60,16 @@ test('loadPublishDraft：读文件失败与 JSON 坏都收敛成 VALIDATION', as
   )
   const draft = await loadPublishDraft('x', async () => JSON.stringify(valid))
   assert.equal(draft.priceCents, 1990)
+})
+
+test('category 可选：类型不对报 VALIDATION，参与幂等键', () => {
+  const withCategory = validatePublishDraft({ ...valid, category: '电子资料' })
+  assert.equal(withCategory.category, '电子资料')
+  expectValidation(() => validatePublishDraft({ ...valid, category: 42 }), /category/)
+  const plain = draftDedupeKey(validatePublishDraft(valid))
+  const categorized = draftDedupeKey(withCategory)
+  assert.notEqual(plain, categorized, '换分类等于换发布目标，不能复用幂等键')
+  assert.equal(categorized, draftDedupeKey(validatePublishDraft({ ...valid, category: '电子资料' })))
 })
 
 test('幂等键：同样内容同键，改价格换键，形态固定', () => {

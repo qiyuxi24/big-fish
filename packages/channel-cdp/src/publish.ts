@@ -27,6 +27,7 @@ import {
   waitForText,
 } from './dom.ts'
 import { pickAddressOption } from './address.ts'
+import { assertCategoryPublishable, stepSelectCategory } from './category.ts'
 import { readFormFieldText, waitFormFieldText } from './form.ts'
 import type { DomPage } from './dom.ts'
 import type { CdpPage } from './page.ts'
@@ -86,6 +87,11 @@ export interface PublishDraft {
   shipping?: 'free' | 'none'
   /** 地点文字（如 广州大学城）；不传就不改地址。 */
   address?: string
+  /**
+   * 目标类目名（如「电子资料」）。不传就沿用页面 AI 识别结果。
+   * 网页端只支持部分类目，选到不支持的会立刻失败（见 category.ts）。
+   */
+  category?: string
 }
 
 export interface PublishOptions {
@@ -158,6 +164,9 @@ export function createPublishSteps(draft: PublishDraft, options: PublishOptions 
     { name: '上传图片', run: (page, ctx) => stepUploadImages(page, ctx, draft, selectors, options) },
     { name: '填写文案', run: (page, ctx) => stepFillText(page, ctx, draft, selectors, options) },
   ]
+  if (draft.category !== undefined) {
+    steps.push({ name: '选择分类', run: (page, ctx) => stepSelectCategory(page, ctx, draft.category ?? '', options) })
+  }
   if (draft.pricingMode !== undefined) {
     steps.push({ name: '选择计价方式', run: (page, ctx) => stepPricingMode(page, ctx, draft.pricingMode ?? '', options) })
   }
@@ -338,6 +347,7 @@ async function stepSubmitAndVerify(
 async function stepCheckRequired(page: CdpPage, ctx: PublishContext, options: PublishOptions): Promise<void> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const category = await waitFormFieldText(page, '分类', timeoutMs)
+  await assertCategoryPublishable(page, category)
   if (category === '') {
     throw new XianyuError({ code: 'VALIDATION', message: '分类为空：页面没识别出类目，本工具不自动选类目，需人工先选好分类再发布' })
   }

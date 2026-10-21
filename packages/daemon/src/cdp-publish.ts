@@ -38,6 +38,8 @@ export interface PublishDraftFile extends PublishDraft {
   shipping?: 'free' | 'none'
   /** 地点文字（如 广州大学城）；不传就不改地址。 */
   address?: string
+  /** 目标类目名（如「电子资料」）；不传就沿用页面 AI 识别结果。 */
+  category?: string
 }
 
 /** 一次发布调用的输入。 */
@@ -154,6 +156,7 @@ export function toCdpDraft(draft: PublishDraftFile): CdpPublishDraft {
     ...(draft.pricingMode === undefined ? {} : { pricingMode: draft.pricingMode }),
     ...(draft.shipping === undefined ? {} : { shipping: draft.shipping }),
     ...(draft.address === undefined ? {} : { address: draft.address }),
+    ...(draft.category === undefined ? {} : { category: draft.category }),
   }
 }
 
@@ -172,6 +175,7 @@ export function parsePublishDraftFile(raw: unknown): PublishDraftFile {
   const images = readImages(record)
   const pricingMode = readOptionalString(record, 'pricingMode')
   const address = readOptionalString(record, 'address')
+  const category = readOptionalString(record, 'category')
   const shipping = readShipping(record)
   const quantity = record['quantity']
   if (quantity !== undefined && (typeof quantity !== 'number' || !Number.isSafeInteger(quantity) || quantity < 1)) {
@@ -185,6 +189,7 @@ export function parsePublishDraftFile(raw: unknown): PublishDraftFile {
     ...(pricingMode === undefined ? {} : { pricingMode }),
     ...(shipping === undefined ? {} : { shipping }),
     ...(address === undefined ? {} : { address }),
+    ...(category === undefined ? {} : { category }),
     ...(quantity === undefined ? {} : { quantity }),
   }
 }

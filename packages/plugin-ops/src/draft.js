@@ -69,7 +69,10 @@ export function validatePublishDraft(raw) {
   }
   const pricingMode = optionalString(record, 'pricingMode', 'pricingMode')
   const address = optionalString(record, 'address', 'address')
-  return { title, desc, priceCents, images, quantity, shipping, pricingMode, address }
+  // 分类是闲鱼网页端的硬限制来源：类目选错会被判「网页版暂不支持发布此分类」。
+  // 这里只校验类型，真正的可选性由发布页当前版本决定（见 docs/architecture.md §13.5）。
+  const category = optionalString(record, 'category', 'category')
+  return { title, desc, priceCents, images, quantity, shipping, pricingMode, address, category }
 }
 
 /** 读文件 + 解析 + 校验；readFileImpl 可注入，测试不需要真的落盘。 */
@@ -97,6 +100,7 @@ export function describeDraft(draft) {
     '图片：' + String(draft.images.length) + ' 张',
     '描述：' + String(draft.desc.length) + ' 字',
   ]
+  if (draft.category !== undefined) lines.push('分类：' + draft.category + '（发布时会按下拉选项实际点选）')
   if (draft.quantity !== undefined) lines.push('数量：' + String(draft.quantity) + ' 件（CDP 步骤机尚未接入数量）')
   if (draft.shipping !== undefined) lines.push('运费：' + (draft.shipping === 'free' ? '包邮' : '不包邮'))
   return lines
@@ -123,6 +127,7 @@ export function draftDedupeKey(draft) {
     draft.shipping ?? null,
     draft.pricingMode ?? null,
     draft.address ?? null,
+    draft.category ?? null,
   ])
   return 'publish:' + fnv1a(canonical)
 }

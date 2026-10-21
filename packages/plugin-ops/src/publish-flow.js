@@ -76,6 +76,9 @@ export async function enqueuePublish(args, draft, deps) {
       desc: draft.desc,
       priceCents: draft.priceCents,
       images: draft.images,
+      // 草稿里显式给了分类就一起入队：否则 daemon 侧只能靠页面 AI 识别，
+      // 识别到网页端不支持的类目会在提交时失败。
+      ...(draft.category === undefined ? {} : { category: draft.category }),
     },
   })
   return [

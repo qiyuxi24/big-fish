@@ -61,6 +61,15 @@ export {
   waitForText,
 } from './dom.ts'
 export { pickAddressOption } from './address.ts'
+export {
+  assertCategoryPublishable,
+  CATEGORY_LABEL,
+  CATEGORY_UNSUPPORTED_TEXT,
+  readCategoryOptionTexts,
+  readCategoryValue,
+  stepSelectCategory,
+  trustedClickAt,
+} from './category.ts'
 export type { PublishDraft, PublishOptions, PublishSelectors } from './publish.ts'
 export {
   assertValidDraft,
