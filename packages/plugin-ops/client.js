@@ -38,13 +38,15 @@ window.__ModuleLoader__.load({
     ]
 
     /**
-     * 顶部 tab。skill 入口（文案生成）放第一个并默认选中：
-     * 这是面板里唯一能产出东西的入口，其余都是只读说明。
+     * 面板内的模块 tab：**全部在侧边栏面板里切换**，不注册会话顶部 tab。
+     * 顺序 = 产品主线顺序（发布 → 账号 → 预处理/文案 → 概览 → 诊断）；
+     * 加模块就在这一行追加，再把 PanelBody 的 switch 补上。
      */
-    const TABS = [
-      { id: 'copy', label: '文案生成' },
+    const PANEL_TABS = [
+      { id: 'publish-batch', label: '自动发布' },
+      { id: 'account', label: '账号' },
+      { id: 'copy', label: '文案' },
       { id: 'overview', label: '概览' },
-      { id: 'publish', label: '发布' },
       { id: 'diagnose', label: '诊断' },
     ]
 
@@ -273,10 +275,10 @@ window.__ModuleLoader__.load({
         submitted ? h(CopyPlanPreview, { request }) : null)
     }
 
-    /** 顶部 tab 栏：role=tablist，选中态同时给 aria-selected 与下划线。 */
+    /** 面板内 tab 栏：role=tablist，选中态同时给 aria-selected 与下划线。 */
     function TabBar({ active, onSelect }) {
       return h('div', { role: 'tablist', 'aria-label': 'BigFish 面板分区', style: S.tabBar },
-        ...TABS.map(tab => h('button', {
+        ...PANEL_TABS.map(tab => h('button', {
           key: tab.id,
           type: 'button',
           role: 'tab',
@@ -287,19 +289,7 @@ window.__ModuleLoader__.load({
         }, tab.label)))
     }
 
-    /** 发布页：通道口径与命令（只读说明，真提交仍走对话审批）。 */
-    function PublishTab() {
-      return h('div', null,
-        h('div', { style: S.section },
-          h('div', { style: S.sectionTitle }, '发布通道'),
-          h('div', { style: S.grid },
-            h(Card, { title: '默认行为', value: 'dry-run 只填表', hint: '真提交需 daemon 以 BF_PUBLISH_SUBMIT=1 启动' }),
-            h(Card, { title: '类目限制', value: '网页端只支持部分类目', hint: '不支持时选中即失败（VALIDATION），不会撞提交；电子资料/学习笔记/课业本可用' }),
-            h(Card, { title: '成功判定', value: 'URL 带 item id 或出现成功提示', hint: '超时按失败处理，且不自动重试' }))),
-        h(CommandList, { items: COMMANDS.publish, title: '发布命令' }),
-        h('div', { style: S.note },
-          '先让模型调 xy_publish_draft(mode="dry-run") 校验草稿；确认价格、图片与 AI 图声明后，再 mode="enqueue"（走审批门禁）。'))
-    }
+
 
     /** 诊断页：只读工具与进程命令。 */
     function DiagnoseTab() {
@@ -314,22 +304,21 @@ window.__ModuleLoader__.load({
         h('div', { style: S.note }, '面板不联网、不读凭据：实时数据都从 host 侧工具读，这里只放入口与口径。'))
     }
 
-    /** 当前 tab 的内容区；copy 页的状态仍留在 Panel 里（切走再切回不丢输入）。 */
+    /** 当前 tab 的内容区：四个模块 + 两个说明页；copy 页的状态留在 Panel 里（切走再切回不丢输入）。 */
     function PanelBody({ tab, copyProps }) {
-      if (tab === 'overview') {
-        return h('div', null,
-          h(StatusGrid),
-          h(ActionButtons),
-          h(CommandList, { items: COMMANDS.account, title: '账号' }))
-      }
-      if (tab === 'publish') return h(PublishTab)
+      if (tab === 'publish-batch') return h(PublishBatchView)
+      if (tab === 'account') return h(AccountView)
+      if (tab === 'copy') return h(CopyStudio, copyProps)
       if (tab === 'diagnose') return h(DiagnoseTab)
-      return h(CopyStudio, copyProps)
+      return h('div', null,
+        h(StatusGrid),
+        h(ActionButtons),
+        h(CommandList, { items: COMMANDS.account, title: '账号' }))
     }
 
     /** 面板骨架：顶部 tab（skill 入口在第一个）+ 内容区 + 门禁说明。 */
     function BigFishPanel() {
-      const [tab, setTab] = React.useState(TABS[0].id)
+      const [tab, setTab] = React.useState(PANEL_TABS[0].id)
       const [styleId, setStyleId] = React.useState(COPY_STYLE_OPTIONS[0].id)
       const [productName, setProductName] = React.useState('')
       const [priceYuan, setPriceYuan] = React.useState('')
@@ -358,14 +347,14 @@ window.__ModuleLoader__.load({
           h('div', { style: S.logo }, '🐟'),
           h('div', null,
             h('div', { style: S.title }, 'BigFish 闲鱼运营'),
-            h('div', { style: S.subtitle }, 'P1.3 · 文案生成 / 发布 dry-run / 登录态导入'))),
+            h('div', { style: S.subtitle }, '发布 / 账号 / 文案 · 面板只组参数，执行交给 agent 与 daemon'))),
         h(TabBar, { active: tab, onSelect: setTab }),
         h(PanelBody, { tab, copyProps }),
         h('div', { style: S.note },
           '写操作门禁：导入登录态、入队发布走 ask；dry-run 与 xy_copy_plan 只读放行。实时状态在「诊断」页。真机校准通过前，任何路径都不会声称「发布成功」。'))
     }
 
-    /** 「自动发布」会话视图（conversation.view）：草稿集 → 校验 → 组 xy_publish_batch 参数。纯 UI，不联网、不执行写操作。 */
+    /** 「自动发布」模块：草稿集 → 校验 → 组 xy_publish_batch 参数。纯 UI，不联网、不执行写操作。 */
     function PublishBatchView() {
       const [draftText, setDraftText] = React.useState('')
       const [mode, setMode] = React.useState('dry-run')
@@ -380,10 +369,8 @@ window.__ModuleLoader__.load({
           : '至少 2 条合法草稿才能生成（现在 ' + String(valid.length) + ' 条）'
       const request = buildPublishBatchArguments(mode, results, accountId)
       const update = setter => value => { setter(value); setGenerated(null) }
-      return h('div', { style: S.page },
-        h('div', { style: S.header }, h('div', { style: S.logo }, '🐟'),
-          h('div', null, h('div', { style: S.title }, '自动发布'),
-            h('div', { style: S.subtitle }, '批量入队 → daemon 串行执行；面板只组参数，不执行写操作'))),
+      return h('div', null,
+        h('div', { style: S.sectionHint }, '批量入队 → daemon 串行执行；面板只组参数，不执行写操作'),
         h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '流水线'),
           h('div', { style: S.grid }, ...PIPELINE_STEPS.map(step => h(Card, { key: step.title, title: step.title, value: step.value })))),
         h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '草稿集'),
@@ -425,6 +412,7 @@ window.__ModuleLoader__.load({
         generated === null ? null : h('div', { style: S.preview },
           h('div', { style: S.sectionTitle }, 'xy_publish_batch 参数已就绪'),
           h('pre', { style: S.pre, 'data-role': 'publish-request' }, JSON.stringify(generated, null, 2))),
+        h(CommandList, { items: COMMANDS.publish, title: '发布命令' }),
         h('div', { style: S.note }, '面板不执行发布：命令由 agent 调 xy_publish_batch / CLI 执行 —— 执行与 UI 解耦'))
     }
 
@@ -512,15 +500,14 @@ window.__ModuleLoader__.load({
     ]
 
     /**
-     * 「账号」会话视图（conversation.view）：登录态来源 + 只读摘要入口 + 已知边界。
+     * 「账号」模块：登录态来源 + 只读摘要入口 + 已知边界。
      * 面板不碰凭据、不发请求：cookie 只在 daemon 进程里解密，UI 侧将来要用也得先补 host rpc 通道（见页脚）。
      */
     function AccountView() {
-      return h('div', { style: S.page },
-        h('div', { style: S.header }, h('div', { style: S.logo }, '👤'),
-          h('div', null,
-            h('div', { style: S.title }, '账号管理'),
-            h('div', { style: S.subtitle }, '登录态来源、只读摘要与刷新方式；面板不读 cookie、不联网'))),
+      return h('div', null,
+        h('div', { style: S.section },
+          h('div', { style: S.sectionTitle }, '账号管理'),
+          h('div', { style: S.sectionHint }, '登录态来源、只读摘要与刷新方式；面板不读 cookie、不联网')),
         h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '登录态怎么进来'),
           h('div', { style: S.grid },
             ...ACCOUNT_SOURCES.map(source => h(Card, { key: source.title, title: source.title, value: source.value, hint: source.hint })))),
@@ -540,13 +527,6 @@ window.__ModuleLoader__.load({
           '下一步（未做）：面板里直接点「导入 / 扫码」需要 client→host 的 rpc 通道（host 侧 rpc.handle(\'/bigfish\') + 客户端轮询），采用前先写 ADR；在那之前按钮只出现在工具审批里。'))
     }
 
-    /** 顶部 tab 的模块清单：一项 = 一个 conversation.view tab + 一个面板。
-     *  插件入口只在侧边栏；顶部 tab 只承载「模块工作台」，加模块就在这一行追加，面板之间互不依赖。 */
-    const VIEW_MODULES = [
-      { id: 'bigfish-publish', order: 20, label: '🐟 自动发布', View: PublishBatchView },
-      { id: 'bigfish-account', order: 30, label: '👤 账号', View: AccountView },
-    ]
-
     /**
      * 浏览器侧插件入口：注册侧边栏栏位与同名主面板。
      * @param {object} ctx - 浏览器 Cordis 上下文（含 slots 服务）。
@@ -561,16 +541,8 @@ window.__ModuleLoader__.load({
         label: 'BigFish 闲鱼运营',
       }, BigFishIcon))
       ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: 'bigfish' }, BigFishPanel))
-      // 会话顶部 tab 栏是 list 插槽：id 必须给，order 决定顺序，label 也接受字符串。
-      // 每个模块一个 tab（模块清单见 VIEW_MODULES）；插件入口仍只在侧边栏，不占顶部。
-      for (const module of VIEW_MODULES) {
-        ctx.slots.inject('conversation.view', () => ctx.slots.register({
-          name: 'conversation.view',
-          id: module.id,
-          order: module.order,
-          label: module.label,
-        }, module.View))
-      }
+      // 只注册这两个：侧边栏条目 + 同名主面板。
+      // 不注册 conversation.view —— 模块 tab 全部在面板内切换（用户 2026-10-21 明确要求主页面在侧边栏面板里）。
     }
 
     return { apply, inject: ['slots'] }

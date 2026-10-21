@@ -70,7 +70,7 @@ function panelRendered(cdp) {
   return cdp.evaluate(`document.body.innerText.includes(${JSON.stringify(PANEL_SUBTITLE)})`)
 }
 
-/** 点击顶部 tab（按可见文字精确匹配）。 */
+/** 点击面板内 tab（按可见文字精确匹配）。 */
 async function clickTab(cdp, label) {
   const clicked = await cdp.evaluate(`(() => {
     const hit = [...document.querySelectorAll('button[data-role="panel-tab"]')]
@@ -81,7 +81,7 @@ async function clickTab(cdp, label) {
     hit.click()
     return true
   })()`)
-  if (clicked !== true) throw new Error('顶部 tab 里找不到「' + label + '」')
+  if (clicked !== true) throw new Error('面板 tab 里找不到「' + label + '」')
   await delay(400)
 }
 
@@ -142,7 +142,7 @@ try {
   const cards = ['文案风格（skill 注入）', '生成文案请求', '商品名', '价格（元）', '成色']
     .filter((needle) => panelText.includes(needle))
 
-  // 3) 顶部 tab 切换：概览页出现状态卡与 daemon 地址，再切回文案页。
+  // 3) 面板内 tab 切换：概览页出现状态卡与 daemon 地址，再切回文案页。
   const tabs = await cdp.evaluate(`(() => {
     const nodes = [...document.querySelectorAll('button[data-role="panel-tab"]')]
     if (nodes.length === 0) return null
@@ -189,7 +189,7 @@ try {
     code = 1
   }
   if (tabs === null || tabs.labels.length !== 4 || tabs.selected[0] !== 'true') {
-    console.error('✖ 顶部 tab 异常（期望 4 个、默认选中第一个）：' + JSON.stringify(tabs))
+    console.error('✖ 面板 tab 异常（期望 5 个、默认「自动发布」）：' + JSON.stringify(tabs))
     code = 1
   }
   if (styleBefore === null || styleBefore.count !== 5) {
