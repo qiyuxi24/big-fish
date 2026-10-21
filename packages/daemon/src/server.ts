@@ -19,7 +19,13 @@ import type { DaemonConfig } from './config.ts'
 import { extractBearer, loadRedact, sendError, sendMappedError, tokenMatches } from './http.ts'
 import type { RedactFn } from './http.ts'
 import { buildStatus, matchRoute } from './routes.ts'
-import type { ImportAccountHandler, LoginAccountHandler, WorkerCounts } from './routes.ts'
+import type {
+  ImportAccountHandler,
+  LoginAccountHandler,
+  ReferenceCollectHandler,
+  RetryTaskHandler,
+  WorkerCounts,
+} from './routes.ts'
 import type { AccountSummary } from './account-list.ts'
 
 /** 请求总超时：本机 IPC 不应该有慢请求。 */
@@ -45,6 +51,10 @@ export interface StartDaemonOptions {
   loginAccount?: LoginAccountHandler
   /** 账号摘要能力；缺省时 GET /accounts 返回空数组。 */
   accountSummaries?: () => Promise<AccountSummary[]>
+  /** 人工重新入队能力；缺省时 POST /tasks/:id/retry 返回 UNSUPPORTED。 */
+  retryTask?: RetryTaskHandler
+  /** 参考采集能力；缺省时 POST /reference 返回 UNSUPPORTED。 */
+  referenceCollect?: ReferenceCollectHandler
   /** 可注入时钟（整数毫秒），测试用假时钟断言 uptime。 */
   now?: () => number
   version?: string
@@ -69,6 +79,8 @@ interface ServerContext {
   importAccount: ImportAccountHandler | undefined
   loginAccount: LoginAccountHandler | undefined
   accountSummaries: (() => Promise<AccountSummary[]>) | undefined
+  retryTask: RetryTaskHandler | undefined
+  referenceCollect: ReferenceCollectHandler | undefined
   now: () => number
   startedAt: number
   version: string
@@ -97,6 +109,8 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
     importAccount: options.importAccount,
     loginAccount: options.loginAccount,
     accountSummaries: options.accountSummaries,
+    retryTask: options.retryTask,
+    referenceCollect: options.referenceCollect,
     now,
     startedAt,
     version,
@@ -165,6 +179,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, context:
       importAccount: context.importAccount,
       loginAccount: context.loginAccount,
       accountSummaries: context.accountSummaries,
+      retryTask: context.retryTask,
+      referenceCollect: context.referenceCollect,
       now: context.now,
       startedAt: context.startedAt,
       version: context.version,

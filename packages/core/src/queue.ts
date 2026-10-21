@@ -4,6 +4,9 @@
  * 为什么要有租约：daemon 崩溃后，leased 任务在 lease_until 过期后可被别的 owner 回收；
  * 但「发布」这类写操作不能盲目重放（AGENTS 架构不变量 2），所以 attempts 用尽的任务
  * 进 needs_review 交给人看，而不是继续重试。
+ *
+ * 人工收尾：failed / needs_review 可经 requeue 回到 queued，attempts 归零（重获完整重试预算），
+ * 这是救回「dedupeKey 已占用且已停下」任务的唯一通道。
  * @module @bigfish/core/queue
  */
 import { randomUUID } from 'node:crypto'
@@ -36,9 +39,13 @@ export interface TaskQueueOptions {
   idFactory?: () => string
 }
 
+/** requeue 入参：availableAt 把任务压到未来某刻才可领取（整数毫秒，缺省 = 现在）。 */
+export interface RequeueOptions { availableAt?: number }
+
 /** 实际返回的队列句柄：TaskQueue 的超集，fail 的附加选项见 types.ts 的 FailTaskOptions。 */
 export interface TaskQueueHandle extends TaskQueue {
   fail(id: string, owner: string, error: string | Error, options?: FailTaskOptions): void
+  requeue(id: string, options?: RequeueOptions): TaskRecord
 }
 
 /** 建队列；path 与 store 都不给 → VALIDATION。 */
@@ -52,6 +59,7 @@ export function createTaskQueue(options: TaskQueueOptions): TaskQueueHandle {
       failTask(ctx, id, owner, error, failOptions)
     },
     release: (id: string, owner: string): void => releaseTask(ctx, id, owner),
+    requeue: (id: string, requeueOptions?: RequeueOptions): TaskRecord => requeueTask(ctx, id, requeueOptions),
     get: (id: string): TaskRecord | undefined => getTask(ctx, id),
     list: (filter?: TaskFilter): TaskRecord[] => listTasks(ctx, filter),
     stats: (): Record<TaskState, number> => taskStats(ctx),
@@ -87,6 +95,7 @@ interface QueueStatements {
   markDone: Statement
   markFailed: Statement
   markQueued: Statement
+  markRequeued: Statement
   listAll: Statement
   listByState: Statement
   listByKind: Statement
@@ -118,6 +127,9 @@ const SQL_TEXT = {
     last_error = ?, updated_at = ? WHERE id = ?`,
   markQueued: `UPDATE tasks SET state = 'queued', available_at = ?, lease_owner = NULL, lease_until = NULL,
     updated_at = ? WHERE id = ?`,
+  // 与 markQueued 的差别：attempts 归零 + 清 last_error，语义是「人工重获完整重试预算」。
+  markRequeued: `UPDATE tasks SET state = 'queued', attempts = 0, available_at = ?, lease_owner = NULL,
+    lease_until = NULL, last_error = NULL, updated_at = ? WHERE id = ?`,
   listAll: `SELECT ${TASK_COLUMNS} FROM tasks ${LIST_ORDER} LIMIT ?`,
   listByState: `SELECT ${TASK_COLUMNS} FROM tasks WHERE state = ? ${LIST_ORDER} LIMIT ?`,
   listByKind: `SELECT ${TASK_COLUMNS} FROM tasks WHERE kind = ? ${LIST_ORDER} LIMIT ?`,
@@ -135,6 +147,7 @@ function prepareStatements(db: DatabaseSync): QueueStatements {
     markDone: db.prepare(SQL_TEXT.markDone),
     markFailed: db.prepare(SQL_TEXT.markFailed),
     markQueued: db.prepare(SQL_TEXT.markQueued),
+    markRequeued: db.prepare(SQL_TEXT.markRequeued),
     listAll: db.prepare(SQL_TEXT.listAll),
     listByState: db.prepare(SQL_TEXT.listByState),
     listByKind: db.prepare(SQL_TEXT.listByKind),
@@ -211,6 +224,26 @@ function releaseTask(ctx: QueueContext, id: string, owner: string): void {
   const task = requireLease(ctx, id, owner, 'release')
   const at = ctx.now()
   ctx.sql.markQueued.run(at, at, task.id) // 回到队首：available_at = now，attempts 不变
+}
+
+/** 人工收尾：只收容已停下的任务（failed / needs_review），把重试预算还给用户。 */
+function requeueTask(ctx: QueueContext, id: string, options?: RequeueOptions): TaskRecord {
+  assertOpen(ctx)
+  const taskId = assertText(id, 'id')
+  if (options !== undefined && (typeof options !== 'object' || options === null)) fail('VALIDATION', 'requeue 的 options 必须是对象')
+  const at = ctx.now()
+  const availableAt = options?.availableAt === undefined ? at : assertTimestamp(options.availableAt, 'availableAt')
+  return withTransaction(ctx.db, () => {
+    const task = getTask(ctx, taskId)
+    if (task === undefined) fail('VALIDATION', `requeue：任务不存在（id=${taskId}）`)
+    // 只收容已停下：queued 会打乱 available_at/dedupe；leased 可能正在写（再排队=双写，AGENTS 不变量 2）；done 重放=再写一次。
+    if (task.state !== 'failed' && task.state !== 'needs_review') {
+      fail('VALIDATION', `requeue：任务 ${taskId} 状态为 ${task.state}，只有 failed / needs_review 可以重新排队`)
+    }
+    // attempts 归零是刻意的：人工重试 = 重获完整重试预算，否则次数用尽的任务刚入队又会立刻回 needs_review。
+    ctx.sql.markRequeued.run(availableAt, at, taskId)
+    return toTaskRecord(ctx.sql.selectById.get(taskId))
+  })
 }
 
 function failTask(ctx: QueueContext, id: string, owner: string, error: string | Error, options?: FailTaskOptions): void {

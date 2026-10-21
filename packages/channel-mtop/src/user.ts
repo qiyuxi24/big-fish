@@ -8,6 +8,8 @@
  *   data.module.social{followStatus,followers,following}、data.module.base{displayName,avatar,ipLocation}
  * - 请求 `mtop.idle.web.xyh.item.list` data={"needGroupInfo":true,"pageNumber":1,"userId":"<id>","pageSize":20}；
  *   响应 data.cardList[*].cardData.detailParams{itemId(字符串),title,soldPrice(元),...} + data.hasMore/pageNumber
+ *   **userId 必须传数字 kcUserId（如 2206569289277）**：传 baseInfo.encryptedUserId
+ *   （"QWma6tgLyd31UYx/44RiHg==" 这种）平台返回 FAIL_BIZ_BAD_REQUEST::解析参数失败（2026-10-21 实测）
  * - 详情 `mtop.taobao.idle.pc.detail` 响应 data.sellerDO.sellerId（数字）= 商家唯一 ID
  *
  * 合规红线（docs/p1.3-plan.md §2.2）：默认只允许拉**自己账号**的店铺；调用方拉列表前

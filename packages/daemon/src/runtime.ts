@@ -13,6 +13,7 @@ import {
   createItemRepository,
   createLogger,
   createTaskQueue,
+  fail,
   openStore,
 } from '@bigfish/core'
 import type {
@@ -26,10 +27,11 @@ import type {
 import { importAccountFromChrome } from './accounts.ts'
 import { listAccountSummaries } from './account-list.ts'
 import { loginAndSave } from './login.ts'
+import { createReferenceCollector } from './reference.ts'
 import { createExecutors } from './executors.ts'
 import type { OperationPort } from './executors.ts'
 import type { ExecutorDeps } from './executor.ts'
-import { createOperationPort } from './operations.ts'
+import { createFetchTransport, createOperationPort } from './operations.ts'
 import type { PublishPortOptions } from './operations.ts'
 import { startDaemon } from './server.ts'
 import type { Daemon } from './server.ts'
@@ -100,6 +102,13 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
     })
     const ports: OperationPort = { ...basePorts, ...(options.ports ?? {}) }
 
+    // 参考采集与执行器共用一份 transport：同一个账号、同一套超时语义。
+    // 单独建 collector 而不是塞进 OperationPort：它不由队列任务驱动，是只读的即时查询。
+    const referenceCollector = createReferenceCollector({
+      transport: options.transport ?? createFetchTransport(),
+      ...(now === undefined ? {} : { now }),
+    })
+
     const deps: ExecutorDeps = {
       items,
       credentials,
@@ -146,6 +155,40 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
             ...(options.now === undefined ? {} : { now: options.now }),
           }),
         worker: () => worker.stats(),
+        // 人工收尾：requeue 成功后必须立刻唤醒 worker，否则要等下一个 pollIntervalMs，
+        // 用户在面板点「重试」会看起来没反应。tick 自身串行（正在 tick 时直接返回），
+        // 所以不 await、不阻塞 HTTP 响应；唤醒失败不该让「已成功入队」的重试变成 500。
+        retryTask: (id) => {
+          const record = queue.requeue(id)
+          void worker.tick().catch((error: unknown) => {
+            logger.warn('retry 后唤醒 worker 失败（任务已重新排队，下一轮轮询会接手）', {
+              taskId: id,
+              error: error instanceof Error ? error.message : String(error),
+            })
+          })
+          return record
+        },
+        // 采集参考：只读统计，cookie 值不出进程；令牌过期时用回写的凭据库刷新。
+        referenceCollect: async (input) => {
+          const record = await credentials.load(input.accountId)
+          if (record === undefined) {
+            fail('UNAUTHORIZED', '没有账号 ' + input.accountId + ' 的登录态，先导入或扫码登录')
+          }
+          return referenceCollector.collect({
+            accountId: input.accountId,
+            cookies: record.cookies,
+            ...(input.itemIds === undefined ? {} : { itemIds: input.itemIds }),
+            ...(input.sellerId === undefined ? {} : { sellerId: input.sellerId }),
+            signal: input.signal,
+            onSessionUpdate: async (cookies) => {
+              await credentials.save({
+                accountId: input.accountId,
+                cookies,
+                ...(record.meta === undefined ? {} : { meta: record.meta }),
+              })
+            },
+          })
+        },
         importAccount: async (input) => {
           const imported = await importAccountFromChrome({
             credentials,

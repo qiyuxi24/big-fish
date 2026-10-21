@@ -33,7 +33,7 @@ export class DaemonError extends Error {
  * 建客户端。所有方法都返回 data 本体，失败抛 DaemonError。
  *
  * @param {{daemonUrl: string, tokenPath: string, timeoutMs?: number, fetchImpl?: typeof fetch, readFileImpl?: typeof readFile}} options
- * @returns {{request: Function, health: Function, status: Function, listTasks: Function, enqueue: Function, taskAction: Function, listItems: Function, importAccount: Function, daemonUrl: string, tokenPath: string}}
+ * @returns {{request: Function, health: Function, status: Function, listTasks: Function, enqueue: Function, taskAction: Function, listItems: Function, listAccounts: Function, importAccount: Function, collectReferences: Function, daemonUrl: string, tokenPath: string}}
  */
 export function createDaemonClient(options) {
   const { daemonUrl, tokenPath, timeoutMs = 15_000 } = options
@@ -53,7 +53,7 @@ export function createDaemonClient(options) {
   }
 
   async function request(pathname, init = {}) {
-    const { method = 'GET', body, auth = true } = init
+    const { method = 'GET', body, auth = true, timeoutMs: callTimeoutMs = timeoutMs } = init
     /** @type {Record<string, string>} */
     const headers = { accept: 'application/json' }
     if (body !== undefined) headers['content-type'] = 'application/json'
@@ -65,14 +65,14 @@ export function createDaemonClient(options) {
         method,
         headers,
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.timeout(callTimeoutMs),
       })
     } catch (cause) {
       const timedOut = cause?.name === 'TimeoutError'
       throw new DaemonError(
         'NETWORK',
         timedOut
-          ? `daemon 请求超时（${timeoutMs}ms）：${pathname}`
+          ? `daemon 请求超时（${callTimeoutMs}ms）：${pathname}`
           : `连不上 daemon：${daemonUrl}（是否已启动？日程可先跑 xy_daemon_health 检查）`,
         { retryable: true, cause },
       )
@@ -123,5 +123,7 @@ export function createDaemonClient(options) {
     listAccounts: () => request('/accounts'),
     // 登录态导入是写操作（落加密凭据），插件侧门禁会先拦一次人工确认。
     importAccount: (input = {}) => request('/accounts/import', { method: 'POST', body: input }),
+    // 参考采集是只读统计（最坏 20 件串行，每件一次 mtop 调用），单独放宽超时。
+    collectReferences: (input = {}) => request('/reference', { method: 'POST', body: input, timeoutMs: 90_000 }),
   }
 }

@@ -231,12 +231,12 @@ test('侧边栏图标渲染 🐟，选中态与未选中态透明度不同', () 
   assert.equal(active.props['aria-hidden'], 'true')
 })
 
-test('面板内 tab：5 个分区，默认「自动发布」，点击切换内容', () => {
+test('面板内 tab：6 个分区，默认「自动发布」，点击切换内容', () => {
   const { render, openTab } = mountPanel()
   let tree = render()
   const tabs = roleElements(tree, 'panel-tab')
-  assert.deepEqual(tabs.map((node) => toText(node)), ['自动发布', '账号', '文案', '概览', '诊断'])
-  assert.deepEqual(tabs.map((node) => node.props['aria-selected']), [true, false, false, false, false])
+  assert.deepEqual(tabs.map((node) => toText(node)), ['自动发布', '账号', '文案', '采集', '概览', '诊断'])
+  assert.deepEqual(tabs.map((node) => node.props['aria-selected']), [true, false, false, false, false, false])
   // 默认页是发布模块（流水线 + 草稿集）；文案与诊断内容此时不应出现。
   assert.match(toText(tree), /流水线/)
   assert.match(toText(tree), /草稿集/)
@@ -266,7 +266,7 @@ test('面板内 tab：5 个分区，默认「自动发布」，点击切换内�
 test('面板标题与副标题在任意 tab 都在（tab 栏顶部固定）', () => {
   const { render, openTab } = mountPanel()
   const text = toText(render())
-  for (const expected of ['BigFish 闲鱼运营', '发布 / 账号 / 文案 · 面板只组参数', '自动发布', '账号', '文案', '概览', '诊断']) {
+  for (const expected of ['BigFish 闲鱼运营', '发布 / 账号 / 文案 / 采集 · 面板只组参数', '自动发布', '账号', '文案', '采集', '概览', '诊断']) {
     assert.ok(text.includes(expected), '面板文本缺少：' + expected)
   }
   // 切到任意 tab，标题与 tab 栏都在。
@@ -462,6 +462,25 @@ test('有校验不通过的行时按钮保持禁用，不静默丢草稿', () =>
   const submit = collectByType(tree, 'button').find((node) => node.props['data-role'] === 'publish-batch-submit')
   assert.equal(submit.props.disabled, true)
   assert.match(submit.props.title, /有 1 行校验不通过，先修好再生成/)
+})
+
+test('「采集」模块只读：讲清统计口径与红线，不出现图片直链与可发布草稿', () => {
+  const { openTab } = mountPanel()
+  const text = toText(openTab('采集'))
+  for (const expected of [
+    'xy_reference_collect',
+    '价格带 / 标题长度 / 类目 / 卖点词',
+    '不下载他人图片',
+    '不照抄文案',
+    '单件失败不影响整批',
+    '自有商品搬家',
+  ]) {
+    assert.ok(text.includes(expected), '采集视图缺少：' + expected)
+  }
+  // 只读：不出现 daemon 地址、不出图片直链、不出入队参数
+  assert.equal(/https?:\/\//.test(text), false)
+  assert.equal(text.includes('enqueue'), false)
+  assert.equal(text.includes('xy_publish_batch'), false)
 })
 
 test('bundle 不写死 daemon 地址以外的环境值，也不访问 document/localStorage/fetch', () => {

@@ -10,12 +10,12 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { loadDaemonConfig } from '@bigfish/core'
-import type { CircuitBreaker, DaemonConfig, ItemRepository } from '@bigfish/core'
+import type { CircuitBreaker, DaemonConfig, ItemRepository, TaskRecord } from '@bigfish/core'
 
 import { DaemonClient } from '../src/client.ts'
 import { startDaemon } from '../src/server.ts'
 import type { Daemon } from '../src/server.ts'
-import type { ImportAccountHandler, LoginAccountHandler } from '../src/routes.ts'
+import type { ImportAccountHandler, LoginAccountHandler, ReferenceCollectHandler, RetryTaskHandler } from '../src/routes.ts'
 import type { AccountSummary } from '../src/account-list.ts'
 import { FakeQueue } from './fake-queue.ts'
 
@@ -69,6 +69,10 @@ export interface HarnessOptions {
   loginAccount?: LoginAccountHandler
   /** 账号摘要能力（测试 GET /accounts）；缺省时不注入，路由应返回空数组。 */
   accountSummaries?: () => Promise<AccountSummary[]>
+  /** 人工重新入队能力；缺省时接 FakeQueue.requeue，保证路由测试覆盖真实状态校验。 */
+  retryTask?: RetryTaskHandler
+  /** 参考采集能力（测试 POST /reference）；缺省时不注入，路由应返回 UNSUPPORTED。 */
+  referenceCollect?: ReferenceCollectHandler
 }
 
 /** 建夹具；t.after 负责关服务与清理目录。 */
@@ -96,6 +100,10 @@ export async function createHarness(t: { after(fn: () => Promise<void>): void },
     ...(options.importAccount === undefined ? {} : { importAccount: options.importAccount }),
     ...(options.accountSummaries === undefined ? {} : { accountSummaries: options.accountSummaries }),
     ...(options.loginAccount === undefined ? {} : { loginAccount: options.loginAccount }),
+    // 默认接 FakeQueue 的真 requeue：路由测试覆盖「状态校验 → 记录变更 → 200」整条路径；
+    // 需要断言注入是否被调用（例如唤醒 worker）时再用 options.retryTask 覆盖。
+    retryTask: options.retryTask ?? ((id: string): TaskRecord => queue.requeue(id)),
+    ...(options.referenceCollect === undefined ? {} : { referenceCollect: options.referenceCollect }),
   })
   const client = new DaemonClient({ baseUrl: daemon.url, tokenPath: config.tokenPath })
   const baseUrl = daemon.url

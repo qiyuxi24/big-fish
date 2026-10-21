@@ -38,12 +38,26 @@ import type { RedactFn } from './http.ts'
 import type { ImportAccountInput, ImportedAccount } from './accounts.ts'
 import type { LoginInput, LoginResult } from './login.ts'
 import type { AccountSummary } from './account-list.ts'
+import { parseReferenceRequest } from './reference.ts'
+import type { ReferenceReport, ReferenceRequest } from './reference.ts'
 
 /** 账号导入能力的注入签名；未注入时路由返回 UNSUPPORTED（HTTP 500）。 */
 export type ImportAccountHandler = (input: ImportAccountInput) => Promise<ImportedAccount>
 
 /** 扫码登录能力的注入签名；未注入时 POST /accounts/login 返回 UNSUPPORTED。 */
 export type LoginAccountHandler = (input: LoginInput) => Promise<LoginResult>
+
+/**
+ * 人工重新入队能力的注入签名；未注入时 POST /tasks/:id/retry 返回 UNSUPPORTED。
+ * daemon 侧实现在 runtime 里（queue.requeue + 唤醒 worker），routes 不依赖 worker。
+ */
+export type RetryTaskHandler = (id: string) => TaskRecord
+
+/**
+ * 参考采集能力的注入签名；未注入时 POST /reference 返回 UNSUPPORTED。
+ * 只读：返回统计原料，不落库、不下载图片（AGENTS §1.6）。
+ */
+export type ReferenceCollectHandler = (input: ReferenceRequest & { signal: AbortSignal }) => Promise<ReferenceReport>
 
 /** 一次请求的处理上下文：路由参数、URL、队列与时钟都在这里。 */
 export interface RouteContext {
@@ -62,6 +76,10 @@ export interface RouteContext {
   loginAccount: LoginAccountHandler | undefined
   /** 账号摘要能力；未注入时 GET /accounts 返回空数组（不是错误，开发态也能渲染面板）。 */
   accountSummaries: (() => Promise<AccountSummary[]>) | undefined
+  /** 人工重新入队能力；未注入时 POST /tasks/:id/retry 返回 UNSUPPORTED。 */
+  retryTask: RetryTaskHandler | undefined
+  /** 参考采集能力；未注入时 POST /reference 返回 UNSUPPORTED。 */
+  referenceCollect: ReferenceCollectHandler | undefined
   now: () => number
   startedAt: number
   version: string
@@ -113,6 +131,8 @@ const ROUTES: readonly Route[] = [
   { method: 'POST', pattern: /^\/tasks\/?$/, handler: enqueueHandler },
   { method: 'GET', pattern: /^\/tasks\/([^/]+)\/?$/, handler: getTaskHandler },
   { method: 'POST', pattern: /^\/tasks\/([^/]+)\/(ack|fail|release)$/, handler: taskActionHandler },
+  { method: 'POST', pattern: /^\/tasks\/([^/]+)\/retry\/?$/, handler: retryTaskHandler },
+  { method: 'POST', pattern: /^\/reference\/?$/, handler: referenceHandler },
   { method: 'GET', pattern: /^\/items\/?$/, handler: listItemsHandler },
   { method: 'POST', pattern: /^\/circuits\/reset\/?$/, handler: resetCircuitHandler },
 ]
@@ -289,6 +309,49 @@ async function enqueueHandler(ctx: RouteContext): Promise<void> {
     return
   }
   await sendJson(ctx.res, 201, ok(record), ctx.redact)
+}
+
+/**
+ * 人工收尾：把 failed / needs_review 任务重新入队（attempts 归零，重获完整重试预算）。
+ * 404 先于能力检查：不存在的 id 不该因为服务端没装配 retry 而变成 500。
+ * 状态不允许是「请求与当前状态冲突」的语义，按 400 返回（与 enqueue 的入参校验一致）。
+ */
+async function retryTaskHandler(ctx: RouteContext): Promise<void> {
+  const id = ctx.params[0] ?? fail('VALIDATION', '缺少任务 id')
+  if (ctx.queue.get(id) === undefined) {
+    await sendError(ctx.res, 404, taskNotFound(id), ctx.redact)
+    return
+  }
+  const retry = ctx.retryTask ?? fail('UNSUPPORTED', 'daemon 未注入任务重试能力')
+  let record: TaskRecord
+  try {
+    record = retry(id)
+  } catch (error) {
+    await sendMappedError(ctx.res, error, 400, ctx.redact)
+    return
+  }
+  await sendJson(ctx.res, 200, ok(record), ctx.redact)
+}
+
+/**
+ * 采集参考：只读统计（价格带 / 标题长度 / 类目分布 / 关键词 / 商家量级）。
+ * 客户端断开就用 AbortSignal 中止剩余请求：20 件串行最坏要十几秒，用户关页面后不该继续打平台。
+ */
+async function referenceHandler(ctx: RouteContext): Promise<void> {
+  const collect = ctx.referenceCollect ?? fail('UNSUPPORTED', 'daemon 未注入参考采集能力')
+  const body = asRecord(await readJsonBody(ctx.req), '参考采集请求体')
+  const request = parseReferenceRequest(body)
+  const controller = new AbortController()
+  const onClose = (): void => {
+    controller.abort()
+  }
+  ctx.res.once('close', onClose)
+  try {
+    const report = await collect({ ...request, signal: controller.signal })
+    await sendJson(ctx.res, 200, ok(report), ctx.redact)
+  } finally {
+    ctx.res.off('close', onClose)
+  }
 }
 
 /** 处理 ack / fail / release：租约冲突映射 409，其余按 code 映射。 */

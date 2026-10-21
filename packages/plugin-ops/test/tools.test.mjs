@@ -12,11 +12,12 @@ function findTool(tools, name) {
   return tool
 }
 
-test('注册 12 个 xy_ 工具，schema 形态合法', () => {
+test('注册 14 个 xy_ 工具，schema 形态合法', () => {
   const tools = buildTools({ client: createFakeClient({}), config })
   assert.deepEqual(tools.map((tool) => tool.name).sort(), [
     'xy_accounts_list', 'xy_copy_plan', 'xy_daemon_health', 'xy_import_account', 'xy_items_list', 'xy_ping',
-    'xy_publish_batch', 'xy_publish_draft', 'xy_status', 'xy_task_action', 'xy_task_enqueue', 'xy_tasks_list',
+    'xy_publish_batch', 'xy_publish_draft', 'xy_reference_collect', 'xy_status', 'xy_task_action',
+    'xy_task_enqueue', 'xy_task_retry', 'xy_tasks_list',
   ])
   for (const tool of tools) {
     assert.equal(tool.parameters.type, 'object')
@@ -106,6 +107,28 @@ test('xy_task_action 默认 owner，并透传 nonRetryable', async () => {
   assert.equal(id, 'x')
   assert.equal(action, 'fail')
   assert.deepEqual(body, { owner: 'host-x', error: 'boom' })
+})
+
+test('xy_task_retry 走 POST /tasks/:id/retry，参数与返回文案可读', async () => {
+  const client = createFakeClient({
+    request: () => ({ id: 'abcdef0123456789', kind: 'publish', state: 'queued', attempts: 0, maxAttempts: 3, dedupeKey: 'k', payload: {}, availableAt: 0, createdAt: 0, updatedAt: 0 }),
+  })
+  const tool = findTool(buildTools({ client, config }), 'xy_task_retry')
+  assert.deepEqual(tool.parameters.required, ['taskId'])
+  const value = await tool.execute({ taskId: 'abc/def' }, {})
+  const [pathname, init] = client.calls.at(-1).args
+  assert.equal(client.calls.at(-1).method, 'request')
+  assert.equal(pathname, '/tasks/abc%2Fdef/retry')
+  assert.equal(init.method, 'POST')
+  assert.match(value.text, /已重新排队：abcdef01… \| publish \| queued/)
+})
+
+test('xy_task_action 撞 VALIDATION 时提示改走 xy_task_retry', async () => {
+  const client = createFakeClient({ taskAction: new DaemonError('VALIDATION', '任务未被 owner 持有') })
+  const tool = findTool(buildTools({ client, config }), 'xy_task_action')
+  const value = await tool.execute({ id: 'x', action: 'release' }, {})
+  assert.match(value.text, /\[VALIDATION\]/)
+  assert.match(value.text, /xy_task_retry/)
 })
 
 test('DaemonError 变成模型可读文本而不是抛错', async () => {
@@ -211,6 +234,50 @@ test('xy_copy_plan 给出注入后的提示词，且完全不碰 daemon', async 
   assert.match(value.text, /"tone": "warm"/)
   assert.match(value.text, /【待补】imagePaths/)
   assert.equal(client.calls.length, 0)
+})
+
+test('xy_reference_collect 渲染只读统计，不出现图片直链', async () => {
+  const report = {
+    accountId: 'acc-1',
+    items: [{ itemId: '1' }, { itemId: '2' }],
+    summary: {
+      count: 2,
+      priceCents: { min: 1500, median: 4200, max: 6900, avg: 4200 },
+      titleLength: { min: 8, max: 12, avg: 10 },
+      imageCountAvg: 2.5,
+      descRatio: 0.5,
+      categories: [{ categoryId: 50023914, count: 2 }],
+      keywords: [{ word: '机械键盘', count: 2 }, { word: '九成新', count: 1 }],
+    },
+    seller: { sellerId: '7', displayName: '某商家', city: '西安', itemCount: 12 },
+    sellers: [{ sellerId: '7' }],
+    skipped: ['3'],
+  }
+  const client = createFakeClient({ collectReferences: () => report })
+  const tool = findTool(buildTools({ client, config }), 'xy_reference_collect')
+  assert.equal(tool.parameters.properties.itemIds.maxItems, 20)
+  assert.deepEqual(tool.parameters.anyOf, [{ required: ['itemIds'] }, { required: ['sellerId'] }])
+  const value = await tool.execute({ accountId: 'acc-1', itemIds: ['1', '2'] }, {})
+  assert.match(value.text, /参考分析：2 件/)
+  assert.match(value.text, /¥15\.00 ~ ¥69\.00/)
+  assert.match(value.text, /中位 ¥42\.00/)
+  assert.match(value.text, /图片均 2\.5 张/)
+  assert.match(value.text, /有描述占 50%/)
+  assert.match(value.text, /50023914 ×2/)
+  assert.match(value.text, /机械键盘\(2\)/)
+  assert.match(value.text, /某商家 · 西安 · 在售 12 件/)
+  assert.match(value.text, /1 件读取失败已跳过/)
+  assert.match(value.text, /不下载他人图片/)
+  assert.equal(/https?:\/\//.test(value.text), false)
+  assert.deepEqual(client.calls.at(-1).args[0], { accountId: 'acc-1', itemIds: ['1', '2'] })
+})
+
+test('xy_reference_collect 对缺少 summary 的返回报 INTERNAL', async () => {
+  const client = createFakeClient({ collectReferences: () => ({ items: [] }) })
+  const tool = findTool(buildTools({ client, config }), 'xy_reference_collect')
+  const value = await tool.execute({ accountId: 'acc-1', sellerId: '7' }, {})
+  assert.match(value.text, /\[INTERNAL\]/)
+  assert.match(value.text, /summary/)
 })
 
 test('xy_copy_plan 参数非法时给 VALIDATION 文本而不是抛错', async () => {

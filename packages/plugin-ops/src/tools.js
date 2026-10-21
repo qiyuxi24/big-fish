@@ -65,6 +65,88 @@ function textTool(spec) {
   }
 }
 
+/** cents → 「¥129.90」；非整数分原样显示，不为展示抛错。 */
+function formatMoney(cents) {
+  if (typeof cents !== 'number' || !Number.isFinite(cents)) return String(cents)
+  return '¥' + (cents / 100).toFixed(2)
+}
+
+/**
+ * 窄化 daemon 的参考报告；结构不对直接 INTERNAL（宁可不显示，也不展示半真半假的统计）。
+ * 只读口径：报告里本来就没有图片直链，这里也不补。
+ */
+function readReferenceReport(value) {
+  if (value === null || typeof value !== 'object') {
+    throw new DaemonError('INTERNAL', 'daemon 返回的参考报告不是对象')
+  }
+  const summary = value.summary
+  if (summary === null || typeof summary !== 'object') {
+    throw new DaemonError('INTERNAL', 'daemon 返回的参考报告缺少 summary')
+  }
+  const number = field => (typeof summary[field] === 'number' ? summary[field] : 0)
+  const price = summary.priceCents ?? {}
+  const title = summary.titleLength ?? {}
+  return {
+    items: Array.isArray(value.items) ? value.items.length : 0,
+    summary: {
+      count: number('count'),
+      priceCents: {
+        min: typeof price.min === 'number' ? price.min : 0,
+        median: typeof price.median === 'number' ? price.median : 0,
+        max: typeof price.max === 'number' ? price.max : 0,
+        avg: typeof price.avg === 'number' ? price.avg : 0,
+      },
+      titleLength: {
+        min: typeof title.min === 'number' ? title.min : 0,
+        max: typeof title.max === 'number' ? title.max : 0,
+        avg: typeof title.avg === 'number' ? title.avg : 0,
+      },
+      imageCountAvg: number('imageCountAvg'),
+      descRatio: number('descRatio'),
+      categories: Array.isArray(summary.categories) ? summary.categories : [],
+      keywords: Array.isArray(summary.keywords) ? summary.keywords : [],
+    },
+    sellers: Array.isArray(value.sellers) ? value.sellers : [],
+    skipped: Array.isArray(value.skipped) ? value.skipped : [],
+    ...(value.seller === undefined || value.seller === null ? {} : { seller: value.seller }),
+  }
+}
+
+/** 人类可读的参考分析摘要：只给统计，不给任何「拿来就能发」的成品。 */
+function formatReferenceReport(report) {
+  const { summary } = report
+  const lines = ['参考分析：' + summary.count + ' 件（只读统计，不含图片与可发布草稿）']
+  if (summary.count > 0) {
+    lines.push(
+      '价格带：' + formatMoney(summary.priceCents.min) + ' ~ ' + formatMoney(summary.priceCents.max) +
+        '，中位 ' + formatMoney(summary.priceCents.median) + '，均值 ' + formatMoney(summary.priceCents.avg),
+    )
+    lines.push(
+      '标题：' + summary.titleLength.min + '~' + summary.titleLength.max + ' 字（均 ' + summary.titleLength.avg + '）；' +
+        '图片均 ' + summary.imageCountAvg.toFixed(1) + ' 张；有描述占 ' + Math.round(summary.descRatio * 100) + '%',
+    )
+    if (summary.categories.length > 0) {
+      lines.push('类目分布：' + summary.categories.slice(0, 5).map(c => c.categoryId + ' ×' + c.count).join('、'))
+    }
+    if (summary.keywords.length > 0) {
+      lines.push('高频卖点词：' + summary.keywords.slice(0, 10).map(k => k.word + '(' + k.count + ')').join('、'))
+    }
+  }
+  const seller = report.seller
+  if (seller !== undefined) {
+    const bits = []
+    if (typeof seller.displayName === 'string') bits.push(seller.displayName)
+    if (typeof seller.city === 'string') bits.push(seller.city)
+    if (typeof seller.itemCount === 'number') bits.push('在售 ' + seller.itemCount + ' 件')
+    if (bits.length > 0) lines.push('商家：' + bits.join(' · '))
+  }
+  if (report.skipped.length > 0) {
+    lines.push('⚠️ ' + report.skipped.length + ' 件读取失败已跳过：' + report.skipped.slice(0, 5).join('、') + '（单条失败不影响整批）')
+  }
+  lines.push('红线：只做统计参考，不下载他人图片、不照抄文案、不跨账号复制商品；要发的是自己的货。')
+  return lines.join('\n')
+}
+
 /** 人类可读的任务一行摘要。 */
 function formatTaskLine(task) {
   const parts = [
@@ -295,8 +377,37 @@ export function buildTools(deps) {
           ...(args.error === undefined ? {} : { error: args.error }),
           ...(args.nonRetryable === undefined ? {} : { nonRetryable: args.nonRetryable }),
         }
-        const task = await client.taskAction(args.id, args.action, body)
-        return `${args.action} 完成：${formatTaskLine(task)}`
+        try {
+          const task = await client.taskAction(args.id, args.action, body)
+          return `${args.action} 完成：${formatTaskLine(task)}`
+        } catch (error) {
+          if (!(error instanceof DaemonError) || error.code !== 'VALIDATION') throw error
+          // ack/fail/release 都要求任务处于 leased 且 owner 匹配；插件 owner 常与 daemon worker 不同，
+          // 人工收尾 failed / needs_review 任务必然撞 VALIDATION。补一句可执行提示，免得用户原地打转。
+          throw new DaemonError(
+            'VALIDATION',
+            `${error.message}。ack/fail/release 只对 leased（worker 正在处理且 owner 匹配）的任务生效；若任务已 failed / needs_review，请用 xy_task_retry 重新排队。`,
+            { retryable: error.retryable },
+          )
+        }
+      },
+    }),
+    textTool({
+      name: 'xy_task_retry',
+      description:
+        '人工重新排队一条 failed / needs_review 的发布任务：attempts 归零（重获完整重试预算）、清空 lastError 与旧租约、保留 dedupeKey 与 payload。写操作，执行前会要人工确认；daemon 以 BF_PUBLISH_SUBMIT=1 启动时，下一轮会真的重放这次发布。',
+      parameters: {
+        type: 'object',
+        properties: {
+          taskId: { type: 'string', minLength: 1, description: '任务 id（可用 xy_tasks_list 过滤 state=failed / needs_review 查）。' },
+        },
+        required: ['taskId'],
+        additionalProperties: false,
+      },
+      async handler(args) {
+        // client 没暴露 retry：request 是它的公共出口，为一条路由再扩一份 API 不值当（client.js 也不在本任务写盘范围）。
+        const task = await client.request(`/tasks/${encodeURIComponent(args.taskId)}/retry`, { method: 'POST', body: {} })
+        return `已重新排队：${formatTaskLine(task)}`
       },
     }),
     textTool({
@@ -360,6 +471,28 @@ export function buildTools(deps) {
       },
       async handler(args) {
         return planCopy(args).text
+      },
+    }),
+    textTool({
+      name: 'xy_reference_collect',
+      description: '采集「参考分析」只读统计：给定商品 id 或商家 id，读出价格带、标题长度、类目分布、高频卖点词、图片数量与商家量级。只读、不下载图片、不产出可发布草稿（不搬运他人商品）。用于给自己定价/写自己的文案时找参照。',
+      parameters: {
+        type: 'object',
+        properties: {
+          accountId: { type: 'string', minLength: 1, maxLength: 64, description: '用哪个账号的登录态去读（需已在 daemon 凭据库里）。' },
+          itemIds: { type: 'array', maxItems: 20, items: { type: 'string', minLength: 1 }, description: '要分析的闲鱼商品 id 数组；与 sellerId 至少给一个。' },
+          sellerId: { type: 'string', minLength: 1, description: '商家数字 id：先取其的主页与在售列表（一页最多 20 件）再逐件统计。' },
+        },
+        required: ['accountId'],
+        anyOf: [{ required: ['itemIds'] }, { required: ['sellerId'] }],
+        additionalProperties: false,
+      },
+      timeoutMs: 100_000,
+      async handler(args) {
+        const input = { accountId: args.accountId }
+        if (args.itemIds !== undefined) input.itemIds = args.itemIds
+        if (args.sellerId !== undefined) input.sellerId = args.sellerId
+        return formatReferenceReport(readReferenceReport(await client.collectReferences(input)))
       },
     }),
     textTool({

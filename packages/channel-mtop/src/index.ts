@@ -33,4 +33,16 @@ export {
   parseUserHead,
 } from './user.ts'
 export type { ItemListInput, ItemListPage, UserHeadInput, UserHeadProfile } from './user.ts'
+export {
+  extractTitleKeywords,
+  parseItemReference,
+  summarizeReferences,
+} from './reference.ts'
+export type {
+  ReferenceItem,
+  ReferenceProperty,
+  ReferenceSeller,
+  ReferenceSiblingItem,
+  ReferenceSummary,
+} from './reference.ts'
 export type { MtopCallOptions, MtopHttpRequest, MtopHttpResponse, MtopSession, MtopTransport } from './types.ts'

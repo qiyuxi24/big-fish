@@ -47,9 +47,11 @@ export function createFakeClient(overrides = {}) {
     listTasks: record('listTasks'),
     enqueue: record('enqueue'),
     taskAction: record('taskAction'),
+    request: record('request'),
     listItems: record('listItems'),
     listAccounts: record('listAccounts'),
     importAccount: record('importAccount'),
+    collectReferences: record('collectReferences'),
   }
 }
 

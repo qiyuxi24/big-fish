@@ -30,6 +30,12 @@ export interface FakeFailCall {
   options?: FailTaskOptions
 }
 
+/** requeue 入参：与 core 的 RequeueOptions 同形（daemon 测试不依赖 core 的队列实现）。 */
+export interface RequeueOptions {
+  /** 重新可领取时间（整数毫秒）；缺省 = 假队列时钟的当前时刻。 */
+  availableAt?: number
+}
+
 /** 假队列构造参数。 */
 export interface FakeQueueOptions {
   /** 注入时钟（整数毫秒），默认 Date.now。 */
@@ -42,6 +48,8 @@ export class FakeQueue implements TaskQueue {
   readonly failCalls: FakeFailCall[] = []
   /** 测试钩子：设为 Error 后 lease() 直接抛，用于验证 tick 循环兜底。 */
   leaseError: Error | undefined
+  /** requeue() 成功调用轨迹；路由测试用来断言失败收尾真的走到了队列。 */
+  readonly requeueCalls: string[] = []
   private readonly now: () => number
   private readonly tasks = new Map<string, TaskRecord>()
   private readonly order: string[] = []
@@ -142,6 +150,30 @@ export class FakeQueue implements TaskQueue {
     delete record.leaseOwner
     delete record.leaseUntil
     record.updatedAt = this.now()
+  }
+
+  /**
+   * 人工收尾：与 core 的 queue.requeue 语义保持一致——只接受 failed / needs_review，
+   * attempts 归零（重获完整重试预算），清 lastError 与租约字段，保留 dedupeKey / payload。
+   */
+  requeue(id: string, options?: RequeueOptions): TaskRecord {
+    this.requireOpen()
+    const record = this.tasks.get(id)
+    if (record === undefined) fail('VALIDATION', '任务不存在：' + id)
+    if (record.state !== 'failed' && record.state !== 'needs_review') {
+      fail('VALIDATION', '只有 failed / needs_review 可以重新排队：' + id)
+    }
+    const availableAt = options?.availableAt ?? this.now()
+    if (!Number.isSafeInteger(availableAt) || availableAt < 0) fail('VALIDATION', 'availableAt 必须是整数毫秒')
+    record.state = 'queued'
+    record.attempts = 0
+    record.availableAt = availableAt
+    delete record.lastError
+    delete record.leaseOwner
+    delete record.leaseUntil
+    record.updatedAt = this.now()
+    this.requeueCalls.push(id)
+    return clone(record)
   }
 
   get(id: string): TaskRecord | undefined {

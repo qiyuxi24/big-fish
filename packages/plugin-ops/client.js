@@ -46,6 +46,7 @@ window.__ModuleLoader__.load({
       { id: 'publish-batch', label: '自动发布' },
       { id: 'account', label: '账号' },
       { id: 'copy', label: '文案' },
+      { id: 'reference', label: '采集' },
       { id: 'overview', label: '概览' },
       { id: 'diagnose', label: '诊断' },
     ]
@@ -291,6 +292,34 @@ window.__ModuleLoader__.load({
 
 
 
+    /** 采集参考的只读口径：给什么、不给什么、下一步缺什么。 */
+    const REFERENCE_CARDS = [
+      { title: '输入', value: '商品 id（≤20）或商家 id', hint: '商家 id 先取主页与在售列表，再逐件读详情统计' },
+      { title: '产出', value: '价格带 / 标题长度 / 类目 / 卖点词', hint: '全部是统计量；不给图片直链、不产出可发布草稿' },
+      { title: '数据来源', value: 'mtop 只读接口', hint: '账号登录态由 daemon 解密后使用；_m_h5_tk 过期自动刷新回写' },
+    ]
+    const REFERENCE_NOTES = [
+      '只做统计参考：图片数量、价格、标题长度、类目、卖点词；任何一条都不构成「拿来就能发」的素材。',
+      '红线：不下载他人图片、不照抄文案、不跨账号复制他人商品。要发的是自己的货（AGENTS §1.6）。',
+      '单件失败不影响整批：失败条目进 skipped 列表，AUTH_EXPIRED / RISK_CONTROL / UNAUTHORIZED 会中止整批。',
+    ]
+
+    /** 「采集」模块：讲清参考分析能给什么、怎么调工具。纯 UI，不联网、不执行写操作。 */
+    function ReferenceView() {
+      return h('div', null,
+        h('div', { style: S.sectionHint }, '读他人商品做统计分析 → 给自己的定价与文案找参照；面板不联网，采集由 agent 调工具'),
+        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '能拿到什么'),
+          h('div', { style: S.grid }, ...REFERENCE_CARDS.map(card => h(Card, { key: card.title, ...card })))),
+        h('div', { style: S.section },
+          h('div', { style: S.sectionTitle }, '怎么调（让模型执行）'),
+          h(ToolRow, { name: 'xy_reference_collect', desc: '按商品 id / 商家 id 采集只读统计（最坏 20 件串行）' }),
+          h(ToolRow, { name: 'xy_items_list', desc: '本地商品快照（自己已上架的，不是参考）' }),
+          h('div', { style: S.sectionHint }, '示例参数：{"accountId":"2206569289277","itemIds":["1091933071728"]} 或 {"accountId":"…","sellerId":"…"}')),
+        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '已知边界'),
+          ...REFERENCE_NOTES.map((note, index) => h('div', { key: String(index), style: S.sectionHint }, '· ' + note))),
+        h('div', { style: S.note }, '下一步（未做）：自有商品搬家（R2）要先拍板范围——只搬自己名下商品才不碰搬运红线；采用前写进 docs/repost-feature-parity.md 并补真机记录。'))
+    }
+
     /** 诊断页：只读工具与进程命令。 */
     function DiagnoseTab() {
       return h('div', null,
@@ -309,6 +338,7 @@ window.__ModuleLoader__.load({
       if (tab === 'publish-batch') return h(PublishBatchView)
       if (tab === 'account') return h(AccountView)
       if (tab === 'copy') return h(CopyStudio, copyProps)
+      if (tab === 'reference') return h(ReferenceView)
       if (tab === 'diagnose') return h(DiagnoseTab)
       return h('div', null,
         h(StatusGrid),
@@ -347,7 +377,7 @@ window.__ModuleLoader__.load({
           h('div', { style: S.logo }, '🐟'),
           h('div', null,
             h('div', { style: S.title }, 'BigFish 闲鱼运营'),
-            h('div', { style: S.subtitle }, '发布 / 账号 / 文案 · 面板只组参数，执行交给 agent 与 daemon'))),
+            h('div', { style: S.subtitle }, '发布 / 账号 / 文案 / 采集 · 面板只组参数，执行交给 agent 与 daemon'))),
         h(TabBar, { active: tab, onSelect: setTab }),
         h(PanelBody, { tab, copyProps }),
         h('div', { style: S.note },
