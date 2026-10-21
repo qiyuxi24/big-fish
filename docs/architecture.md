@@ -26,6 +26,8 @@
 
 关键点：**daemon 不调 LLM**，也不 import 任何 DSH 代码；插件不 import `@bigfish/core` 的实现，两者只靠 HTTP 契约耦合。
 
+> **模块视角**（四个业务模块怎么切、各自数据流与「能不能正式用」的判定）见 [module-architecture.md](module-architecture.md)。本文是底层契约，那边是产品切分。
+
 ## 2. 八个包
 
 | 包 | 语言 | 依赖 | 职责 |

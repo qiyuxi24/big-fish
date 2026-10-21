@@ -1,6 +1,6 @@
 # 项目状态 — 单一事实源
 
-> **最后更新 2026-10-21（P1.2 收尾 + 四模块改造施工中）· 代码基线 `main @ 081d3fb`。**
+> **最后更新 2026-10-21（四模块改造：发布 / 账号已落地，预处理 / 采集未开始）· 代码基线 `main @ 9af634e`。**
 > 本文是仓库**唯一**的「现在到哪了 / 下一步做什么」入口。其他文档里的测试数字、工具数量、阶段状态一律以本文为准；
 > 若发现别处与本文冲突，以本文为真、并把冲突处改成指向本文。规则看 [AGENTS.md](../AGENTS.md)，实现形态看 [architecture.md](architecture.md)。
 
@@ -34,7 +34,7 @@ P2 自动发货押后到发布这条线跑顺再切。
 | `deliver` 自动发货 | ❌ `UNSUPPORTED` | 规则引擎已就绪，缺订单/消息源与执行接线 |
 | `reply` / IM 收发 | ❌ `UNSUPPORTED` | `channel-im` 已提交（帧解析/归一化/会话状态机，32 tests），**未接 daemon**；websocket 长连、发送、握手未实现 |
 | 文案 skill（改写 + 合规审核） | ✅ 2 个 skill | `skills/xianyu-listing-copy`、`xianyu-listing-audit`；**未被 DSH 自动发现**（无 `customSkillDirs`），未接进 agent 流程 |
-| 文案风格注入（面板 + `xy_copy_plan`） | ✅ 真机（面板）/ 单测（工具） | 面板顶部 4 个 tab（文案生成 / 概览 / 发布 / 诊断），skill 入口是第一个 tab：5 档语言风格（plain/warm/professional/urgent/story）、填商品名/价格/成色，组出 `xy_copy_plan` 参数 JSON；工具把风格约束渲染成提示词。**都只产出请求/提示词，不调模型** |
+| 文案风格注入（面板 + `xy_copy_plan`） | ✅ 真机（面板）/ 单测（工具） | 面板内「文案」分区（`PANEL_TABS` 五分区之一）：5 档语言风格（plain/warm/professional/urgent/story）、填商品名/价格/成色，组出 `xy_copy_plan` 参数 JSON；工具把风格约束渲染成提示词。**都只产出请求/提示词，不调模型** |
 | AI 生图 | 📝 方案 | 选型与管线见 [copywriting-and-imagegen-plan.md](copywriting-and-imagegen-plan.md)，未实现调用 |
 | 地址库 / 别名匹配 | ❌ 未做 | CDP 下地址搜索候选不回显，只能匹配「常用地址/附近地址」；匹配不到就失败回显候选 |
 | 闲管家开放平台 | 📝 客户端在 | `channel-guanjia`（MIT 移植）无消费者、缺凭证 |
@@ -73,7 +73,7 @@ node scripts/test-all.mjs     # 647 tests / 647 pass / 23 suites / 64 个测试�
 | --- | --- | --- | --- |
 | **发布** | 🐟 自动发布（`bigfish-publish`，order 20） | 单件全链路真机跑通（2 次，均已下架）；批量入队工具已有、**未真机批量** | A3：批量 ≥2 条 + 含不支持类目；之后 B1 批量节流（同号连发第二件已实测被风控） |
 | **账号** | 「账号」tab | 只读摘要接口（**已真机** `GET /accounts` 200）+ 第 12 个工具 + 面板内「账号」模块 | 面板内导入/扫码（需 host rpc + ADR）；多账号绑定；凭据备份 |
-| **发布前处理** | 未注册 | 文案 skill 2 个 + `xy_copy_plan` 风格注入（只产提示词）；生图只有方案 | 文案接进 agent 流程；设置页（先走 tab 内自建）；生图选型 |
+| **发布前处理** | 「文案」tab（部分） | 文案 skill 2 个 + `xy_copy_plan` 风格注入（只产提示词）；无设置页、无生图实现；**skill 未被宿主发现** | 文案接进 agent 流程；设置页（先走 tab 内自建）；生图选型 |
 | **采集参考** | 未注册 | 无 | 先等业务红线拍板（能不能存缩略图、参考到什么程度），见 §4.3 |
 
 ### 4.1.1 发布模块（先做，单件已通）
@@ -145,5 +145,5 @@ node scripts/test-all.mjs     # 647 tests / 647 pass / 23 suites / 64 个测试�
 | 层 | 文档 | 什么时候读 |
 | --- | --- | --- |
 | **必读** | 本文（现状+下一步） · [AGENTS.md](../AGENTS.md)（硬规则） · [architecture.md](architecture.md)（已实现形态 + 发布页真机校准 §13） | 每次开工 |
-| 参考 | [auto-publish.md](auto-publish.md)（自动发布施工设计 + 真机验收口径） · [dev-setup.md](dev-setup.md)（怎么跑） · [component-decomposition.md](component-decomposition.md)（包边界） · [im-protocol.md](im-protocol.md) / [delivery-rules.md](delivery-rules.md)（P2 施工规格） · [client-plugin-sidebar.md](client-plugin-sidebar.md) · [p1.3-plan.md](p1.3-plan.md)（方案，执行状态看本文） · [adr/](adr/) · [end-to-end-chain-and-borrowing.md](end-to-end-chain-and-borrowing.md) | 做对应模块时 |
+| 参考 | [module-architecture.md](module-architecture.md)（四模块边界 + 可用度 A/B/C/D 判定） · [auto-publish.md](auto-publish.md)（自动发布施工设计 + 真机验收口径） · [dev-setup.md](dev-setup.md)（怎么跑） · [component-decomposition.md](component-decomposition.md)（包边界） · [im-protocol.md](im-protocol.md) / [delivery-rules.md](delivery-rules.md)（P2 施工规格） · [client-plugin-sidebar.md](client-plugin-sidebar.md) · [p1.3-plan.md](p1.3-plan.md)（方案，执行状态看本文） · [adr/](adr/) · [end-to-end-chain-and-borrowing.md](end-to-end-chain-and-borrowing.md) | 做对应模块时 |
 | 历史（只作证据，不必读） | [xianyu-ops-agent-design.md](xianyu-ops-agent-design.md) · [xianyu-4q-research.md](xianyu-4q-research.md) · [xianyu-commercial-tools-analysis.md](xianyu-commercial-tools-analysis.md) · [xianyu-wuli-kit-analysis.md](xianyu-wuli-kit-analysis.md) · [asset-extraction.md](asset-extraction.md) · [tool-failure-analysis.md](tool-failure-analysis.md) · [copywriting-and-imagegen-plan.md](copywriting-and-imagegen-plan.md)（选型） | 需要溯源时 |
