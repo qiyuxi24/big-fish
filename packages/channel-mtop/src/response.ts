@@ -8,6 +8,7 @@
  */
 import { XianyuError, classifyMtopRet, fail } from '@bigfish/core'
 import type { ErrorCode } from '@bigfish/core'
+import type { MtopHttpResponse } from './types.ts'
 
 /**
  * Set-Cookie 数组 → cookie 表。
@@ -29,6 +30,47 @@ export function parseSetCookie(headers: readonly string[]): Record<string, strin
     cookies[name] = first.slice(eq + 1).trim()
   }
   return cookies
+}
+
+/**
+ * 令牌过期类 ret。EXOIRED 是平台真实返回的拼写（历史抓包如此），EXPIRED 是正确拼写，
+ * 两种都认；其余鉴权失败（SESSION_EXPIRED / ILLEGAL_ACCESS）刷新救不了，不在此列。
+ */
+const TOKEN_EXPIRED_RE = /FAIL_SYS_TOKEN_(?:EXOIRED|EXPIRED)/
+
+/** 响应是否是「令牌过期」——唯一能用 Set-Cookie 新令牌自愈的鉴权失败。 */
+export function isTokenExpiredRet(raw: unknown): boolean {
+  if (typeof raw === 'string') return TOKEN_EXPIRED_RE.test(raw)
+  return TOKEN_EXPIRED_RE.test(retText(raw))
+}
+
+/**
+ * 合并 Set-Cookie 变更：只覆盖 updates 里出现且值不同的字段，其余 cookie 原样保留；
+ * 返回新的 cookie 表（不改 base）与真正变化的字段。
+ * 过期响应通常只带新的 _m_h5_tk / _m_h5_tk_enc，别的字段跟着乱改反而会丢登录态。
+ */
+export function mergeCookies(
+  base: Readonly<Record<string, string>>,
+  updates: Readonly<Record<string, string>>,
+): { cookies: Record<string, string>; changed: Record<string, string> } {
+  const cookies: Record<string, string> = { ...base }
+  const changed: Record<string, string> = {}
+  for (const [name, value] of Object.entries(updates)) {
+    if (cookies[name] === value) continue
+    cookies[name] = value
+    changed[name] = value
+  }
+  return { cookies, changed }
+}
+
+/** 读 Set-Cookie 原始行：优先 transport 的 setCookie 数组，回退 headers['set-cookie']。 */
+export function readSetCookie(response: MtopHttpResponse): string[] {
+  const direct = response.setCookie
+  if (Array.isArray(direct)) return direct.filter((line): line is string => typeof line === 'string')
+  const joined = response.headers['set-cookie'] ?? response.headers['Set-Cookie']
+  if (typeof joined !== 'string' || joined.length === 0) return []
+  // 多条拼接用逗号分隔；Expires 属性里也有逗号，所以只按「逗号后紧跟 name=」切。
+  return joined.split(/,\s*(?=[^;,=\s]+=)/)
 }
 
 /** 把 ret 数组/字符串拼成一串；只用于错误消息与补充分类。 */

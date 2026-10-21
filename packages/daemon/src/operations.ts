@@ -25,12 +25,36 @@ import {
   callMtop,
   parseItemDetail,
 } from '@bigfish/channel-mtop'
-import type { MtopHttpRequest, MtopHttpResponse, MtopTransport } from '@bigfish/channel-mtop'
+import type { MtopCallOptions, MtopHttpRequest, MtopHttpResponse, MtopTransport } from '@bigfish/channel-mtop'
 import { XianyuError, fail } from '@bigfish/core'
 
 import { publishViaCdp } from './cdp-publish.ts'
 import type { PublishViaCdpInput, PublishViaCdpResult } from './cdp-publish.ts'
 import type { DetailSnapshot, OperationPort, PublishDraft, Session } from './executors.ts'
+
+/**
+ * 取 Set-Cookie 原始行；运行时没有 getSetCookie 时返回空数组。
+ * headers 里的 'set-cookie' 是多条逗号拼接串，Expires 也带逗号，不能可靠反解。
+ */
+function readSetCookieLines(headers: Headers): string[] {
+  const withGetter = headers as { getSetCookie?: () => string[] }
+  return typeof withGetter.getSetCookie === 'function' ? withGetter.getSetCookie() : []
+}
+
+/**
+ * 执行器 Session → mtop 会话参数。
+ * onSessionUpdate 只在凭据层可写时才带上，这样「刷新后回写不了」会在通道层被识别成不刷新，
+ * 而不是刷新完悄悄丢掉新令牌。
+ */
+function mtopSession(session: Session): Pick<MtopCallOptions, 'session' | 'onSessionUpdate'> {
+  return {
+    session: {
+      cookies: session.cookies,
+      ...(session.deviceId === undefined ? {} : { deviceId: session.deviceId }),
+    },
+    ...(session.onSessionUpdate === undefined ? {} : { onSessionUpdate: session.onSessionUpdate }),
+  }
+}
 
 /** 基于全局 fetch 的 mtop 传输层；超时由 callMtop 合并的 AbortSignal 负责。 */
 export function createFetchTransport(fetchImpl: typeof fetch = fetch): MtopTransport {
@@ -47,7 +71,13 @@ export function createFetchTransport(fetchImpl: typeof fetch = fetch): MtopTrans
       response.headers.forEach((value, key) => {
         headers[key] = value
       })
-      return { status: response.status, headers, text: await response.text() }
+      const setCookie = readSetCookieLines(response.headers)
+      return {
+        status: response.status,
+        headers,
+        text: await response.text(),
+        ...(setCookie.length === 0 ? {} : { setCookie }),
+      }
     },
   }
 }
@@ -89,7 +119,7 @@ export function createOperationPort(options: OperationPortOptions = {}): Operati
       const raw = await callMtop(transport, {
         api: MTOP_APIS.detail,
         data: buildItemDetailData({ itemId: input.itemId }),
-        session: { cookies: input.session.cookies, ...(input.session.deviceId === undefined ? {} : { deviceId: input.session.deviceId }) },
+        ...mtopSession(input.session),
         signal: input.signal,
       })
       const summary = parseItemDetail(raw, input.session.accountId, now())
@@ -101,7 +131,7 @@ export function createOperationPort(options: OperationPortOptions = {}): Operati
         api: MTOP_APIS.polish,
         version: MTOP_API_VERSIONS.polish,
         data: buildPolishData({ itemId: input.itemId }),
-        session: { cookies: input.session.cookies, ...(input.session.deviceId === undefined ? {} : { deviceId: input.session.deviceId }) },
+        ...mtopSession(input.session),
         signal: input.signal,
       })
     },

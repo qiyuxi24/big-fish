@@ -9,6 +9,7 @@
 import type {
   CircuitBreaker,
   CredentialRecord,
+  CredentialSaveInput,
   ItemRepository,
   Logger,
   RateLimiter,
@@ -23,6 +24,11 @@ export interface ExecutorDeps {
   /** 账号凭据；读 cookie / token。缺失时执行器应抛 UNAUTHORIZED。 */
   credentials?: {
     load(accountId: string): Promise<CredentialRecord | undefined>
+    /**
+     * 令牌刷新后回写 cookie（生产是 CredentialStore.save）；缺省表示凭据层不可写，
+     * 此时通道层放弃刷新重试，直接把 AUTH_EXPIRED 上抛（保持 fail-fast）。
+     */
+    save?(input: CredentialSaveInput): Promise<void>
   }
   /** 按账号 + 桶的限流器；写操作前必须 acquire。 */
   limiter?: RateLimiter

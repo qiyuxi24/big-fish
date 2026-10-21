@@ -22,6 +22,11 @@ export interface MtopHttpResponse {
   status: number
   headers: Record<string, string>
   text: string
+  /**
+   * Set-Cookie 原始行（一条一个元素，不合并）；fetch 实现用 headers.getSetCookie() 取。
+   * 令牌过期时新的 _m_h5_tk 只在这里可靠拿到——headers['set-cookie'] 是多条拼接串。
+   */
+  setCookie?: readonly string[]
 }
 
 /** 一次调用的登录态。 */
@@ -46,5 +51,10 @@ export interface MtopCallOptions {
   spmCnt?: string
   /** 追加查询参数；同名键覆盖默认值（例如按业务改 spm_cnt）。 */
   extraParams?: Record<string, string>
+  /**
+   * 令牌过期自动刷新后的回写钩子：参数是合并后的完整 cookie 表（只覆盖 Set-Cookie 里真正变化的字段）。
+   * 只有给了回调才刷新重试——刷新结果必须交给调用方持久化，通道层绝不内部吞掉新令牌。
+   */
+  onSessionUpdate?: (cookies: Record<string, string>) => void | Promise<void>
   signal?: AbortSignal
 }

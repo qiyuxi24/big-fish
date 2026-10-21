@@ -9,7 +9,7 @@
  * @module @bigfish/daemon/executors
  */
 import { XianyuError, checkListing, fail } from '@bigfish/core'
-import type { CredentialRecord, ItemState } from '@bigfish/core'
+import type { CredentialRecord, CredentialSaveInput, ItemState } from '@bigfish/core'
 
 import type { ExecuteContext, ExecutorTable, TaskExecutor } from './executor.ts'
 
@@ -18,6 +18,11 @@ export interface Session {
   accountId: string
   cookies: Record<string, string>
   deviceId?: string
+  /**
+   * 令牌过期刷新后的 cookie 回写钩子（合并后的完整 cookie 表）。
+   * 凭据层不可写时不设这个字段，通道层据此放弃自动刷新、直接上抛 AUTH_EXPIRED。
+   */
+  onSessionUpdate?: (cookies: Record<string, string>) => void | Promise<void>
 }
 
 /** 详情快照（probe 落库用）。 */
@@ -187,10 +192,32 @@ async function requireSession(ctx: ExecuteContext, accountId: string): Promise<S
   const record = await ctx.credentials.load(accountId)
   if (record === undefined) fail('AUTH_EXPIRED', '账号没有已保存的登录态：' + accountId)
   const deviceId = record.meta?.['deviceId']
+  const onSessionUpdate = sessionWriter(ctx.credentials, record)
   return {
     accountId: record.accountId,
     cookies: record.cookies,
     ...(typeof deviceId === 'string' ? { deviceId } : {}),
+    ...(onSessionUpdate === undefined ? {} : { onSessionUpdate }),
+  }
+}
+
+/**
+ * 令牌刷新回写：保存合并后的 cookie，并原样带回 meta（deviceId 等标记丢了会影响后续 IM 鉴权）。
+ * 凭据层没有 save 时返回 undefined——宁可不刷新，也不假装回写成功。
+ */
+function sessionWriter(
+  credentials: NonNullable<ExecuteContext['credentials']>,
+  record: CredentialRecord,
+): ((cookies: Record<string, string>) => Promise<void>) | undefined {
+  const save = credentials.save
+  if (save === undefined) return undefined
+  return async (cookies: Record<string, string>): Promise<void> => {
+    const input: CredentialSaveInput = {
+      accountId: record.accountId,
+      cookies,
+      ...(record.meta === undefined ? {} : { meta: record.meta }),
+    }
+    await save.call(credentials, input)
   }
 }
 
