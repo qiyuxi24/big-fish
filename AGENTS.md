@@ -145,7 +145,15 @@ settled.forEach((s, i) => {
 - 仓库不装 devDependencies；tsc 与 `@types/node` 都在 DSH checkout（`scripts/typecheck.mjs` 会自动找）。
 - 插件包 `main`/`exports` 必须指向 `./index.js`（写成 `.ts` 会 ERR_MODULE_NOT_FOUND）；插件必须 `export const inject = ['tools']`，否则 Cordis 报 `cannot get property "tools" without inject`。
 
-### 7.10 改文件前必须先读
+### 7.11 沙箱里不能做真机发布验收（CDP 渲染进程起不来）
+
+DSH 沙箱内 Chrome **进程**能起来（要加 `--no-sandbox --disable-crash-reporter --disable-breakpad`，否则 crashpad 的 OpenProcess 被拒 → 退出码 4294930433），但**渲染进程起不来**：page target 上 `Runtime.evaluate` 对 `about:blank` 也超时、`Storage.getCookies`/`Network.getCookies` 超时。发布步骤机依赖页面填表/选类目，所以：
+
+- 真机发布/验收一律**交用户在普通终端跑**：`pnpm accept:publish`（= `scripts/publish-acceptance.mjs`，自起 dry-run daemon、跑完即停）。
+- 沙箱内起的 daemon 对默认数据目录（`%LOCALAPPDATA%/bigfish`）是**只读**的：`POST /tasks` 会报 `STORAGE: attempt to write a readonly database`；要写就用 `--data-dir` 指到 workspace 内。
+- `ops_bash` 调用结束会杀掉整棵进程树：**常驻进程（daemon / dev host）只能在同一次调用内验证**，跨调用保活要用 `pwsh` 的 `run_in_background`，但别指望它活过本会话。
+
+### 7.12 改文件前必须先读（旧号，见 7.10）
 
 edit/write 之前必须先用 read 读过该文件，否则报 file has not been read（本会话踩过 2 次）。大文件用 offset/limit 读目标段。
 
