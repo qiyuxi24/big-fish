@@ -59,7 +59,8 @@ export function resolveDataDir(configured, env = process.env, platform = process
  *
  * @param {Record<string, unknown>} [raw] - cordis.patch.yml 里该行的 config。
  * @param {object} [ctx] - Cordis 插件上下文，用于读环境快照。
- * @returns {{daemonUrl: string, tokenPath: string, timeoutMs: number, writeGate: boolean}}
+ * @returns {{daemonUrl: string, tokenPath: string, dataDir: string, timeoutMs: number, writeGate: boolean,
+ *   autoStartDaemon: boolean, nodePath?: string, daemonEntry?: string}}
  */
 export function normalizeConfig(raw = {}, ctx) {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -91,10 +92,34 @@ export function normalizeConfig(raw = {}, ctx) {
   if (raw.writeGate !== undefined && typeof raw.writeGate !== 'boolean') {
     throw new TypeError(`bigfish-ops: writeGate 必须是布尔值，收到 ${String(raw.writeGate)}`)
   }
-  return {
+  // 自动拉起：面板连不上 daemon 时由宿主 detached 起一个（默认开；CI/远端 daemon 场景可关）。
+  if (raw.autoStartDaemon !== undefined && typeof raw.autoStartDaemon !== 'boolean') {
+    throw new TypeError(`bigfish-ops: autoStartDaemon 必须是布尔值，收到 ${String(raw.autoStartDaemon)}`)
+  }
+  const config = {
     daemonUrl: parsed.origin,
     tokenPath: tokenPathRaw,
+    dataDir,
     timeoutMs: timeoutRaw,
     writeGate: raw.writeGate !== false,
+    autoStartDaemon: raw.autoStartDaemon !== false,
   }
+  // 可选覆盖：打包/非常规布局下让用户显式指定 node 与 daemon 入口。
+  if (raw.nodePath !== undefined) config.nodePath = requirePath(raw.nodePath, 'nodePath')
+  if (raw.daemonEntry !== undefined) config.daemonEntry = requirePath(raw.daemonEntry, 'daemonEntry')
+  return config
+}
+
+/**
+ * 可选路径类配置：必须是非空字符串（空串等于「没配」，容易掩盖拼错）。
+ *
+ * @param {unknown} value - 配置值。
+ * @param {string} key - 字段名（错误信息用）。
+ * @returns {string} 绝对或相对路径字符串。
+ */
+function requirePath(value, key) {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new TypeError(`bigfish-ops: ${key} 必须是非空字符串，收到 ${String(value)}`)
+  }
+  return value
 }

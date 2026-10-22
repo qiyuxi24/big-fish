@@ -37,6 +37,28 @@ test('非法配置 fail loud', () => {
   assert.throws(() => normalizeConfig(null), /config/)
 })
 
+test('autoStartDaemon：默认开启，可关，非布尔 fail loud', () => {
+  assert.equal(normalizeConfig({}).autoStartDaemon, true)
+  assert.equal(normalizeConfig({ autoStartDaemon: false }).autoStartDaemon, false)
+  assert.equal(normalizeConfig({ autoStartDaemon: true }).autoStartDaemon, true)
+  assert.throws(() => normalizeConfig({ autoStartDaemon: 'yes' }), /autoStartDaemon/)
+})
+
+test('dataDir 随配置带出（供 daemon 自动拉起共用一份数据）', () => {
+  const config = normalizeConfig({ dataDir: '/tmp/bf-data', tokenPath: '/tmp/bf-data/daemon.token' })
+  assert.equal(config.dataDir, '/tmp/bf-data')
+  assert.equal(config.nodePath, undefined)
+  assert.equal(config.daemonEntry, undefined)
+})
+
+test('nodePath / daemonEntry：给了就必须是非空字符串', () => {
+  const config = normalizeConfig({ nodePath: '/usr/bin/node', daemonEntry: '/repo/packages/daemon/src/cli.ts' })
+  assert.equal(config.nodePath, '/usr/bin/node')
+  assert.equal(config.daemonEntry, '/repo/packages/daemon/src/cli.ts')
+  assert.throws(() => normalizeConfig({ nodePath: '' }), /nodePath/)
+  assert.throws(() => normalizeConfig({ daemonEntry: 42 }), /daemonEntry/)
+})
+
 test('resolveDataDir 平台差异', () => {
   // win32.join 会把分隔符归一成反斜杠；函数按传入 platform 决定，与宿主平台无关，因此可确定断言。
   assert.equal(resolveDataDir(undefined, { LOCALAPPDATA: 'C:/Users/x/AppData/Local' }, 'win32'), 'C:\\Users\\x\\AppData\\Local\\bigfish')

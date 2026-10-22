@@ -310,7 +310,11 @@ window.__ModuleLoader__.load({
       const snapshot = useDaemonSnapshot(connection)
       if (snapshot.phase === 'loading') return h('div', { style: S.sectionHint, 'data-role': 'daemon-state' }, '正在连接 daemon…')
       const data = snapshot.data
-      if (snapshot.phase !== 'ok' || data === null) return h('div', { style: S.badText, 'data-role': 'daemon-state' }, OFFLINE_TEXT)
+      // 降级时给一句可执行的下一步：宿主会自己拉起 daemon，失败后 30 秒冷却，仍不行再看日志。
+      if (snapshot.phase !== 'ok' || data === null) return h('div', { 'data-role': 'daemon-state' },
+        h('div', { style: S.badText }, OFFLINE_TEXT),
+        h('div', { style: S.sectionHint, 'data-role': 'daemon-hint' },
+          '宿主已尝试自动拉起 daemon（失败后 30 秒冷却；日志在数据目录的 plugin.log / daemon.log）。仍连不上就手动执行 pnpm daemon:start。'))
       const health = data.health ?? {}
       const queue = data.status?.queue ?? {}
       const accounts = Array.isArray(data.accounts) ? data.accounts : []

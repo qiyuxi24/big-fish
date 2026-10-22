@@ -8,8 +8,13 @@
  *
  * @module @bigfish/plugin-ops
  */
+import { dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 import { createDaemonClient } from './src/client.js'
 import { normalizeConfig } from './src/config.js'
+import { createDaemonSupervisor } from './src/daemon-supervisor.js'
+import { withDaemonWatch } from './src/daemon-watch.js'
 import { registerWriteGate } from './src/gate.js'
 import { createPanelRoute } from './src/host-route.js'
 import { RPC_CHANNEL, createRpcBridge } from './src/rpc.js'
@@ -44,7 +49,19 @@ export function apply(ctx, config = {}) {
   }
   registerWriteGate(ctx, { enabled: resolved.writeGate })
   // 面板实时数据/写动作走宿主 rpc 通道；通道不存在时工具照常可用，面板退回静态说明（不阻断加载）。
-  const rpcChannel = registerRpcChannel(ctx, createRpcBridge({ client }))
+  // 面板连不上 daemon（NETWORK）时由宿主自动拉起一个：用户不必先手动 pnpm daemon:start。
+  const supervisor = createDaemonSupervisor({
+    enabled: resolved.autoStartDaemon,
+    daemonUrl: resolved.daemonUrl,
+    dataDir: resolved.dataDir,
+    tokenPath: resolved.tokenPath,
+    nodePath: resolved.nodePath,
+    daemonEntry: resolved.daemonEntry,
+    pluginDir: dirname(fileURLToPath(import.meta.url)),
+    log: (line) => console.log(line),
+  })
+  const bridge = withDaemonWatch(createRpcBridge({ client }), supervisor)
+  const rpcChannel = registerRpcChannel(ctx, bridge)
   // 加载日志保持一条：面板 rpc 状态作为字段带出，便于按行 grep 且不打断 apply.test 的断言。
   console.log(JSON.stringify({
     level: 'info',
@@ -53,6 +70,7 @@ export function apply(ctx, config = {}) {
     tools: tools.map(tool => tool.name),
     daemonUrl: resolved.daemonUrl,
     writeGate: resolved.writeGate,
+    autoStartDaemon: resolved.autoStartDaemon,
     rpcChannel,
   }))
 }

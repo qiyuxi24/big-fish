@@ -377,3 +377,14 @@ test('命中宿主 bug 时改用插件自己的 webServer 兼容路由，面板�
   assert.equal(released, true)
 })
 
+test('daemon 掉线的失败信封是 NETWORK 码：宿主自动拉起就靠它触发', async () => {
+  const down = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:47001'), { code: 'NETWORK' })
+  const { bridge } = bridgeWith({ status: down })
+  const result = await bridge.handle('status', {})
+  assertError(result, 'NETWORK', /ECONNREFUSED/)
+
+  // 非网络错误仍按原码透出，不会被误判成「daemon 没起」。
+  const validation = Object.assign(new Error('bad payload'), { code: 'VALIDATION' })
+  const other = bridgeWith({ status: validation })
+  assertError(await other.bridge.handle('status', {}), 'VALIDATION', /bad payload/)
+})
