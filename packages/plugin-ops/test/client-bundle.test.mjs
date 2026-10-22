@@ -711,3 +711,105 @@ test('bundle 不写死 daemon 地址以外的环境值，也不访问 document/l
   assert.ok(source.includes("RPC_CHANNEL = '/bigfish'"))
   assert.ok(source.includes('connection.rpc.call'))
 })
+/** 离线回放：status 报错 → 面板整块降级；启停端点仍可按。 */
+function offlineManageReplies() {
+  const replies = manageReplies()
+  replies.status = { ok: false, error: { code: 'NETWORK', message: 'daemon down' } }
+  return replies
+}
+
+/** 启停端点的回放数据（host 侧返回 {status:'started'} / {stopped:true}）。 */
+function manageReplies() {
+  const replies = daemonReplies()
+  replies['daemon.start'] = { ok: true, value: { status: 'started' } }
+  replies['daemon.stop'] = { ok: true, value: { stopped: true, alreadyStopped: false } }
+  return replies
+}
+
+test('进程管理：离线时「启动」可用、「停止」禁用，并讲清 daemon 是常驻监听进程', async () => {
+  const mounted = mountPanel({ connection: createFakeConnection(offlineManageReplies()).connection })
+  const text = await snapshotText(mounted)
+
+  assert.match(text, /未连接后台（daemon 未启动）/)
+  assert.match(text, /进程管理（daemon 是常驻后台监听进程）/)
+  assert.match(text, /worker 按固定间隔轮询本地队列，执行发布 \/ 擦亮 \/ 探针等任务/)
+  assert.match(text, /面板只是看板/)
+  assert.match(text, /下次打开面板宿主会自动拉起/)
+  const tree = mounted.render()
+  assert.equal(roleElements(tree, 'daemon-start').length, 1)
+  assert.equal(roleElements(tree, 'daemon-start')[0].props.disabled, false)
+  assert.equal(roleElements(tree, 'daemon-stop').length, 1)
+  assert.equal(roleElements(tree, 'daemon-stop')[0].props.disabled, true)
+})
+
+test('进程管理：在线时「启动」禁用、「停止」可用', async () => {
+  const mounted = mountPanel({ connection: createFakeConnection(manageReplies()).connection })
+  await snapshotText(mounted)
+
+  const tree = mounted.render()
+  assert.equal(roleElements(tree, 'daemon-start')[0].props.disabled, true)
+  assert.equal(roleElements(tree, 'daemon-stop')[0].props.disabled, false)
+})
+
+test('进程管理：点「启动」发 daemon.start（空 payload），显示进行中与成功提示', async () => {
+  const { connection, calls } = createFakeConnection(offlineManageReplies())
+  const mounted = mountPanel({ connection })
+  await snapshotText(mounted)
+
+  roleElements(mounted.render(), 'daemon-start')[0].props.onClick()
+  const busy = mounted.render()
+  assert.match(toText(busy), /正在启动…/)
+  assert.equal(roleElements(busy, 'daemon-start')[0].props.disabled, true)
+
+  await settle()
+  assert.match(toText(mounted.render()), /已请求启动 daemon，等下一次轮询确认在线/)
+  const starts = calls.filter((call) => call.endpoint === 'daemon.start')
+  assert.equal(starts.length, 1)
+  assert.equal(starts[0].channel, '/bigfish')
+  assert.deepEqual(Object.keys(starts[0].payload), [])
+})
+
+test('进程管理：停 daemon 要点两次，第二次才带 confirm:true 发 daemon.stop', async () => {
+  const { connection, calls } = createFakeConnection(manageReplies())
+  const mounted = mountPanel({ connection })
+  await snapshotText(mounted)
+
+  const first = roleElements(mounted.render(), 'daemon-stop')[0]
+  assert.equal(first.props.disabled, false)
+  first.props.onClick()
+  let armed = mounted.render()
+  assert.match(toText(armed), /再点一次「确认停止」才会停 daemon/)
+  assert.equal(toText(roleElements(armed, 'daemon-stop')[0]), '确认停止 daemon')
+  assert.equal(calls.some((call) => call.endpoint === 'daemon.stop'), false)
+
+  roleElements(mounted.render(), 'daemon-stop')[0].props.onClick()
+  assert.match(toText(mounted.render()), /正在停止…/)
+  await settle()
+
+  const stops = calls.filter((call) => call.endpoint === 'daemon.stop')
+  assert.equal(stops.length, 1)
+  assert.equal(stops[0].payload.confirm, true)
+  assert.match(toText(mounted.render()), /daemon 已停止；队列暂停执行/)
+})
+
+test('进程管理：动作失败时把 host 侧的 error.message 显示出来，而不是只写「失败」', async () => {
+  const replies = offlineManageReplies()
+  replies['daemon.start'] = { ok: false, error: { code: 'INTERNAL', message: '找不到 node 可执行文件：请配 nodePath' } }
+  const mounted = mountPanel({ connection: createFakeConnection(replies).connection })
+  await snapshotText(mounted)
+
+  roleElements(mounted.render(), 'daemon-start')[0].props.onClick()
+  await settle()
+  const text = toText(mounted.render())
+  assert.match(text, /找不到 node 可执行文件：请配 nodePath/)
+  assert.equal(roleElements(mounted.render(), 'daemon-start')[0].props.disabled, false)
+})
+
+test('进程管理：宿主没有 connection 服务时点「启动」给出可执行提示，不抛错', async () => {
+  const mounted = mountPanel()
+  await snapshotText(mounted)
+
+  roleElements(mounted.render(), 'daemon-start')[0].props.onClick()
+  await settle()
+  assert.match(toText(mounted.render()), /宿主没有连接服务，无法操作 daemon/)
+})

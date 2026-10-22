@@ -40,6 +40,7 @@ import type { RedactFn } from './http.ts'
 import type { ImportAccountInput, ImportedAccount } from './accounts.ts'
 import type { LoginInput, LoginResult } from './login.ts'
 import type { AccountSummary } from './account-list.ts'
+import { lifecycleRoutes } from './lifecycle.ts'
 import { parseReferenceRequest } from './reference.ts'
 import type { ReferenceReport, ReferenceRequest } from './reference.ts'
 import type { SettingsStore } from './settings.ts'
@@ -62,6 +63,9 @@ export type RetryTaskHandler = (id: string) => TaskRecord
  */
 export type ReferenceCollectHandler = (input: ReferenceRequest & { signal: AbortSignal }) => Promise<ReferenceReport>
 
+/** 关停能力的注入签名：cli 用它唤醒退出等待；参数是触发原因（HTTP / SIGINT…）。 */
+export type RequestShutdown = (reason?: string) => void
+
 /** 一次请求的处理上下文：路由参数、URL、队列与时钟都在这里。 */
 export interface RouteContext {
   queue: TaskQueue
@@ -83,6 +87,8 @@ export interface RouteContext {
   retryTask: RetryTaskHandler | undefined
   /** 参考采集能力；未注入时 POST /reference 返回 UNSUPPORTED。 */
   referenceCollect: ReferenceCollectHandler | undefined
+  /** 优雅关停能力；未注入时 POST /shutdown 返回 UNSUPPORTED。 */
+  requestShutdown: RequestShutdown | undefined
   /** 设置存储；未注入时 GET/PUT /settings 返回 UNSUPPORTED（测试里不必真读盘）。 */
   settings: SettingsStore | undefined
   now: () => number
@@ -144,6 +150,8 @@ const ROUTES: readonly Route[] = [
   { method: 'POST', pattern: /^\/circuits\/reset\/?$/, handler: resetCircuitHandler },
   { method: 'GET', pattern: /^\/settings\/?$/, handler: getSettingsHandler },
   { method: 'PUT', pattern: /^\/settings\/?$/, handler: putSettingsHandler },
+  // 生命周期路由单独成文件：关停是运维动作，不跟业务读写在同一个模块里改。
+  ...lifecycleRoutes,
 ]
 
 /** 装饰 URL 参数解码失败时按 VALIDATION 处理。 */

@@ -60,7 +60,7 @@ export function apply(ctx, config = {}) {
     pluginDir: dirname(fileURLToPath(import.meta.url)),
     log: (line) => console.log(line),
   })
-  const bridge = withDaemonWatch(createRpcBridge({ client }), supervisor)
+  const bridge = withDaemonWatch(createRpcBridge({ client, supervisor }), supervisor)
   const rpcChannel = registerRpcChannel(ctx, bridge)
   // 加载日志保持一条：面板 rpc 状态作为字段带出，便于按行 grep 且不打断 apply.test 的断言。
   console.log(JSON.stringify({

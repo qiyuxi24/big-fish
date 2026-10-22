@@ -23,6 +23,7 @@ import type {
   ImportAccountHandler,
   LoginAccountHandler,
   ReferenceCollectHandler,
+  RequestShutdown,
   RetryTaskHandler,
   WorkerCounts,
 } from './routes.ts'
@@ -56,6 +57,8 @@ export interface StartDaemonOptions {
   retryTask?: RetryTaskHandler
   /** 参考采集能力；缺省时 POST /reference 返回 UNSUPPORTED。 */
   referenceCollect?: ReferenceCollectHandler
+  /** 优雅关停能力；缺省时 POST /shutdown 返回 UNSUPPORTED。 */
+  requestShutdown?: RequestShutdown
   /** 设置存储；缺省时 GET/PUT /settings 返回 UNSUPPORTED。 */
   settings?: SettingsStore
   /** 可注入时钟（整数毫秒），测试用假时钟断言 uptime。 */
@@ -84,6 +87,7 @@ interface ServerContext {
   accountSummaries: (() => Promise<AccountSummary[]>) | undefined
   retryTask: RetryTaskHandler | undefined
   referenceCollect: ReferenceCollectHandler | undefined
+  requestShutdown: RequestShutdown | undefined
   settings: SettingsStore | undefined
   now: () => number
   startedAt: number
@@ -115,6 +119,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
     accountSummaries: options.accountSummaries,
     retryTask: options.retryTask,
     referenceCollect: options.referenceCollect,
+    requestShutdown: options.requestShutdown,
     settings: options.settings,
     now,
     startedAt,
@@ -186,6 +191,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, context:
       accountSummaries: context.accountSummaries,
       retryTask: context.retryTask,
       referenceCollect: context.referenceCollect,
+      requestShutdown: context.requestShutdown,
       settings: context.settings,
       now: context.now,
       startedAt: context.startedAt,

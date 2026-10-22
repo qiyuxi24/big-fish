@@ -110,6 +110,42 @@ window.__ModuleLoader__.load({
         return { ok: true, value: reply.value }
       } catch { return { ok: false } }
     }
+    /** 面板动作（启停 daemon）：与只读快照不同，这里要把 error.message 带回 UI。 */
+    async function callAction(connection, endpoint, payload) {
+      if (connection === null || connection === undefined) return { ok: false, message: '宿主没有连接服务，无法操作 daemon；请在 DSH 桌面端打开面板' }
+      try {
+        const reply = await connection.rpc.call(RPC_CHANNEL, endpoint, payload ?? {})
+        if (reply !== null && typeof reply === 'object' && reply.ok === true) return { ok: true, message: '' }
+        const error = reply !== null && typeof reply === 'object' ? reply.error : undefined
+        const message = error !== null && typeof error === 'object' && typeof error.message === 'string' && error.message !== ''
+          ? error.message
+          : '操作失败（rpc 返回 error 信封）'
+        return { ok: false, message }
+      } catch (error) {
+        return { ok: false, message: error instanceof Error ? error.message : 'rpc 调用失败' }
+      }
+    }
+    /** 进程管理按钮的状态机：停止要点两次（第一次只上膛），避免误触停掉正在跑的队列。 */
+    function useDaemonAction(connection) {
+      const [state, setState] = React.useState({ busy: '', stopArmed: false, notice: null })
+      const run = (endpoint, payload, doneText) => {
+        setState(previous => ({ ...previous, busy: endpoint, stopArmed: false, notice: null }))
+        void callAction(connection, endpoint, payload).then(result => {
+          setState(previous => ({ ...previous, busy: '', notice: result.ok ? { kind: 'ok', text: doneText } : { kind: 'bad', text: result.message } }))
+        })
+      }
+      const start = () => { if (state.busy !== '') return; run('daemon.start', {}, '已请求启动 daemon，等下一次轮询确认在线') }
+      const stop = () => {
+        if (state.busy !== '') return
+        if (!state.stopArmed) {
+          setState(previous => ({ ...previous, stopArmed: true, notice: { kind: 'warn', text: '再点一次「确认停止」才会停 daemon：在飞任务会被中断（任务保持 queued，下次启动后继续）' } }))
+          return
+        }
+        run('daemon.stop', { confirm: true }, 'daemon 已停止；队列暂停执行，面板下一次轮询会转为离线')
+      }
+      const cancelStop = () => { setState(previous => ({ ...previous, stopArmed: false, notice: null })) }
+      return { state, start, stop, cancelStop }
+    }
     /** 从 tasks.list 找最新一条带 batchId 的任务：daemon 没有「批次列表」读端点，只能反查。 */
     function newestBatchId(tasks) {
       if (!Array.isArray(tasks)) return null
@@ -305,16 +341,41 @@ window.__ModuleLoader__.load({
         h('div', { style: S.note }, '下一步（未做）：自有商品搬家（R2）要先拍板范围——只搬自己名下商品才不碰搬运红线；采用前写进 docs/repost-feature-parity.md 并补真机记录。'))
     }
 
-    /** daemon 实时状态：health / 账号就绪 / 队列计数 / 最近批次 / 设置摘要；任一读端点失败只留一行降级。 */
+    /** daemon 实时状态 + 进程管理：health / 账号就绪 / 队列计数 / 最近批次 / 设置摘要 + 启停按钮。 */
     function DaemonView({ connection }) {
       const snapshot = useDaemonSnapshot(connection)
+      // hooks 必须在早退之前调用（React 规则），所以动作状态在 loading 分支也建好。
+      const actions = useDaemonAction(connection)
+      const online = snapshot.phase === 'ok' && snapshot.data !== null
+      const action = actions.state
+      // 进程管理：两个分支都渲染，用户离线时点「启动」、在线时点「停止」。
+      const manage = h('div', { style: S.section, 'data-role': 'daemon-manage' },
+        h('div', { style: S.sectionTitle }, '进程管理（daemon 是常驻后台监听进程）'),
+        h('div', { style: S.sectionHint },
+          'daemon 在后台常驻监听：worker 按固定间隔轮询本地队列，执行发布 / 擦亮 / 探针等任务；面板只是看板，关掉它 daemon 照旧运行。'
+          + '停止后队列不再执行、面板转为离线；下次打开面板宿主会自动拉起，也可以在这里手动启动。'),
+        h('div', { style: S.buttonRow },
+          h('button', {
+            type: 'button', 'data-role': 'daemon-start', disabled: online || action.busy !== '',
+            title: online ? 'daemon 已在线' : '让宿主拉起本地 daemon（跳过 30 秒冷却）',
+            onClick: actions.start, style: !online && action.busy === '' ? S.primary : S.button,
+          }, action.busy === 'daemon.start' ? '正在启动…' : '启动 daemon'),
+          h('button', {
+            type: 'button', 'data-role': 'daemon-stop', disabled: !online || action.busy !== '',
+            title: online ? '停止常驻 daemon（会中断在飞任务）' : 'daemon 未运行',
+            onClick: actions.stop, style: online && action.busy === '' ? S.primary : S.button,
+          }, action.stopArmed ? '确认停止 daemon' : action.busy === 'daemon.stop' ? '正在停止…' : '停止 daemon')),
+        action.notice === null ? null : h('div', {
+          style: action.notice.kind === 'bad' ? S.badText : S.okText, 'data-role': 'daemon-manage-notice',
+        }, action.notice.text))
       if (snapshot.phase === 'loading') return h('div', { style: S.sectionHint, 'data-role': 'daemon-state' }, '正在连接 daemon…')
       const data = snapshot.data
       // 降级时给一句可执行的下一步：宿主会自己拉起 daemon，失败后 30 秒冷却，仍不行再看日志。
       if (snapshot.phase !== 'ok' || data === null) return h('div', { 'data-role': 'daemon-state' },
         h('div', { style: S.badText }, OFFLINE_TEXT),
         h('div', { style: S.sectionHint, 'data-role': 'daemon-hint' },
-          '宿主已尝试自动拉起 daemon（失败后 30 秒冷却；日志在数据目录的 plugin.log / daemon.log）。仍连不上就手动执行 pnpm daemon:start。'))
+          '宿主已尝试自动拉起 daemon（失败后 30 秒冷却；日志在数据目录的 plugin.log / daemon.log）。仍连不上就手动执行 pnpm daemon:start。'),
+        manage)
       const health = data.health ?? {}
       const queue = data.status?.queue ?? {}
       const accounts = Array.isArray(data.accounts) ? data.accounts : []
@@ -327,7 +388,8 @@ window.__ModuleLoader__.load({
         line('daemon-accounts', '账号就绪', String(accounts.length) + ' 个账号 · ' + String(readyCount) + ' 个可写' + (accounts.length === 0 ? '（先导入登录态）' : '')),
         line('daemon-queue', '队列', describeQueue(queue)),
         line('daemon-batch', '最近批次', describeBatch(data.batch)),
-        line('daemon-settings', '设置摘要', describeSettings(data.settings ?? {})))
+        line('daemon-settings', '设置摘要', describeSettings(data.settings ?? {})),
+        manage)
     }
 
     /** 诊断页：daemon 实时状态 + 只读工具与进程命令。 */

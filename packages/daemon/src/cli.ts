@@ -256,10 +256,12 @@ async function runServer(config: DaemonConfig, env: EnvLike, io: CliIo): Promise
   let runtime: DaemonRuntime | undefined
   try {
     const publish = publishOptionsFromEnv(env, config)
+    const shutdown = createShutdownWaiter()
     runtime = await startDaemonRuntime({
       config,
       logger,
       version: await readVersion(),
+      requestShutdown: shutdown.request,
       ...(publish === undefined ? {} : { publish }),
     })
     logger.info('daemon 已启动', {
@@ -268,8 +270,8 @@ async function runServer(config: DaemonConfig, env: EnvLike, io: CliIo): Promise
       pid: process.pid,
       workerOwner: 'daemon-' + String(process.pid),
     })
-    const signal = await waitForShutdownSignal()
-    logger.info('收到退出信号，开始关闭', { signal })
+    const reason = await shutdown.wait
+    logger.info('收到退出请求，开始关闭', { reason })
     await closeQuietly(runtime, logger)
     logger.info('daemon 已停止', {})
     return 0
@@ -297,16 +299,36 @@ async function closeQuietly(daemon: { close(): Promise<void> }, logger: Logger):
   }
 }
 
-function waitForShutdownSignal(): Promise<NodeJS.Signals> {
-  return new Promise<NodeJS.Signals>((resolve) => {
-    const onSignal = (signal: NodeJS.Signals): void => {
-      process.off('SIGINT', onSignal)
-      process.off('SIGTERM', onSignal)
-      resolve(signal)
-    }
-    process.once('SIGINT', onSignal)
-    process.once('SIGTERM', onSignal)
+/** 退出等待器：终端信号或 HTTP POST /shutdown 任一触发都返回原因，供主循环收尾。 */
+export interface ShutdownWaiter {
+  /** 等到第一个退出请求；值是原因（'SIGINT' / 'SIGTERM' / 'HTTP'）。 */
+  wait: Promise<string>
+  /** 触发退出；重复调用只生效一次。 */
+  request(reason?: string): void
+}
+
+export function createShutdownWaiter(): ShutdownWaiter {
+  let settle: (reason: string) => void = () => {}
+  const wait = new Promise<string>((resolve) => {
+    settle = resolve
   })
+  let settled = false
+  function onSigint(): void {
+    request('SIGINT')
+  }
+  function onSigterm(): void {
+    request('SIGTERM')
+  }
+  function request(reason = 'HTTP'): void {
+    if (settled) return
+    settled = true
+    process.off('SIGINT', onSigint)
+    process.off('SIGTERM', onSigterm)
+    settle(reason)
+  }
+  process.on('SIGINT', onSigint)
+  process.on('SIGTERM', onSigterm)
+  return { wait, request }
 }
 
 /** 读本包 package.json 的 version；读不到不影响启动。 */

@@ -402,3 +402,37 @@ test('withDaemonWatch：透传桥的其它字段', () => {
   assert.deepEqual(watched.WRITE_ENDPOINTS, [])
   assert.equal(watched.handle === bridge.handle, false)
 })
+
+test('ensure：冷却期内跳过；面板按钮 force=true 时跳过冷却再试一次', async () => {
+  const clock = fakeClock()
+  let spawns = 0
+  const supervisor = createDaemonSupervisor({
+    daemonUrl: DAEMON_URL,
+    dataDir: DATA_DIR,
+    daemonEntry: '/repo/packages/daemon/src/cli.ts',
+    nodePath: '/usr/bin/node',
+    writeLog: () => {},
+    effects: {
+      health: async () => ({ ok: false }),
+      isFile: () => true,
+      spawn: () => {
+        spawns += 1
+        throw new Error('EPERM')
+      },
+      now: clock.now,
+      sleep: clock.sleep,
+    },
+  })
+  assert.equal((await supervisor.ensure('rpc')).status, 'failed')
+  assert.equal(spawns, 1)
+  // 冷却窗口内：不再重复拉起（避免面板 3 秒轮询把机器刷爆）。
+  const skipped = await supervisor.ensure('rpc')
+  assert.equal(skipped.status, 'skipped')
+  assert.equal(skipped.reason, 'cooldown')
+  assert.equal(spawns, 1)
+  // 人点了「启动」：force 跳过冷却，并记下 forced 原因。
+  const forced = await supervisor.ensure('panel', { force: true })
+  assert.equal(forced.status, 'failed')
+  assert.equal(spawns, 2)
+})
+

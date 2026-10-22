@@ -388,3 +388,58 @@ test('daemon 掉线的失败信封是 NETWORK 码：宿主自动拉起就靠它�
   const other = bridgeWith({ status: validation })
   assertError(await other.bridge.handle('status', {}), 'VALIDATION', /bad payload/)
 })
+
+test('daemon.start：走 supervisor.ensure(force) 跳过冷却，返回拉起结果', async () => {
+  const calls = []
+  const supervisor = {
+    ensure: async (reason, options) => {
+      calls.push({ reason, options })
+      return { status: 'started', message: 'daemon 已拉起', detail: { pid: 4321 } }
+    },
+  }
+  const { bridge } = bridgeWith({}, { supervisor })
+  const result = await bridge.handle('daemon.start', {})
+  assert.deepEqual(result, { ok: true, value: { status: 'started', message: 'daemon 已拉起', detail: { pid: 4321 } } })
+  assert.deepEqual(calls, [{ reason: 'panel', options: { force: true } }])
+})
+
+test('daemon.start 没有 supervisor → UNSUPPORTED（不伪装成启动成功）', async () => {
+  const { bridge } = bridgeWith({})
+  assertError(await bridge.handle('daemon.start', {}), 'UNSUPPORTED', /daemon 管理能力/)
+})
+
+test('daemon.stop 缺 confirm → VALIDATION，且不向 daemon 发任何请求', async () => {
+  const { client, bridge } = bridgeWith({ request: { stopping: true } })
+  assertError(await bridge.handle('daemon.stop', {}), 'VALIDATION', /需要 confirm:true/)
+  assert.equal(client.calls.length, 0)
+})
+
+test('daemon.stop：先探测在线 → POST /shutdown → 轮询到不可达后返回 stopped', async () => {
+  const calls = []
+  let healthCount = 0
+  const request = async (path, init) => {
+    calls.push({ path, method: init?.method ?? 'GET', body: init?.body })
+    if (path === '/shutdown') return { stopping: true }
+    healthCount += 1
+    if (healthCount === 1) return { version: '0.3.0' }
+    throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'NETWORK' })
+  }
+  const { bridge } = bridgeWith({ request })
+  const result = await bridge.handle('daemon.stop', { confirm: true })
+  assert.deepEqual(result, { ok: true, value: { stopped: true, alreadyStopped: false } })
+  assert.deepEqual(calls.map((call) => call.path), ['/health', '/shutdown', '/health'])
+  assert.equal(calls[1].method, 'POST')
+})
+
+test('daemon.stop：daemon 本来就停着 → 幂等成功，不发 /shutdown', async () => {
+  const calls = []
+  const request = async (path) => {
+    calls.push(path)
+    throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'NETWORK' })
+  }
+  const { bridge } = bridgeWith({ request })
+  const result = await bridge.handle('daemon.stop', { confirm: true })
+  assert.deepEqual(result, { ok: true, value: { stopped: true, alreadyStopped: true } })
+  assert.deepEqual(calls, ['/health'])
+})
+

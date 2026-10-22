@@ -182,7 +182,7 @@ export function decideStart(options = {}) {
  * @param {(line: string) => void} [options.log] - 事件日志（默认 console.log JSON）。
  * @param {(level: string, message: string, detail?: object) => void} [options.writeLog] - 文件日志。
  * @param {object} [options.effects] - 测试注入：health/spawn/now/sleep/isFile/readTail。
- * @returns {{ensure: (reason?: string) => Promise<object>, snapshot: () => object, enabled: boolean}} supervisor。
+ * @returns {{ensure: (reason?: string, options?: {force?: boolean}) => Promise<object>, snapshot: () => object, enabled: boolean}} supervisor。
  */
 export function createDaemonSupervisor(options = {}) {
   const enabled = options.enabled !== false
@@ -280,13 +280,16 @@ export function createDaemonSupervisor(options = {}) {
   /**
    * 确保 daemon 在线：单飞 + 冷却；由面板 rpc 拿到 NETWORK 错误时调用。
    *
-   * @param {string} [reason] - 触发原因（health / mount / rpc）。
+   * @param {string} [reason] - 触发原因（health / mount / rpc / panel）。
+   * @param {{force?: boolean}} [options] - force=true 跳过冷却（面板上人点了「启动」）。
    * @returns {Promise<object>} 尝试结果（永不在调用方炸）。
    */
-  async function ensure(reason = 'rpc') {
+  async function ensure(reason = 'rpc', options = {}) {
     if (!enabled) return { status: 'disabled', message: '自动拉起已关闭' }
     if (inFlight !== undefined) return await inFlight
-    const decision = decideStart({ enabled, now: now(), lastAttemptAt, cooldownMs })
+    const decision = options.force === true
+      ? { attempt: true, reason: 'forced' }
+      : decideStart({ enabled, now: now(), lastAttemptAt, cooldownMs })
     if (!decision.attempt) return { status: 'skipped', reason: decision.reason }
     writeLog('info', '收到「daemon 不可达」，开始尝试本地拉起', { reason })
     inFlight = attempt()

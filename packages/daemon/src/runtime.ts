@@ -37,6 +37,7 @@ import { createFetchTransport, createOperationPort } from './operations.ts'
 import type { PublishPortOptions } from './operations.ts'
 import { startDaemon } from './server.ts'
 import type { Daemon } from './server.ts'
+import type { RequestShutdown } from './routes.ts'
 import { createSettingsStore } from './settings.ts'
 import { startWorker } from './worker.ts'
 import type { WorkerHandle } from './worker.ts'
@@ -57,6 +58,8 @@ export interface DaemonRuntimeOptions {
   owner?: string
   /** 是否自动开始 worker 轮询，默认 true；集成测试传 false 手动 tick。 */
   autoStartWorker?: boolean
+  /** 优雅关停回调（POST /shutdown 触发）；cli 注入，测试可不传。 */
+  requestShutdown?: RequestShutdown
   version?: string
 }
 
@@ -175,6 +178,7 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
           return record
         },
         // 采集参考：只读统计，cookie 值不出进程；令牌过期时用回写的凭据库刷新。
+        ...(options.requestShutdown === undefined ? {} : { requestShutdown: options.requestShutdown }),
         referenceCollect: async (input) => {
           const record = await credentials.load(input.accountId)
           if (record === undefined) {

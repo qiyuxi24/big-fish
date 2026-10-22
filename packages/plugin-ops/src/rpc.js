@@ -1,18 +1,18 @@
 /**
  * client ↔ host rpc 桥：面板（client bundle）经宿主通道请求「读数据 / 触发动作」。
- *
  * 为什么要这一层：
  * - client bundle 不能 fetch、不能读文件（AGENTS §4），面板要看实时队列/账号/批次只能经宿主；
  * - 宿主给第三方插件唯一受支持的通道是 \`ctx.connection.rpc.handle(频道, handler)\`，
  *   不能复用 /api（DSH Gateway 已占用，rpc.intercept 会抛错，见 docs/adr/0004）；
  * - 边界在这一层：daemon HTTP 调用、字段白名单、写操作 confirm 全部留在 host，
  *   面板永远拿不到 cookie / token，也拼不出白名单之外的请求。
- *
  * handler 永不抛错：成功 \`{ok:true,value}\`，失败 \`{ok:false,error:{code,message,details?}}\`。
  * 端点白名单与 payload 形状见 docs/adr/0004-client-host-rpc.md（client 侧按同一份契约调用）。
  *
  * @module @bigfish/plugin-ops/rpc
  */
+import { startDaemon, stopDaemon } from './daemon-control.js'
+
 /**
  * 自定义 rpc 频道。不能用 '/api'：DSH Gateway 已把它注册成 interceptor，
  * 再 rpc.intercept('/api') 会直接抛「channel already has an interceptor」。
@@ -38,6 +38,10 @@ const PUBLISH_MIN_INTERVAL_MIN_MS = 30_000
 const PUBLISH_MIN_INTERVAL_MAX_MS = 3_600_000
 const MAX_BATCH_ITEMS_LIMIT = 20
 const LOGIN_TIMEOUT_MAX_MS = 180_000
+/** 停止 daemon 后的存活探测：250ms 一次、最多 10 秒。 */
+const STOP_POLL_INTERVAL_MS = 250
+const STOP_POLL_TIMEOUT_MS = 10_000
+const STOP_HEALTH_TIMEOUT_MS = 800
 /** 扫码登录是长轮询（daemon 等到 180s），HTTP 超时必须比它再宽一点。 */
 const LOGIN_REQUEST_MARGIN_MS = 20_000
 const IMPORT_TIMEOUT_MS = 120_000
@@ -53,7 +57,10 @@ const SETTINGS_FIELDS = new Set([
  */
 const WRITE_ENDPOINTS = new Set([
   'tasks.retry', 'accounts.import', 'accounts.login', 'batch.enqueue', 'settings.put',
+  // 停 daemon 会中断正在执行的任务：和写闲鱼一样要求 confirm:true。
+  'daemon.stop',
 ])
+
 
 /** 字段校验失败：只在 host 内部抛，handle() 会翻译成 VALIDATION 信封。 */
 class RpcPayloadError extends Error {
@@ -336,6 +343,10 @@ function createDefaultHandlers(options) {
     'accounts.import': (body) => importAccountEndpoint(client, body),
     'accounts.login': (body) => loginAccountEndpoint(client, body),
     'batch.enqueue': (body) => enqueueBatchEndpoint(client, body),
+    // 面板「进程管理」按钮：start 让宿主拉起 daemon（跳过冷却，人点了就要试），
+    // stop 是写操作（会打断在飞任务），因此挂在 WRITE_ENDPOINTS 后面等 confirm。
+    'daemon.start': () => startDaemon(options.supervisor),
+    'daemon.stop': () => stopDaemon(client),
   }
 }
 
@@ -354,9 +365,9 @@ function readOverrides(raw) {
 /**
  * 建 rpc 桥。
  *
- * @param {{client: object, settingsStore?: {read?: Function, get?: Function, write?: Function, update?: Function}, endpoints?: Record<string, Function>}} options
+ * @param {{client: object, settingsStore?: {read?: Function, get?: Function, write?: Function, update?: Function}, supervisor?: {ensure(reason?: string, options?: {force?: boolean}): Promise<object>}, endpoints?: Record<string, Function>}} options
  *   client 是 createDaemonClient 的返回值；settingsStore 可选（有它就不走 daemon HTTP）；
- *   endpoints 覆盖默认表（测试/嵌入）。
+ *   supervisor 提供「启动 daemon」能力（面板按钮）；endpoints 覆盖默认表（测试/嵌入）。
  * @returns {{handle: (endpoint: string, payload?: unknown, signal?: AbortSignal) => Promise<{ok: boolean, value?: unknown, error?: {code: string, message: string, details?: object}}>, endpoints: readonly string[], channel: string}}
  */
 export function createRpcBridge(options = {}) {
@@ -364,7 +375,7 @@ export function createRpcBridge(options = {}) {
     throw new TypeError('createRpcBridge 需要 daemon 客户端（client）')
   }
   const handlers = {
-    ...createDefaultHandlers({ client: options.client, settingsStore: options.settingsStore }),
+    ...createDefaultHandlers({ client: options.client, settingsStore: options.settingsStore, supervisor: options.supervisor }),
     ...readOverrides(options.endpoints),
   }
   const endpoints = Object.freeze(Object.keys(handlers))
