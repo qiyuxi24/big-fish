@@ -284,6 +284,19 @@ function daemonReplies() {
       ],
     },
     'batches.get': () => ({ ok: true, value: { batchId: 'batch-new', total: 4, counts: { queued: 1, done: 3, failed: 0 } } }),
+    // 步骤事件流：一个任务、三步（开始/完成/失败），发布步骤的中文文案就是 daemon 的 step 名。
+    'events.list': {
+      ok: true,
+      value: {
+        items: [
+          { id: 1, at: 10, taskId: 'task-a', batchId: 'batch-new', kind: 'task.state', state: 'leased' },
+          { id: 2, at: 11, taskId: 'task-a', batchId: 'batch-new', kind: 'task.step', step: '填标题', message: '开始', state: 'started' },
+          { id: 3, at: 12, taskId: 'task-a', batchId: 'batch-new', kind: 'task.step', step: '填标题', message: '完成', state: 'done' },
+          { id: 4, at: 13, taskId: 'task-a', batchId: 'batch-new', kind: 'task.step', step: '选类目', message: '失败：类目不支持', state: 'failed' },
+        ],
+        nextSince: 4,
+      },
+    },
   }
 }
 
@@ -629,11 +642,13 @@ test('rpc 在线：health / 账号就绪 / 队列计数 / 最近批次 / 设置�
   assert.match(text, /文案风格 warm（亲切安利） · 默认类目 电子资料 · 发布间隔 180 秒/)
   assert.equal(text.includes('未连接后台（daemon 未启动）'), false)
 
-  assert.deepEqual(calls.map((call) => call.endpoint), ['health', 'status', 'accounts', 'settings.get', 'tasks.list', 'batches.get'])
-  assert.deepEqual(calls.map((call) => call.channel), ['/bigfish', '/bigfish', '/bigfish', '/bigfish', '/bigfish', '/bigfish'])
+  // 发布页有两个消费者：daemon 快照（6 个端点）与步骤事件流（events.list，每轮 1 次）。
+  assert.deepEqual(calls.map((call) => call.endpoint), ['health', 'status', 'accounts', 'settings.get', 'tasks.list', 'events.list', 'batches.get'])
+  assert.deepEqual(calls.map((call) => call.channel), ['/bigfish', '/bigfish', '/bigfish', '/bigfish', '/bigfish', '/bigfish', '/bigfish'])
   // 注意：payload 是在 vm 沙箱里造的，跨 realm 对象不能 deepStrictEqual，按字段断言。
   assert.equal(calls[4].payload.limit, 50)
-  assert.equal(calls[5].payload.id, 'batch-new')
+  assert.equal(calls[5].payload.since, 0)
+  assert.equal(calls[6].payload.id, 'batch-new')
 })
 
 test('rpc 返回 error 信封：整块降级成一行，不发批次查询', async () => {
@@ -674,7 +689,8 @@ test('轮询周期 3 秒；卸载时清定时器，之后不再发起 rpc', asyn
   const mounted = mountPanel({ connection })
   await snapshotText(mounted)
 
-  assert.equal(mounted.loaded.clock.size, 1)
+  // 两个定时器：daemon 快照 + 工作流事件流，周期都是 3 秒。
+  assert.equal(mounted.loaded.clock.size, 2)
   assert.equal(mounted.loaded.clock.period, 3000)
   const firstRound = calls.length
   mounted.loaded.clock.advance()
@@ -689,6 +705,66 @@ test('轮询周期 3 秒；卸载时清定时器，之后不再发起 rpc', asyn
   assert.equal(calls.length, afterUnmount)
 })
 
+test('工作流树：事件流按任务聚成「任务 → 步骤」，失败步骤用红字', async () => {
+  const { connection } = createFakeConnection(daemonReplies())
+  const mounted = mountPanel({ connection })
+  const text = await snapshotText(mounted)
+
+  assert.match(text, /工作流（现在在干嘛）/)
+  assert.match(text, /任务 task-a · 批次 batch-new/)
+  assert.match(text, /状态 执行中/)
+  assert.match(text, /填标题 · 开始/)
+  assert.match(text, /填标题 · 完成/)
+  assert.match(text, /选类目 · 失败 · 失败：类目不支持/)
+
+  // 结构断言：一个任务块、三步；失败步骤走 badText（红色）。
+  const tree = mounted.render()
+  const tasks = collectByType(tree, 'div').filter((node) => node.props['data-role'] === 'workflow-task')
+  assert.equal(tasks.length, 1)
+  assert.equal(tasks[0].props['data-task-id'], 'task-a')
+  const steps = collectByType(tree, 'div').filter((node) => node.props['data-role'] === 'workflow-step')
+  assert.deepEqual(steps.map((node) => node.props['data-step-state']), ['started', 'done', 'failed'])
+})
+
+test('工作流树：下一轮带上一次 nextSince 增量拉取，不重复拉旧事件', async () => {
+  const { connection, calls } = createFakeConnection(daemonReplies())
+  const mounted = mountPanel({ connection })
+  await snapshotText(mounted)
+
+  const firstRound = calls.filter((call) => call.endpoint === 'events.list')
+  assert.equal(firstRound.length, 1)
+  assert.equal(firstRound[0].payload.since, 0)
+  assert.equal(firstRound[0].payload.limit, 200)
+
+  mounted.loaded.clock.advance()
+  await settle()
+  const secondRound = calls.filter((call) => call.endpoint === 'events.list')
+  assert.equal(secondRound.length, 2)
+  // 回放里 nextSince=4：下一轮从 4 继续，不重拉 1..4。
+  assert.equal(secondRound[1].payload.since, 4)
+})
+
+test('工作流树降级：events.list 不可用（旧 daemon 没有 /events）时只给提示，不影响 daemon 状态块', async () => {
+  const replies = daemonReplies()
+  delete replies['events.list']
+  const { connection } = createFakeConnection(replies)
+  const mounted = mountPanel({ connection })
+  const text = await snapshotText(mounted)
+
+  assert.match(text, /事件流拉取失败/)
+  assert.match(text, /在线 · v0\.3\.0/)
+  assert.match(text, /最近批次batch-new · 共 4/)
+})
+
+test('工作流树为空：daemon 在线但没有事件，给出「执行任务时才会写」的解释', async () => {
+  const replies = daemonReplies()
+  replies['events.list'] = { ok: true, value: { items: [], nextSince: 0 } }
+  const { connection } = createFakeConnection(replies)
+  const mounted = mountPanel({ connection })
+  const text = await snapshotText(mounted)
+  assert.match(text, /还没有步骤事件/)
+})
+
 test('「诊断」页也显示 daemon 实时状态，与发布页共用同一份快照', async () => {
   const { connection, calls } = createFakeConnection(daemonReplies())
   const mounted = mountPanel({ connection })
@@ -698,8 +774,10 @@ test('「诊断」页也显示 daemon 实时状态，与发布页共用同一份
   assert.match(text, /daemon 实时状态/)
   assert.match(text, /在线 · v0\.3\.0/)
   assert.match(text, /排队 2/)
-  // 切 tab 不重复起轮询：仍然只有一个定时器。
-  assert.equal(mounted.loaded.clock.size, 1)
+  // 切 tab 不重复起轮询：诊断页复用 DaemonView 的同一个 effect（假 React 不卸载未渲染的
+  // 发布页，所以这里仍是 2 个定时器：daemon 快照 + 工作流事件流），不会再多出第三个。
+  assert.equal(mounted.loaded.clock.size, 2)
+  assert.equal(mounted.loaded.clock.period, 3000)
   assert.ok(calls.length >= 5)
 })
 

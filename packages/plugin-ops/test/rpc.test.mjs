@@ -42,6 +42,25 @@ test('tasks.list 参数非法时返回 VALIDATION，且不调 daemon', async () 
   assert.equal(client.calls.length, 0)
 })
 
+test('events.list 透传 since/limit/taskId/batchId，且不转发白名单外字段', async () => {
+  const { client, bridge } = bridgeWith({ listEvents: { items: [], nextSince: 3 } })
+  const result = await bridge.handle('events.list', { since: 3, limit: 200, taskId: 't-1', batchId: 'b_1', evil: true })
+  assert.deepEqual(result, { ok: true, value: { items: [], nextSince: 3 } })
+  assert.deepEqual(client.calls[0].args[0], { since: 3, limit: 200, taskId: 't-1', batchId: 'b_1' })
+  await bridge.handle('events.list')
+  assert.deepEqual(client.calls[1].args[0], {})
+})
+
+test('events.list 参数非法（负数 since / limit 越界 / taskId 形状）→ VALIDATION 且不调 daemon', async () => {
+  const { client, bridge } = bridgeWith({ listEvents: { items: [] } })
+  assertError(await bridge.handle('events.list', { since: -1 }), 'VALIDATION', /since 必须在/)
+  assertError(await bridge.handle('events.list', { limit: 0 }), 'VALIDATION', /limit 必须在/)
+  assertError(await bridge.handle('events.list', { limit: 1001 }), 'VALIDATION', /limit 必须在/)
+  assertError(await bridge.handle('events.list', { taskId: 'bad/id' }), 'VALIDATION', /taskId 格式非法/)
+  assertError(await bridge.handle('events.list', { batchId: 'has space' }), 'VALIDATION', /batchId 格式非法/)
+  assert.equal(client.calls.length, 0)
+})
+
 test('未知 endpoint 返回 UNSUPPORTED，不触发任何 daemon 调用', async () => {
   const { client, bridge } = bridgeWith({ status: { ok: 1 } })
   assertError(await bridge.handle('admin.dropDb', {}), 'UNSUPPORTED', /不支持的 rpc endpoint/)

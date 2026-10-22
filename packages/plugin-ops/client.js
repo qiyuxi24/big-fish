@@ -189,6 +189,65 @@ window.__ModuleLoader__.load({
       }, [connection])
       return snapshot
     }
+    /** 事件流每轮拉多少条：够覆盖一次批量发布，又不至于让单次响应过大。 */
+    const EVENT_PAGE_LIMIT = 200
+    /** 面板只留最近 300 条事件：长开侧边栏时内存不随事件数无限增长。 */
+    const EVENT_BUFFER_LIMIT = 300
+    /** 步骤事件的状态文案（daemon 侧映射：开始/完成/失败…）。 */
+    const STEP_STATE_LABELS = [['started', '开始'], ['done', '完成'], ['failed', '失败']]
+    /**
+     * 增量轮询 GET /events：游标放闭包里（React state 异步，读旧值会重复拉取）；
+     * 连接句柄变了就重建 effect、游标归零重播最近一页。
+     */
+    function useWorkflowEvents(connection) {
+      const [stream, setStream] = React.useState({ phase: 'loading', events: [] })
+      React.useEffect(() => {
+        let alive = true
+        let since = 0
+        const tick = () => {
+          callRead(connection, 'events.list', { since, limit: EVENT_PAGE_LIMIT })
+            .then(reply => {
+              if (!alive) return
+              if (!reply.ok) { setStream(previous => previous.phase === 'offline' ? previous : { ...previous, phase: 'offline' }); return }
+              const value = reply.value ?? {}
+              const items = Array.isArray(value.items) ? value.items : []
+              const nextSince = Number.isInteger(value.nextSince) && value.nextSince >= since ? value.nextSince : since
+              if (items.length === 0 && nextSince === since) {
+                setStream(previous => previous.phase === 'ok' ? previous : { ...previous, phase: 'ok' })
+                return
+              }
+              since = nextSince
+              setStream(previous => ({ phase: 'ok', events: previous.events.concat(items).slice(-EVENT_BUFFER_LIMIT) }))
+            })
+            .catch(() => { if (alive) setStream(previous => previous.phase === 'offline' ? previous : { ...previous, phase: 'offline' }) })
+        }
+        tick()
+        const timer = setInterval(tick, POLL_MS)
+        return () => { alive = false; clearInterval(timer) }
+      }, [connection])
+      return stream
+    }
+    /** 事件 → 「任务 → 步骤」两级结构：任务按首次出现顺序，步骤保持到达顺序。 */
+    function groupEventsByTask(events) {
+      const order = []
+      const byTask = new Map()
+      for (const event of Array.isArray(events) ? events : []) {
+        if (event === null || typeof event !== 'object') continue
+        const taskId = typeof event.taskId === 'string' ? event.taskId : ''
+        if (taskId === '') continue
+        let node = byTask.get(taskId)
+        if (node === undefined) {
+          node = { taskId, batchId: null, state: '', steps: [] }
+          byTask.set(taskId, node)
+          order.push(node)
+        }
+        if (typeof event.batchId === 'string' && event.batchId !== '') node.batchId = event.batchId
+        // 状态只认 task.state 事件；步骤事件里的 started/done 是步骤状态，别把任务状态覆盖成它。
+        if (event.kind === 'task.state' && typeof event.state === 'string' && event.state !== '') node.state = event.state
+        if (event.kind === 'task.step' && typeof event.step === 'string') node.steps.push(event)
+      }
+      return order
+    }
     /** 毫秒 → 人读时长；异常值显示 ?，不让 NaN 进 UI。 */
     function formatUptime(ms) {
       const total = Number(ms)
@@ -392,6 +451,42 @@ window.__ModuleLoader__.load({
         manage)
     }
 
+    /**
+     * 工作流树：把 /events 的增量事件渲染成「任务 → 步骤」，回答「现在在干嘛」。
+     * 只显示最近 6 个任务 × 每个任务最近 6 步：面板是看板不是日志浏览器。
+     */
+    function WorkflowTree({ connection }) {
+      const stream = useWorkflowEvents(connection)
+      const tasks = groupEventsByTask(stream.events).slice(-6).reverse()
+      const hint = stream.phase === 'loading' ? '正在读取步骤事件…'
+        : stream.phase === 'offline' ? '事件流拉取失败（daemon 离线，或旧 daemon 没有 /events）；启动 daemon 后自动恢复'
+          : tasks.length === 0 ? '还没有步骤事件：daemon 执行任务时才会写（发布 / 擦亮 / 探针都会产生）'
+            : '最近 ' + String(tasks.length) + ' 个任务，事件每 3 秒增量追加'
+      const stateLabel = value => {
+        const hit = TASK_STATE_LABELS.find(([state]) => state === value)
+        return hit === undefined ? (value === '' ? '状态未知' : value) : hit[1]
+      }
+      const stepLine = (task, step, index) => {
+        const state = typeof step.state === 'string' ? step.state : ''
+        const hit = STEP_STATE_LABELS.find(([value]) => value === state)
+        const text = String(step.step ?? '?') + ' · ' + (hit === undefined ? stateLabel(state) : hit[1])
+          + (typeof step.message === 'string' && step.message !== '' ? ' · ' + step.message : '')
+        return h('div', {
+          key: task.taskId + '-step-' + String(index), style: S.cmdRow,
+          'data-role': 'workflow-step', 'data-step-state': state,
+        }, h('span', { style: S.cmdLabel }, '步骤'), h('span', { style: state === 'failed' ? S.badText : S.okText }, text))
+      }
+      return h('div', { style: S.section, 'data-role': 'workflow-tree' },
+        h('div', { style: S.sectionTitle }, '工作流（现在在干嘛）'),
+        h('div', { style: S.sectionHint }, hint),
+        ...tasks.map(task => h('div', { key: task.taskId, 'data-role': 'workflow-task', 'data-task-id': task.taskId },
+          h('div', { style: S.cmdRow },
+            h('span', { style: S.cmdLabel },
+              '任务 ' + task.taskId.slice(0, 12) + (task.batchId === null ? '' : ' · 批次 ' + task.batchId)),
+            h('span', { style: S.okText }, '状态 ' + stateLabel(task.state))),
+          ...task.steps.slice(-6).map((step, index) => stepLine(task, step, index)))))
+    }
+
     /** 诊断页：daemon 实时状态 + 只读工具与进程命令。 */
     function DiagnoseTab({ connection }) {
       return h('div', null,
@@ -468,6 +563,7 @@ window.__ModuleLoader__.load({
       return h('div', null,
         h('div', { style: S.sectionHint }, '批量入队 → daemon 串行执行；面板只组参数，不执行写操作'),
         h(DaemonView, { connection }),
+        h(WorkflowTree, { connection }),
         h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '流水线'),
           h('div', { style: S.grid }, ...PIPELINE_STEPS.map(step => h(Card, { key: step.title, title: step.title, value: step.value })))),
         h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '草稿集'),

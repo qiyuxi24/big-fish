@@ -45,6 +45,7 @@ export function createFakeClient(overrides = {}) {
     health: record('health'),
     status: record('status'),
     listTasks: record('listTasks'),
+    listEvents: record('listEvents'),
     enqueue: record('enqueue'),
     taskAction: record('taskAction'),
     request: record('request'),

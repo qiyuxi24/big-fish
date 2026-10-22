@@ -33,7 +33,7 @@ export class DaemonError extends Error {
  * 建客户端。所有方法都返回 data 本体，失败抛 DaemonError。
  *
  * @param {{daemonUrl: string, tokenPath: string, timeoutMs?: number, fetchImpl?: typeof fetch, readFileImpl?: typeof readFile}} options
- * @returns {{request: Function, health: Function, status: Function, listTasks: Function, enqueue: Function, taskAction: Function, listItems: Function, listAccounts: Function, importAccount: Function, collectReferences: Function, daemonUrl: string, tokenPath: string}}
+ * @returns {{request: Function, health: Function, status: Function, listTasks: Function, listEvents: Function, enqueue: Function, taskAction: Function, listItems: Function, listAccounts: Function, importAccount: Function, collectReferences: Function, daemonUrl: string, tokenPath: string}}
  */
 export function createDaemonClient(options) {
   const { daemonUrl, tokenPath, timeoutMs = 15_000 } = options
@@ -114,6 +114,16 @@ export function createDaemonClient(options) {
       if (filter.limit !== undefined) query.set('limit', String(filter.limit))
       const suffix = query.size > 0 ? `?${query.toString()}` : ''
       return request(`/tasks${suffix}`)
+    },
+    // 步骤事件流：since 是排他游标，返回 {items, nextSince}；面板据此增量刷新「现在在干嘛」。
+    listEvents: (filter = {}) => {
+      const query = new URLSearchParams()
+      if (filter.since !== undefined) query.set('since', String(filter.since))
+      if (filter.limit !== undefined) query.set('limit', String(filter.limit))
+      if (filter.taskId) query.set('taskId', String(filter.taskId))
+      if (filter.batchId) query.set('batchId', String(filter.batchId))
+      const suffix = query.size > 0 ? `?${query.toString()}` : ''
+      return request(`/events${suffix}`)
     },
     enqueue: (input) => request('/tasks', { method: 'POST', body: input }),
     getTask: (id) => request(`/tasks/${encodeURIComponent(id)}`),

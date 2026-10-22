@@ -103,6 +103,32 @@ test('importAccount 以 POST /accounts/import 提交，带 Bearer 且 body 透�
   }
 })
 
+test('listEvents 把 since/limit/taskId/batchId 拼成查询串，缺省不带参数', async () => {
+  const seen = []
+  const server = await startStubServer({
+    '/events': { body: { ok: true, data: { items: [], nextSince: 0 } } },
+  })
+  try {
+    const client = createDaemonClient({
+      daemonUrl: server.url,
+      tokenPath: 'x',
+      readFileImpl: readFileOk,
+      fetchImpl: (url, init) => {
+        seen.push(String(url))
+        return fetch(url, init)
+      },
+    })
+    await client.listEvents({ since: 0, limit: 200 })
+    assert.equal(seen[0], server.url + '/events?since=0&limit=200')
+    await client.listEvents({ since: 12, taskId: 't-1', batchId: 'b-1' })
+    assert.equal(seen[1], server.url + '/events?since=12&taskId=t-1&batchId=b-1')
+    await client.listEvents()
+    assert.equal(seen[2], server.url + '/events')
+  } finally {
+    await server.close()
+  }
+})
+
 test('非 JSON 响应 → INTERNAL', async () => {
   const server = await startStubServer({ '/status': { body: '<html>bad gateway</html>' } })
   try {

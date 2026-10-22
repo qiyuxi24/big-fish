@@ -38,6 +38,8 @@ const PUBLISH_MIN_INTERVAL_MIN_MS = 30_000
 const PUBLISH_MIN_INTERVAL_MAX_MS = 3_600_000
 const MAX_BATCH_ITEMS_LIMIT = 20
 const LOGIN_TIMEOUT_MAX_MS = 180_000
+/** GET /events 的 limit 上限，与 daemon 端事件表读取保持一致。 */
+const MAX_EVENTS_LIMIT = 1000
 /** 停止 daemon 后的存活探测：250ms 一次、最多 10 秒。 */
 const STOP_POLL_INTERVAL_MS = 250
 const STOP_POLL_TIMEOUT_MS = 10_000
@@ -133,6 +135,16 @@ function readTaskFilter(body) {
     filter.kind = body.kind
   }
   if (body.limit !== undefined) filter.limit = readIntegerValue(body.limit, 'limit', 1, 200)
+  return filter
+}
+
+/** GET /events 的过滤参数：since 排他游标，limit 上限与 daemon 一致（1000）。 */
+function readEventFilter(body) {
+  const filter = {}
+  if (body.since !== undefined) filter.since = readIntegerValue(body.since, 'since', 0, Number.MAX_SAFE_INTEGER)
+  if (body.limit !== undefined) filter.limit = readIntegerValue(body.limit, 'limit', 1, MAX_EVENTS_LIMIT)
+  if (body.taskId !== undefined) filter.taskId = readRequiredString(body, 'taskId', ID_RE)
+  if (body.batchId !== undefined) filter.batchId = readRequiredString(body, 'batchId', BATCH_ID_RE)
   return filter
 }
 
@@ -335,6 +347,8 @@ function createDefaultHandlers(options) {
     accounts: () => client.listAccounts(),
     'items.list': () => client.listItems(),
     'tasks.list': (body) => client.listTasks(readTaskFilter(body)),
+    // 面板工作流树：只读增量拉取，since 游标由客户端持有（daemon 不记面板状态）。
+    'events.list': (body) => client.listEvents(readEventFilter(body)),
     'tasks.retry': (body) => retryTaskEndpoint(client, readRequiredString(body, 'id', ID_RE)),
     'batches.get': (body) => getBatchEndpoint(client, readRequiredString(body, 'id', ID_RE)),
     'reference.collect': (body) => client.collectReferences(readReferenceInput(body)),
