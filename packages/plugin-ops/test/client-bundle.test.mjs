@@ -20,18 +20,45 @@ function createFakeReact() {
   const stores = new Map()
   const state = { current: null }
   const storeOf = (type) => {
-    if (!stores.has(type)) stores.set(type, { slots: [], index: 0 })
+    if (!stores.has(type)) stores.set(type, { slots: [], index: 0, effects: [], effectIndex: 0 })
     return stores.get(type)
   }
+  const sameDeps = (left, right) => left !== undefined && left.length === right.length
+    && left.every((value, index) => Object.is(value, right[index]))
   return {
     __enter(type) {
       const previous = state.current
       state.current = type
-      storeOf(type).index = 0
+      const store = storeOf(type)
+      store.index = 0
+      store.effectIndex = 0
       return previous
     },
     __exit(previous) {
       state.current = previous
+    },
+    /** 跑一轮挂起的 effect：React 在提交后执行，这里由测试显式触发（只跑 deps 变过的）。 */
+    __flush() {
+      for (const store of stores.values()) {
+        for (const effect of store.effects) {
+          if (!effect.dirty) continue
+          effect.dirty = false
+          if (effect.active && typeof effect.cleanup === 'function') effect.cleanup()
+          const cleanup = effect.fn()
+          effect.cleanup = typeof cleanup === 'function' ? cleanup : null
+          effect.active = true
+        }
+      }
+    },
+    /** 卸载全部组件：执行 cleanup（对应 React 卸载时清定时器）。 */
+    __unmount() {
+      for (const store of stores.values()) {
+        for (const effect of store.effects) {
+          if (effect.active && typeof effect.cleanup === 'function') effect.cleanup()
+          effect.active = false
+          effect.dirty = true
+        }
+      }
     },
     createElement(type, props, ...children) {
       return { type, props: props ?? {}, children }
@@ -47,6 +74,22 @@ function createFakeReact() {
       }
       return [store.slots[index], set]
     },
+    useEffect(fn, deps) {
+      if (state.current === null) throw new Error('useEffect 必须在组件内调用')
+      const store = storeOf(state.current)
+      const index = store.effectIndex
+      store.effectIndex += 1
+      const previous = store.effects[index]
+      if (previous === undefined) {
+        store.effects[index] = { fn, deps, cleanup: null, active: false, dirty: true }
+        return
+      }
+      previous.fn = fn
+      if (!sameDeps(previous.deps, deps)) {
+        previous.deps = deps
+        previous.dirty = true
+      }
+    },
   }
 }
 
@@ -57,6 +100,29 @@ let activeReact = null
 function loadBundle() {
   const registrations = []
   const requested = []
+  const timers = new Map()
+  let seq = 0
+  // 假时钟：client 侧只用 setInterval/clearInterval（3 秒轮询），由测试手动推进。
+  const clock = {
+    setInterval(fn, ms) {
+      seq += 1
+      timers.set(seq, { fn, ms })
+      return seq
+    },
+    clearInterval(id) {
+      timers.delete(id)
+    },
+    get size() {
+      return timers.size
+    },
+    get period() {
+      const first = [...timers.values()][0]
+      return first === undefined ? null : first.ms
+    },
+    advance() {
+      for (const timer of [...timers.values()]) timer.fn()
+    },
+  }
   let react
   const require = (id) => {
     requested.push(id)
@@ -68,8 +134,18 @@ function loadBundle() {
     return react
   }
   const window = { __ModuleLoader__: { load: (registration) => registrations.push(registration) } }
-  vm.runInNewContext(source, { window, console }, { filename: bundlePath })
-  return { registrations, require, requested, get react() { return react } }
+  vm.runInNewContext(source, {
+    window,
+    console,
+    setInterval: clock.setInterval,
+    clearInterval: clock.clearInterval,
+  }, { filename: bundlePath })
+  return { registrations, require, requested, clock, get react() { return react } }
+}
+
+/** 排空微任务：rpc 的 Promise 链在下一轮微任务里落定，不依赖真实定时器。 */
+async function settle() {
+  for (let index = 0; index < 50; index += 1) await Promise.resolve()
 }
 
 /** 调用一个函数组件：把 hook 归属切到该组件，离开时还原。 */
@@ -105,14 +181,15 @@ function collectByType(node, type, out = []) {
   return out
 }
 
-/** 假 ctx：inject 立即执行回调，register 记录定义与组件。 */
-function createFakeCtx() {
+/** 假 ctx：inject 立即执行回调，register 记录定义与组件；connection 由用例注入。 */
+function createFakeCtx(connection) {
   const registered = []
   const injected = []
   return {
     registered,
     injected,
     ctx: {
+      connection,
       slots: {
         inject(slotName, callback) {
           injected.push(slotName)
@@ -131,10 +208,10 @@ function createFakeCtx() {
  * 装好插件并返回面板渲染器。
  * render() 每次重置 hook 游标，模拟 React 的一次重渲染（状态槽保留）。
  */
-function mountPanel() {
+function mountPanel(options = {}) {
   const loaded = loadBundle()
   const exports = loaded.registrations[0].factory(loaded.require)
-  const { ctx, registered } = createFakeCtx()
+  const { ctx, registered } = createFakeCtx(options.connection)
   exports.apply(ctx)
   const Panel = registered[1].component
   /** 渲染一次面板（组件游标归零 = React 的一次重渲染，状态槽保留）。 */
@@ -153,7 +230,61 @@ function mountPanel() {
     tab.props.onClick()
     return render()
   }
-  return { loaded, Panel, render, openTab }
+  const flush = () => loaded.react.__flush()
+  const unmount = () => loaded.react.__unmount()
+  return { loaded, Panel, render, openTab, flush, unmount }
+}
+
+/** 渲染 → 走到子组件 → 跑 effect → 等 rpc 落定 → 再渲染取文本。 */
+async function snapshotText(mounted, tree) {
+  toText(tree ?? mounted.render())
+  mounted.flush()
+  await settle()
+  return toText(mounted.render())
+}
+
+/** 假 connection：记录每次 rpc 调用；按 endpoint 取回放数据（值或函数）。 */
+function createFakeConnection(replies) {
+  const calls = []
+  const connection = {
+    rpc: {
+      call(channel, endpoint, payload) {
+        calls.push({ channel, endpoint, payload })
+        const reply = replies[endpoint]
+        if (reply === undefined) return Promise.resolve({ ok: false, error: { code: 'UNSUPPORTED', message: 'no fixture: ' + endpoint } })
+        return Promise.resolve(typeof reply === 'function' ? reply(payload) : reply)
+      },
+    },
+  }
+  return { connection, calls }
+}
+
+/** daemon 在线时 6 个只读端点的回放数据（形状对齐 src/rpc.js）。 */
+function daemonReplies() {
+  return {
+    health: { ok: true, value: { version: '0.3.0', uptimeMs: 125000, pid: 4242 } },
+    status: {
+      ok: true,
+      value: {
+        version: '0.3.0', uptimeMs: 125000, pid: 4242,
+        queue: { queued: 2, leased: 1, done: 5, failed: 0, needs_review: 1 },
+        accounts: ['2206569289277'], circuits: {},
+      },
+    },
+    accounts: { ok: true, value: [{ accountId: '2206569289277', updatedAt: 1, savedFieldCount: 3, ready: true }] },
+    'settings.get': {
+      ok: true,
+      value: { copyStyle: 'warm', defaultCategory: '电子资料', publishMinIntervalMs: 180000 },
+    },
+    'tasks.list': {
+      ok: true,
+      value: [
+        { id: 't-1', kind: 'publish', dedupeKey: 'k1', payload: {}, state: 'queued', attempts: 0, maxAttempts: 3, availableAt: 0, createdAt: 100, updatedAt: 100, batchId: 'batch-old' },
+        { id: 't-2', kind: 'publish', dedupeKey: 'k2', payload: {}, state: 'done', attempts: 1, maxAttempts: 3, availableAt: 0, createdAt: 200, updatedAt: 200, batchId: 'batch-new' },
+      ],
+    },
+    'batches.get': () => ({ ok: true, value: { batchId: 'batch-new', total: 4, counts: { queued: 1, done: 3, failed: 0 } } }),
+  }
 }
 
 function roleElements(tree, role) {
@@ -174,8 +305,10 @@ test('factory 懒执行：模块体只登记 factory，不提前 require react',
   assert.equal(requested.length, 1)
   assert.equal(requested[0], 'react')
   assert.equal(typeof exports.apply, 'function')
-  assert.equal(exports.inject.length, 1)
+  // 数组来自 vm 沙箱，跨 realm 不能 deepStrictEqual，按槽位断言。
+  assert.equal(exports.inject.length, 2)
   assert.equal(exports.inject[0], 'slots')
+  assert.equal(exports.inject[1], 'connection')
 })
 
 test('apply 只注册侧边栏栏位与主面板，不注册会话顶部 tab', () => {
@@ -483,8 +616,98 @@ test('「采集」模块只读：讲清统计口径与红线，不出现图片�
   assert.equal(text.includes('xy_publish_batch'), false)
 })
 
+test('rpc 在线：health / 账号就绪 / 队列计数 / 最近批次 / 设置摘要渲染到「自动发布」页', async () => {
+  const { connection, calls } = createFakeConnection(daemonReplies())
+  const mounted = mountPanel({ connection })
+  const text = await snapshotText(mounted)
+
+  assert.match(text, /daemon 实时状态（每 3 秒轮询）/)
+  assert.match(text, /在线 · v0\.3\.0 · 已运行 2 分钟/)
+  assert.match(text, /1 个账号 · 1 个可写/)
+  assert.match(text, /排队 2 · 执行中 1 · 完成 5 · 失败 0 · 待审 1/)
+  assert.match(text, /batch-new · 共 4 · 排队 1 · 完成 3/)
+  assert.match(text, /文案风格 warm（亲切安利） · 默认类目 电子资料 · 发布间隔 180 秒/)
+  assert.equal(text.includes('未连接后台（daemon 未启动）'), false)
+
+  assert.deepEqual(calls.map((call) => call.endpoint), ['health', 'status', 'accounts', 'settings.get', 'tasks.list', 'batches.get'])
+  assert.deepEqual(calls.map((call) => call.channel), ['/bigfish', '/bigfish', '/bigfish', '/bigfish', '/bigfish', '/bigfish'])
+  // 注意：payload 是在 vm 沙箱里造的，跨 realm 对象不能 deepStrictEqual，按字段断言。
+  assert.equal(calls[4].payload.limit, 50)
+  assert.equal(calls[5].payload.id, 'batch-new')
+})
+
+test('rpc 返回 error 信封：整块降级成一行，不发批次查询', async () => {
+  const replies = daemonReplies()
+  replies.status = { ok: false, error: { code: 'INTERNAL', message: 'boom' } }
+  const { connection, calls } = createFakeConnection(replies)
+  const mounted = mountPanel({ connection })
+  const text = await snapshotText(mounted)
+
+  assert.match(text, /未连接后台（daemon 未启动）/)
+  assert.equal(text.includes('daemon 实时状态'), false)
+  assert.equal(calls.some((call) => call.endpoint === 'batches.get'), false)
+})
+
+test('rpc 抛异常（同步 throw / reject）也不冒泡，只降级成一行', async () => {
+  const syncThrow = daemonReplies()
+  syncThrow.health = () => { throw new Error('transport down') }
+  const first = mountPanel({ connection: createFakeConnection(syncThrow).connection })
+  const firstText = await snapshotText(first)
+  assert.match(firstText, /未连接后台（daemon 未启动）/)
+
+  const rejected = daemonReplies()
+  rejected.accounts = () => Promise.reject(new Error('rpc timeout'))
+  const second = mountPanel({ connection: createFakeConnection(rejected).connection })
+  const secondText = await snapshotText(second)
+  assert.match(secondText, /未连接后台（daemon 未启动）/)
+  assert.equal(secondText.includes('在线 ·'), false)
+})
+
+test('宿主没有 connection 服务：渲染不抛错，同样显示降级文案', async () => {
+  const mounted = mountPanel()
+  const text = await snapshotText(mounted)
+  assert.match(text, /未连接后台（daemon 未启动）/)
+})
+
+test('轮询周期 3 秒；卸载时清定时器，之后不再发起 rpc', async () => {
+  const { connection, calls } = createFakeConnection(daemonReplies())
+  const mounted = mountPanel({ connection })
+  await snapshotText(mounted)
+
+  assert.equal(mounted.loaded.clock.size, 1)
+  assert.equal(mounted.loaded.clock.period, 3000)
+  const firstRound = calls.length
+  mounted.loaded.clock.advance()
+  await settle()
+  assert.ok(calls.length > firstRound)
+
+  mounted.unmount()
+  assert.equal(mounted.loaded.clock.size, 0)
+  const afterUnmount = calls.length
+  mounted.loaded.clock.advance()
+  await settle()
+  assert.equal(calls.length, afterUnmount)
+})
+
+test('「诊断」页也显示 daemon 实时状态，与发布页共用同一份快照', async () => {
+  const { connection, calls } = createFakeConnection(daemonReplies())
+  const mounted = mountPanel({ connection })
+  const tree = mounted.openTab('诊断')
+  const text = await snapshotText(mounted, tree)
+
+  assert.match(text, /daemon 实时状态/)
+  assert.match(text, /在线 · v0\.3\.0/)
+  assert.match(text, /排队 2/)
+  // 切 tab 不重复起轮询：仍然只有一个定时器。
+  assert.equal(mounted.loaded.clock.size, 1)
+  assert.ok(calls.length >= 5)
+})
+
 test('bundle 不写死 daemon 地址以外的环境值，也不访问 document/localStorage/fetch', () => {
   assert.equal(source.includes('localStorage'), false)
   assert.equal(source.includes('document.'), false)
   assert.equal(source.includes('fetch('), false)
+  // 只读状态必须走 host rpc，且 channel 固定为 /bigfish。
+  assert.ok(source.includes("RPC_CHANNEL = '/bigfish'"))
+  assert.ok(source.includes('connection.rpc.call'))
 })

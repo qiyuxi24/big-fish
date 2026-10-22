@@ -1,7 +1,9 @@
 # Client 插件与侧边栏栏位（P0.5）
 
 本文件记录「在 DSH Web GUI 侧边栏注册 big fish 栏位」的完整机制、调试方法与实测坑。
-代码只有一处：`packages/plugin-ops/client.js`（手写 loader bundle、约 580 行、零依赖、无构建；四模块面板都在这一个 bundle 里，行数上限放宽到 700）。
+代码只有一处：`packages/plugin-ops/client.js`（手写 loader bundle、518 行、零依赖、无构建；四模块面板都在这一个 bundle 里，
+行数上限放宽到 700，本轮任务口径收紧到 520）。面板里的 daemon 状态是**真实数据**：走
+`ctx.connection.rpc.call('/bigfish', endpoint)` 每 3 秒轮询只读端点（见 §1.1）。
 
 ## 1. 机制（源码核实，DSH 0.1.5-rc.2）
 
@@ -27,7 +29,7 @@ window.__ModuleLoader__.load({
   factory: (require) => {             // materialization 时执行一次
     const react = require('react')
     // ...
-    return { apply, inject: ['slots'] }
+    return { apply, inject: ['slots', 'connection'] }
   },
 })
 ```
@@ -60,7 +62,7 @@ window.__ModuleLoader__.load({
 | 事实 | 取值 |
 | --- | --- |
 | 模块清单 | `client.js` 的 `PANEL_TABS`：`publish-batch`（自动发布，默认）/ `account`（账号）/ `copy`（文案）/ `reference`（采集）/ `overview`（概览）/ `diagnose`（诊断） |
-| 分发 | `PanelBody({ tab, copyProps })` 按 `tab` 返回对应模块组件；模块组件只返回 section 列表，**不自带页头**（页头 + tab 栏在 `BigFishPanel` 骨架里） |
+| 分发 | `PanelBody({ tab, copyProps, connection })` 按 `tab` 返回对应模块组件；模块组件只返回 section 列表，**不自带页头**（页头 + tab 栏在 `BigFishPanel` 骨架里） |
 | 注册项 | **只有** `sidebar.panellist`（id `bigfish`、order 30、label `BigFish 闲鱼运营`）与 `main`（key `bigfish`）。单测断言 `registered.length === 2` 且**没有** `conversation.view` |
 | 加模块 | `PANEL_TABS` 追加一项 + `PanelBody` 补一行分支 |
 | 「采集」分区（第 4 个 tab） | 只读统计入口：填 `itemIds` / `sellerId` 生成 `xy_reference_collect` 参数 JSON，展示价格带 / 标题长度 / 类目分布 / 高频卖点词 / 图片数 / 商家量级字段说明 + 三条红线（不下载他人图片、不照抄文案、不跨账号复制）。纯 UI：不联网、不调工具、不产出可发布草稿 |
@@ -70,6 +72,31 @@ window.__ModuleLoader__.load({
 `id` 必填、`label: string | (() => string)`），tab 条只在「非 blank 会话 + `main` 选中 `conversation` + `tabs.length > 1`」
 时渲染——点侧边栏 BigFish 栏位，`main` 换成 `bigfish`，tab 条连同会话一起离开 DOM。也就是说我们的模块 tab
 **天然和「面板」互斥**，用户点到侧边栏入口后反而看不见它们。所以按用户要求收回到面板内部。
+
+### 1.1 实时状态：client → host rpc（只读轮询）
+
+面板不再只放静态说明：「自动发布」与「诊断」两个分区顶部都渲染 `DaemonView`，数据来自
+
+```js
+ctx.connection.rpc.call('/bigfish', '<endpoint>', payload) // → { ok: true, value } | { ok: false, error }
+```
+
+| 端点 | payload | 面板用途 |
+| --- | --- | --- |
+| `health` | `{}` | 版本、已运行时长 |
+| `status` | `{}` | 队列各状态计数（queued/leased/done/failed/needs_review） |
+| `accounts` | `{}` | 账号数、可写账号数（`ready === true`） |
+| `settings.get` | `{}` | copyStyle / defaultCategory / publishMinIntervalMs |
+| `tasks.list` | `{ limit: 50 }` | 反查最新一轮批次的 `batchId`（daemon 没有批次列表端点） |
+| `batches.get` | `{ id: <batchId> }` | 最近批次的 total 与非零 counts；失败只丢这一行，不拖垮主状态 |
+
+- 5 个必需端点任一失败（`{ok:false}` / 抛异常 / 传输层 reject / 宿主没有 `connection` 服务）→ 整块降级为
+  一行 `未连接后台（daemon 未启动）`，**不抛错、不 console.error**。
+- 轮询：`POLL_MS = 3000`，`useEffect` 里 `setInterval`，cleanup 里 `alive = false` + `clearInterval`；
+  依赖只有 `connection`（宿主句柄稳定，切 tab 不重复起定时器）。
+- 写类端点（`tasks.retry` / `accounts.import` / `accounts.login` / `batch.enqueue` / `settings.put`）**本轮不消费**：
+  它们要求 `confirm: true` 且需要二次确认 UI，按钮留到下一轮。
+
 ## 2. 调试（一条命令）
 
 ```sh
@@ -134,14 +161,15 @@ node scripts/dsh-dev.mjs --stop    # 停实例
    `--dump-config` 不触发 heal，仍可用来核对装配。
 ## 4. 测试
 
-`packages/plugin-ops/test/client-bundle.test.mjs`（17 条）：用 `vm.runInNewContext` 跑 client.js，
+`packages/plugin-ops/test/client-bundle.test.mjs`（23 条）：用 `vm.runInNewContext` 跑 client.js，
 stub `window.__ModuleLoader__.load` 捕获注册、假 `react`（`useState` **按组件身份分槽**：`__enter(type)` / `__exit(prev)`
-切换当前组件，父子组件不会串位）、假 `ctx.slots`，断言：
+切换当前组件，父子组件不会串位；`useEffect` 只登记，由 `__flush()` 执行、`__unmount()` 跑 cleanup），
+假 `setInterval/clearInterval` 时钟（可 `advance()`、可查 `size`/`period`），假 `ctx.slots` 与假 `connection.rpc`，断言：
 
 - loader id 与包名一致（`@bigfish/plugin-ops`）；
 - factory 懒执行：加载 bundle 时**不**调 `require`，apply 时才 require `react`；
-- `apply` 通过 `inject` 只注册两项：`sidebar.panellist`（id `bigfish` / order 30 / label `BigFish 闲鱼运营`）与
-  `main`（key `bigfish`），并断言**没有** `conversation.view` 注册；
+- `inject` 恰好 `['slots', 'connection']`；`apply` 通过 `inject` 只注册两项：`sidebar.panellist`
+  （id `bigfish` / order 30 / label `BigFish 闲鱼运营`）与 `main`（key `bigfish`），并断言**没有** `conversation.view` 注册；
 - 账号模块只读（`openTab('账号')`）：文案含登录态来源、`npm run daemon:login`、`xy_accounts_list` / `xy_import_account`，
   且不含任何 cookie 值（`cookie=` / `unb=\d` / `_m_h5_tk=`）；
 - 图标 `🐟`、active=true 时 opacity 1、否则 0.72、size 下限 12；
@@ -156,18 +184,30 @@ stub `window.__ModuleLoader__.load` 捕获注册、假 `react`（`useState` **�
 - 草稿集逐行解析：内联 JSON 合法 / JSON 坏 / 缺 `images` / `.json` 路径 / 非法行，逐行给 `data-ok` 与提示；
 - 至少 2 条合法草稿才启用「生成批量发布请求」：禁用时用 title 说明原因；产出 `xy_publish_batch` 参数
   JSON（`mode` dry-run/enqueue、`draftPaths`/`drafts`、可选 `accountId`），任何输入变化都会撤销旧 JSON；
-- bundle 里没有 `localStorage`、`document.`、`fetch(`（client 只能通过 ctx 拿能力，不直接摸 DOM/网络）。
+- **rpc 在线**：假 connection 回放 6 个只读端点 → 面板出现 `在线 · v0.3.0 · 已运行 2 分钟`、`1 个账号 · 1 个可写`、
+  队列五态计数、`batch-new · 共 4 …`、`文案风格 warm（亲切安利） · 默认类目 电子资料 · 发布间隔 180 秒`；
+  并断言调用顺序 `health/status/accounts/settings.get/tasks.list/batches.get`、channel `/bigfish`、
+  `tasks.list` payload `{limit:50}`、`batches.get` payload `{id:'batch-new'}`（跨 realm 按字段断）；
+- **降级三条路**：error 信封（`status` 返 `{ok:false}`，且不再发 `batches.get`）、rpc 同步 throw / Promise reject、
+  宿主没有 `connection` 服务 → 都只出现一行 `未连接后台（daemon 未启动）`，渲染不抛错；
+- **轮询生命周期**：`clock.period === 3000`、同时只有一个定时器；`__unmount()` 后 `clock.size === 0`，
+  推进时钟不再新增 rpc 调用；
+- 「诊断」页同样显示实时状态，切 tab 不重复起轮询；
+- bundle 里没有 `localStorage`、`document.`、`fetch(`，且确实出现 `RPC_CHANNEL = '/bigfish'` 与 `connection.rpc.call`
+  （client 只能通过 ctx 拿能力，不直接摸 DOM/网络）。
 
 ## 5. 未做（P1 再评估）
 
-- 面板还没接真实数据：现在只是占位 UI，实时状态让模型调 `xy_status` / `xy_tasks_list`。
+- 写类端点没接：面板能看（health / 账号就绪 / 队列计数 / 最近批次 / settings 摘要），但**不能点**——
+  `tasks.retry` / `accounts.import` / `accounts.login` / `batch.enqueue` / `settings.put` 都要求 `confirm:true`，
+  需要二次确认 UI 与按钮态设计，留到下一轮；在那之前写操作入口仍在 agent 工具审批里。
 - 文案风格区只到「可交互组请求」：选风格 → 填商品名/价格/成色 → 产出 `xy_copy_plan` 参数 JSON；**真正的文案生成在 agent 侧**（面板不联网、不调模型），谁执行与面板解耦。
 - 没有服务端推送（SSE/WebSocket）到 client：P1 要展示队列进度时需要一条 daemon → 插件 → client 的通道。
 - 没有 `settings` 卡片（daemonUrl / tokenPath 现在只能写 `cordis.patch.yml`）。
 - 「账号」模块是只读面板：讲清登录态来源（导入 / 扫码 / 加密落盘）与两个工具入口，不读凭据、不联网；
-  面板内直接点「导入 / 扫码」需要 client→host 的 rpc 通道（灰区，采用前写 ADR）。
-- 「自动发布」模块只到「生成 `xy_publish_batch` 参数 JSON」：批量入队/发布由 agent 调工具或 CLI 执行，
-  面板不联网、不调 daemon（执行与 UI 解耦）。
+  面板内直接点「导入 / 扫码」需要把写类 rpc（`accounts.import` / `accounts.login`）接上二次确认 UI（通道已有，ADR 0004）。
+- 「自动发布」模块 = 实时 daemon 状态（只读轮询）+「生成 `xy_publish_batch` 参数 JSON」；批量入队/发布由 agent 调工具或 CLI 执行，
+  面板发起写操作留到下一轮（执行与 UI 解耦）。
 - 「采集」模块只到「生成 `xy_reference_collect` 参数 JSON」：真正采集由 agent 调工具（daemon `POST /reference`），
   面板不联网；真机只跑过单件 itemIds 路径，sellerId / 多件 / 面板点击调工具都没验证。
 - `scripts/dsh-shot.mjs` 还没有「点开自动发布 tab → 断言面板文案」的用例：本沙箱起不了浏览器
