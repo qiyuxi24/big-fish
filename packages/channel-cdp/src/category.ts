@@ -15,6 +15,9 @@
  *   不能等动画/可见性；
  * - 页面会按图片/文案用 AI 识别类目并覆盖下拉值，所以选完必须回读：连续两次读到目标值才算成功，
  *   不一致就重开下拉重选（有限次），仍不一致才 fail-closed；网页端不支持的类目直接失败。
+ * - 「分类」下拉**不是全量类目树**：候选来自 AI 识别推荐（mtop.taobao.idle.kgraph.property.recommend，
+ *   入参带标题/描述/图片，一次约 10 个），不能搜索、不能手输。所以草稿的 category 必须落在候选里；
+ *   推荐是异步刷新的，暂时看不到时关掉下拉等一会儿再重开（见 REFRESH_WAIT_MS），等不到才 fail-closed。
  *
  * 页面脚本与返回值窄化放在 category-page.ts，本文件只写流程与决策。
  * @module @bigfish/channel-cdp/category
@@ -25,6 +28,7 @@ import {
   CATEGORY_LABEL,
   categoryOptionScript,
   categoryOptionTextsScript,
+  categoryRevealOptionScript,
   categoryScrollScript,
   categoryStateScript,
   categoryValueScript,
@@ -34,7 +38,7 @@ import {
   readTextList,
 } from './category-page.ts'
 import { readFormFieldText } from './form.ts'
-import type { CategoryOptionProbe, CategorySelectState } from './category-page.ts'
+import type { CategoryOptionProbe, CategorySelectState, OptionMiss } from './category-page.ts'
 import type { DomPage } from './dom.ts'
 import type { PublishContext } from './steps.ts'
 
@@ -53,6 +57,8 @@ const OPEN_WAIT_MS = 8_000
 const OPTION_WAIT_MS = 3_000
 const CONFIRM_MS = 1_200
 const POLL_MS = 300
+/** 两次尝试之间给「AI 推荐重新算一遍」留的时间；推荐接口是异步的，立刻重开会拿到旧候选。 */
+const REFRESH_WAIT_MS = 700
 /** 点选尝试次数上限：AI 识别可能在点击后把值改回去，重开下拉再选即可，但不能无限重试。 */
 const PICK_ATTEMPTS = 3
 
@@ -174,6 +180,35 @@ async function waitCategoryOptionPoint(page: DomPage, want: string, timeoutMs: n
 }
 
 /**
+ * 把目标选项滚进下拉自己的可视区（rc-virtual-list 只给可视范围内的选项坐标）。
+ * 只改下拉内部 holder 的 scrollTop：页面不滚，antd 不会重排下拉。
+ */
+async function revealCategoryOption(page: DomPage, want: string): Promise<boolean> {
+  const result = await page.evaluate<unknown>(categoryRevealOptionScript(want)).catch(() => undefined)
+  if (result !== 'ok') return false
+  await delay(POLL_MS)
+  return true
+}
+
+/**
+ * 关掉分类下拉，为「重开拿到新候选」做准备。
+ * 先按 Escape（antd Select 的默认关闭键），没关掉再点一次触发器（点击已展开的 Select 会收起）。
+ */
+async function closeCategorySelect(page: DomPage): Promise<void> {
+  const state = await readCategorySelectState(page).catch(() => undefined)
+  if (state === undefined || !state.open) return
+  const key = { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 }
+  await page.command('Input.dispatchKeyEvent', { type: 'keyDown', ...key })
+  await page.command('Input.dispatchKeyEvent', { type: 'keyUp', ...key })
+  await delay(POLL_MS)
+  const after = await readCategorySelectState(page).catch(() => undefined)
+  if (after !== undefined && after.open) {
+    await trustedClickAt(page, after.point)
+    await delay(POLL_MS)
+  }
+}
+
+/**
  * 点击后等回读落定：连续两次读到目标值才算选中。
  * 单次读不够——页面 AI 识别可能在点击后的一小段时间内把值改回去。
  */
@@ -194,24 +229,41 @@ async function waitCategoryPicked(page: DomPage, category: string, timeoutMs: nu
   }
 }
 
-/** 打开下拉 → 点目标选项 → 回读确认；回读不一致时重开重选，最多 PICK_ATTEMPTS 次。 */
+/** 打开下拉 → 点目标选项 → 回读确认；回读不一致或暂时没候选时重开重选，最多 PICK_ATTEMPTS 次。 */
 async function pickCategoryOption(page: DomPage, category: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs
   let seen: string[] = []
   let picked = ''
+  let miss: OptionMiss | undefined
   for (let attempt = 1; attempt <= PICK_ATTEMPTS; attempt += 1) {
     await openCategorySelect(page, timeoutMs)
-    const probe = await waitCategoryOptionPoint(page, category, Math.min(timeoutMs, OPTION_WAIT_MS))
+    let probe = await waitCategoryOptionPoint(page, category, Math.min(timeoutMs, OPTION_WAIT_MS))
     if (probe.options.length > 0) seen = probe.options
+    if (probe.point === undefined && probe.miss === 'off-screen') {
+      /* 候选多于下拉可视行数时末几项没有可用坐标：只滚下拉内部 holder，不动页面 */
+      if (await revealCategoryOption(page, category)) {
+        probe = await readCategoryOptionPoint(page, category)
+        if (probe.options.length > 0) seen = probe.options
+      }
+    }
     if (probe.point === undefined) {
-      await delay(POLL_MS)
+      miss = probe.miss
+      /* 候选由 AI 推荐接口算出来（随图片/文案刷新，异步）：关掉下拉等一会儿再重开，
+         目标类目可能只是还没被推荐出来，不能一次没看到就判死 */
+      if (attempt < PICK_ATTEMPTS) {
+        await closeCategorySelect(page)
+        /* 等待时间受步骤总预算约束：预算不够就立刻重试，不把整个步骤拖超时 */
+        await delay(Math.min(REFRESH_WAIT_MS * attempt, Math.max(0, deadline - Date.now())))
+      }
       continue
     }
+    miss = undefined
     await trustedClickAt(page, probe.point)
     picked = await waitCategoryPicked(page, category, timeoutMs)
     if (picked === category) return
   }
   if (picked !== '') throw mismatchError(category, picked)
-  throw missingOptionError(category, seen)
+  throw missingOptionError(category, seen, miss)
 }
 
 /** 回读值仍不是目标：fail-closed，宁可不发布也不发到错误类目。 */
@@ -222,14 +274,22 @@ function mismatchError(category: string, picked: string): XianyuError {
   })
 }
 
-/** 下拉里根本没有该选项：把候选带进报错，方便判断是选错页还是页面结构变了。 */
-function missingOptionError(category: string, seen: string[]): XianyuError {
+/**
+ * 下拉里没有该选项：把候选和平台约束带进报错，方便人工改草稿而不是反复重试。
+ * 事实：PC 发布页的「分类」不是全量类目树，只是 AI 识别的推荐（mtop.taobao.idle.kgraph.property.recommend，
+ * 入参含标题/描述/图片），一次约 10 个候选，不能搜索、不能手输。
+ */
+function missingOptionError(category: string, seen: string[], miss?: OptionMiss): XianyuError {
+  const hint =
+    miss === 'not-open'
+      ? '（下拉没打开，可能点选时机问题）'
+      : '（闲鱼 PC 发布页的分类只能从 AI 推荐里选：推荐由图片和文案决定，一次约 10 个候选，不能搜索或手输）'
   return new XianyuError({
     code: 'VALIDATION',
     message:
-      '分类下拉里没有「' + category + '」这个选项（页面当前候选：' +
-      (seen.length === 0 ? '空，下拉可能没打开' : seen.slice(0, 12).join('、')) +
-      '）',
+      '分类下拉里没有「' + category + '」这个选项' + hint + '；页面当前候选' +
+      (seen.length === 0 ? '为空' : '：' + seen.slice(0, 12).join('、')) +
+      '。可改用候选里的类目，或把品类关键词写进标题/描述后重试（推荐会随文案刷新），或显式指定「其他闲置」兜底',
   })
 }
 

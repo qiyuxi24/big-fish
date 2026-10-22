@@ -47,9 +47,16 @@ class FakeSelectPage implements DomPage {
   /** 固定回读值（不消费序列；模拟「点了但值没变」）。 */
   valueAfterClick: string | undefined
   scrollCalls = 0
+  /** 下拉内部 holder 被滚动的次数（候选在可视区外时应先滚它，而不是滚页面）。 */
+  revealCalls = 0
+  /** 存在但没有可用坐标的候选（模拟 rc-virtual-list 可视区外的末几项）。 */
+  offScreenOptions: string[] = []
+  /** 每次打开下拉时替换的候选组（模拟 AI 推荐随文案刷新；用完保持最后一组）。 */
+  optionsByOpen: string[][] = []
   /** 下拉没打开时按到选项坐标的次数（应为 0：宁可不点也不能乱点）。 */
   strayOptionClicks = 0
   private pendingPick = ''
+  private openCount = 0
 
   async evaluate<T = unknown>(expression: string): Promise<T> {
     if (expression.includes('innerText')) return this.bodyText as T
@@ -72,6 +79,17 @@ class FakeSelectPage implements DomPage {
       assert.ok(expression.includes('ant-select-dropdown-hidden'), '候选查询必须排除已关闭的下拉')
       return (this.dropdownOpen ? [...this.visibleOptions] : []) as T
     }
+    if (expression.includes('bf-category-reveal')) {
+      const matched = /optionText\(el\) === "([^"]*)"/.exec(expression)
+      const want = matched?.[1] ?? ''
+      assert.ok(expression.includes('scrollTop'), '滚选项必须只改下拉内部 holder 的 scrollTop')
+      assert.equal(expression.includes('scrollIntoView('), false, '滚选项不能滚动页面（会重排下拉）')
+      if (!this.dropdownOpen) return 'not-open' as T
+      if (!this.visibleOptions.includes(want)) return 'no-option' as T
+      this.revealCalls += 1
+      this.offScreenOptions = this.offScreenOptions.filter((text) => text !== want)
+      return 'ok' as T
+    }
     if (expression.includes('bf-category-option-rect')) {
       const matched = /optionText\(el\) === "([^"]*)"/.exec(expression)
       const want = matched?.[1] ?? ''
@@ -83,6 +101,9 @@ class FakeSelectPage implements DomPage {
       const options = [...this.visibleOptions]
       if (!this.visibleOptions.includes(want)) {
         return JSON.stringify({ miss: 'no-option', options }) as T
+      }
+      if (this.offScreenOptions.includes(want)) {
+        return JSON.stringify({ miss: 'off-screen', options }) as T
       }
       this.pendingPick = want
       return JSON.stringify({ x: OPTION_POINT.x, y: OPTION_POINT.y }) as T
@@ -96,12 +117,24 @@ class FakeSelectPage implements DomPage {
 
   async command<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     this.commands.push({ method, params })
+    if (method === 'Input.dispatchKeyEvent') {
+      // antd Select 收到 Escape 会收起下拉
+      if (params['type'] === 'keyDown' && params['key'] === 'Escape') this.dropdownOpen = false
+      return {} as T
+    }
     if (method !== 'Input.dispatchMouseEvent') return {} as T
     const point = { x: Number(params['x'] ?? 0), y: Number(params['y'] ?? 0) }
     const at = (target: { x: number; y: number }): boolean => target.x === point.x && target.y === point.y
     if (params['type'] !== 'mousePressed') return {} as T
     if (at(TRIGGER_POINT)) {
-      if (this.opensOnClick) this.dropdownOpen = true
+      if (this.opensOnClick) {
+        this.dropdownOpen = true
+        this.openCount += 1
+        if (this.optionsByOpen.length > 0) {
+          const index = Math.min(this.openCount - 1, this.optionsByOpen.length - 1)
+          this.visibleOptions = [...(this.optionsByOpen[index] ?? this.visibleOptions)]
+        }
+      }
       return {} as T
     }
     if (!at(OPTION_POINT)) return {} as T
@@ -282,6 +315,27 @@ test('stepSelectCategory：下拉里没有目标类目时报出候选列表', as
       return true
     },
   )
+})
+
+test('stepSelectCategory：选项在可视区外时先滚下拉内部 holder 再点', async () => {
+  const page = new FakeSelectPage()
+  page.value = '教材教辅'
+  page.visibleOptions = ['电子资料', '学习笔记', '其他闲置']
+  page.offScreenOptions = ['其他闲置']
+  await stepSelectCategory(page, makeCtx([]), '其他闲置', { timeoutMs: 800 })
+  assert.equal(page.value, '其他闲置')
+  assert.equal(page.revealCalls, 1)
+  assert.equal(page.scrollCalls, 0, '不应滚主页面')
+})
+
+test('stepSelectCategory：候选是异步推荐，刷新后出现目标类目则选中', async () => {
+  const page = new FakeSelectPage()
+  page.value = '教材教辅'
+  page.optionsByOpen = [['教材教辅', '文学/小说'], ['电子资料', '学习笔记', '教材教辅']]
+  const logs: string[] = []
+  await stepSelectCategory(page, makeCtx(logs), '学习笔记', { timeoutMs: 5_000 })
+  assert.equal(page.value, '学习笔记')
+  assert.equal(pressCount(page, TRIGGER_POINT) >= 2, true, '应关掉下拉重开以拿到新候选')
 })
 
 test('stepSelectCategory：触发器找不到时给出结构变化提示', async () => {

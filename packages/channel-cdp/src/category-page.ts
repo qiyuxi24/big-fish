@@ -154,6 +154,34 @@ ${PAGE_CATEGORY_DROPDOWN}
 })()`
 }
 
+/**
+ * 把目标选项滚进下拉自己的可视区（只改下拉内部 holder 的 scrollTop，不动页面）。
+ *
+ * 为什么不用 scrollIntoView：真机实测它把主页面滚了 65px，antd 跟着重排下拉，随后的可信点击落空。
+ * 为什么需要它：下拉是 rc-virtual-list，只有可视区内的选项才有可用坐标；候选多于 8 项时
+ * 末几项（实测第 9/10 项）在可视区外，不滚就点会落空。
+ */
+export function categoryRevealOptionScript(want: string): string {
+  return `(function () {
+  /* bf-category-reveal */
+${PAGE_FIND_CATEGORY_ITEM}
+${PAGE_CATEGORY_DROPDOWN}
+  const item = findCategoryItem();
+  if (item === null) return "not-open";
+  const drop = resolveDrop(item);
+  if (drop === null) return "not-open";
+  const hit = Array.from(drop.querySelectorAll(${jsQuote(CATEGORY_OPTION)}))
+    .find(function (el) { return optionText(el) === ${jsQuote(want)}; });
+  if (hit === undefined) return "no-option";
+  const holder = drop.querySelector(".rc-virtual-list-holder") || drop;
+  const box = holder.getBoundingClientRect();
+  const rect = hit.getBoundingClientRect();
+  const delta = (rect.top - box.top) - (box.height - rect.height) / 2;
+  if (Math.abs(delta) > 1) holder.scrollTop += delta;
+  return "ok";
+})()`
+}
+
 /** 当前下拉里出现的候选文本（只用于报错提示；下拉没打开时返回空数组）。 */
 export function categoryOptionTextsScript(): string {
   return `(function () {
