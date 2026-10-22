@@ -60,7 +60,7 @@ export function resolveDataDir(configured, env = process.env, platform = process
  * @param {Record<string, unknown>} [raw] - cordis.patch.yml 里该行的 config。
  * @param {object} [ctx] - Cordis 插件上下文，用于读环境快照。
  * @returns {{daemonUrl: string, tokenPath: string, dataDir: string, timeoutMs: number, writeGate: boolean,
- *   autoStartDaemon: boolean, nodePath?: string, daemonEntry?: string}}
+ *   autoStartDaemon: boolean, enableAlerts: boolean, nodePath?: string, daemonEntry?: string}}
  */
 export function normalizeConfig(raw = {}, ctx) {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -96,6 +96,10 @@ export function normalizeConfig(raw = {}, ctx) {
   if (raw.autoStartDaemon !== undefined && typeof raw.autoStartDaemon !== 'boolean') {
     throw new TypeError(`bigfish-ops: autoStartDaemon 必须是布尔值，收到 ${String(raw.autoStartDaemon)}`)
   }
+  // 异常唤醒：daemon 里发布失败/待复核时推一条消息回会话（默认开；不需要打扰可关）。
+  if (raw.enableAlerts !== undefined && typeof raw.enableAlerts !== 'boolean') {
+    throw new TypeError(`bigfish-ops: enableAlerts 必须是布尔值，收到 ${String(raw.enableAlerts)}`)
+  }
   const config = {
     daemonUrl: parsed.origin,
     tokenPath: tokenPathRaw,
@@ -103,6 +107,7 @@ export function normalizeConfig(raw = {}, ctx) {
     timeoutMs: timeoutRaw,
     writeGate: raw.writeGate !== false,
     autoStartDaemon: raw.autoStartDaemon !== false,
+    enableAlerts: raw.enableAlerts !== false,
   }
   // 可选覆盖：打包/非常规布局下让用户显式指定 node 与 daemon 入口。
   if (raw.nodePath !== undefined) config.nodePath = requirePath(raw.nodePath, 'nodePath')

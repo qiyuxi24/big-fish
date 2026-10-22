@@ -11,6 +11,7 @@
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { startAlertWatcher } from './src/alert-watch.js'
 import { createDaemonClient } from './src/client.js'
 import { normalizeConfig } from './src/config.js'
 import { createDaemonSupervisor } from './src/daemon-supervisor.js'
@@ -62,6 +63,9 @@ export function apply(ctx, config = {}) {
   })
   const bridge = withDaemonWatch(createRpcBridge({ client, supervisor }), supervisor)
   const rpcChannel = registerRpcChannel(ctx, bridge)
+  // 异常唤醒：发布失败/待复核时把摘要推回当前会话（走 agent.followup，不调 LLM 做判断）。
+  // 没有活着的 agent 时只注册监听、不轮询，等 agent/created 再开——避免拉起一堆空转定时器。
+  const alerts = startAlerts(ctx, client, resolved)
   // 加载日志保持一条：面板 rpc 状态作为字段带出，便于按行 grep 且不打断 apply.test 的断言。
   console.log(JSON.stringify({
     level: 'info',
@@ -72,7 +76,41 @@ export function apply(ctx, config = {}) {
     writeGate: resolved.writeGate,
     autoStartDaemon: resolved.autoStartDaemon,
     rpcChannel,
+    alerts: describeAlerts(alerts),
   }))
+}
+
+/**
+ * 启动异常唤醒轮询；配置关掉时返回 undefined。
+ *
+ * @param {object} ctx - Cordis 插件上下文。
+ * @param {{listEvents: Function}} client - daemon 客户端。
+ * @param {{enableAlerts: boolean}} config - 已规范化的插件配置。
+ * @returns {{stop: Function, active: Function, pollNow: Function} | undefined} 控制器。
+ */
+function startAlerts(ctx, client, config) {
+  if (config.enableAlerts !== true) return undefined
+  const watcher = startAlertWatcher({ ctx, client, log: (line) => console.log(line) })
+  // 插件卸载时停轮询：不留一个对着已销毁 ctx 的定时器。
+  if (typeof ctx.effect === 'function') {
+    try {
+      ctx.effect(() => () => watcher.stop(), 'bigfish: 异常唤醒轮询')
+    } catch {
+      // 测试替身的 effect 语义可能不同：停不掉也不影响本次加载。
+    }
+  }
+  return watcher
+}
+
+/**
+ * 加载日志里的告警状态：active / waiting-for-agent / disabled。
+ *
+ * @param {{active?: Function} | undefined} watcher - startAlerts 的返回值。
+ * @returns {string} 状态文案。
+ */
+function describeAlerts(watcher) {
+  if (watcher === undefined) return 'disabled'
+  return typeof watcher.active === 'function' && watcher.active() ? 'active' : 'waiting-for-agent'
 }
 
 /**

@@ -44,6 +44,12 @@ test('autoStartDaemon：默认开启，可关，非布尔 fail loud', () => {
   assert.throws(() => normalizeConfig({ autoStartDaemon: 'yes' }), /autoStartDaemon/)
 })
 
+test('enableAlerts：默认开启，可关，非布尔 fail loud', () => {
+  assert.equal(normalizeConfig({}).enableAlerts, true)
+  assert.equal(normalizeConfig({ enableAlerts: false }).enableAlerts, false)
+  assert.throws(() => normalizeConfig({ enableAlerts: 1 }), /enableAlerts/)
+})
+
 test('dataDir 随配置带出（供 daemon 自动拉起共用一份数据）', () => {
   const config = normalizeConfig({ dataDir: '/tmp/bf-data', tokenPath: '/tmp/bf-data/daemon.token' })
   assert.equal(config.dataDir, '/tmp/bf-data')
