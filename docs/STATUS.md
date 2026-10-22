@@ -1,6 +1,6 @@
 # 项目状态 — 单一事实源
 
-> **最后更新 2026-10-22 深夜（面板 rpc 插件侧绕过 + daemon 宿主自动拉起落地、daemon 常驻化、真机验收一条命令就绪；845 基线）· 代码基线 `main @ e6f87e6` + 本次收尾提交。**
+> **最后更新 2026-10-22 深夜（面板 rpc 插件侧绕过 + daemon 宿主自动拉起与面板内启停按钮落地、daemon 常驻化、真机验收一条命令就绪；863 基线）· 代码基线 `main @ e6f87e6` + 本次收尾提交。**
 > 本文是仓库**唯一**的「现在到哪了 / 下一步做什么」入口。其他文档里的测试数字、工具数量、阶段状态一律以本文为准；
 > 若发现别处与本文冲突，以本文为真、并把冲突处改成指向本文。规则看 [AGENTS.md](../AGENTS.md)，实现形态看 [architecture.md](architecture.md)。
 
@@ -28,7 +28,7 @@ P2 自动发货押后到发布这条线跑顺再切。
 | `publish` 单件发布（CDP 步骤机，真提交） | ✅ 真机（3 次） | CLI 直发 2 次：`1093817229436`（2026-10-21 首次）、`1091938715735`（分类修复后，14.5s 拿到 itemId）；队列路径 1 次：`1091940243200`（`POST /tasks` → worker → `operations.publish`，落 items 表）。**3 次都是单件、都是「学习笔记」类目、都已下架留档**。真提交需 `--submit` / `BF_PUBLISH_SUBMIT=1`；类目受网页端支持矩阵限制（电子资料/学习笔记/课业本 ✅；教材教辅/语言培训/学习资料定制/文学/考研咨询 ❌）。itemId 是人工试验的产物，仓库代码里没有痕迹 |
 | `publish` dry-run（填表不提交） | ✅ 真机 | 发布页 → 传 2 图 → 文案 → 选类目 → 价格/包邮 → 地址 → 必填预检 → 收尾，每步截图。**不带 category/address 时能填表但过不了提交前预检**。两条路径都真机过：CLI `publish`（单件）+ **daemon 队列批量**（2026-10-22，批次 `b-e2e-mvj3aedp`，2 条同批 → 2/2 `done`，第 2 条先 `RATE_LIMITED`（写桶满）退避后成功，两轮各 7 张截图在 `.scratch/e2e3/shots/`） |
 | 草稿指定类目 + 不支持即失败 | ✅ 真机 | **网页端分类不是全量类目树**：候选来自 `mtop.taobao.idle.kgraph.property.recommend`（入参标题/描述/图片，一次约 10 个），**不可搜索、不可手输**，文案与图片会重新触发推荐。`channel-cdp/src/category.ts`（+ `category-page.ts`）：按 `aria-controls` 绑定当前下拉、点前 `elementFromPoint` 命中测试、**不对 portal 选项 scrollIntoView**（会滚主页面导致点击落空）、候选在可视区外时只滚下拉内部 `.rc-virtual-list-holder`、连续 2 次回读一致才算选中；目标不在候选里时关下拉等推荐刷新再重开（`REFRESH_WAIT_MS`，受步骤预算约束），仍不在就 fail-closed 并在报错里列出当前候选；命中「网页版暂不支持」立即 `VALIDATION`。真机：上传图片 → 填文案 → 分类从「电子资料」按文案刷新出「学习笔记」并选中（`86ca47e`） |
-| 面板内模块 tab（切换） | ✅ 真机（桌面端 GUI 实拍；实时数据改用兼容路由后待重启桌面验证） | 插件只注册 `sidebar.panellist` + `main`；面板内 `PANEL_TABS` 切 6 个分区：自动发布（默认）/ 账号 / 文案 / 采集 / 概览 / 诊断，`PanelBody` 分发。面板本身不联网、不执行写操作，但 daemon 状态是**真实数据**：`ctx.connection.rpc.call('/bigfish', endpoint)` 每 3 秒轮询 6 个只读端点（`health`/`status`/`accounts`/`settings.get`/`tasks.list`/`batches.get`），任一失败整块降级成「未连接后台」一行（降级时宿主会**自动拉起 daemon**，见 §5 与 `plugin-ops/src/daemon-supervisor.js`）；写类端点本轮不消费（`docs/client-plugin-sidebar.md` §1.1）。**宿主 bug 已由插件侧绕过（2026-10-22）**：DSH 0.1.5-rc.2 的 `connection` 插件用自己 ctx 注册 `webServer`（`rpc-host.ts:80`/`:178-181`），外部插件的 `rpc.handle` 必抛 `cannot get property "webServer" without inject`；插件现在「官方通道优先 → 失败自动回退到自建 `webServer` prefix 路由 `/bigfish`」（`plugin-ops/src/host-route.js`，信封/状态码/fail-closed 鉴权 1:1 复刻宿主，ADR 0004）。dev host 真机探针已 200；**桌面端需重启 DSH 才加载新代码，重启后应显示「在线」而非「未连接后台」**（§5 风险表）。**不回退到会话顶部 tab**（`conversation.view`：点侧边栏后 main 换成 bigfish，会话与 tab 条一起离开 DOM） |
+| 面板内模块 tab（切换） | ✅ 真机（桌面端 GUI 实拍；实时数据改用兼容路由后待重启桌面验证） | 插件只注册 `sidebar.panellist` + `main`；面板内 `PANEL_TABS` 切 6 个分区：自动发布（默认）/ 账号 / 文案 / 采集 / 概览 / 诊断，`PanelBody` 分发。面板本身不联网、不执行写操作，但 daemon 状态是**真实数据**：`ctx.connection.rpc.call('/bigfish', endpoint)` 每 3 秒轮询 6 个只读端点（`health`/`status`/`accounts`/`settings.get`/`tasks.list`/`batches.get`），任一失败整块降级成「未连接后台」一行（降级时宿主会**自动拉起 daemon**，见 §5 与 `plugin-ops/src/daemon-supervisor.js`）；写类端点本轮不消费（`docs/client-plugin-sidebar.md` §1.1）。**宿主 bug 已由插件侧绕过（2026-10-22）**：DSH 0.1.5-rc.2 的 `connection` 插件用自己 ctx 注册 `webServer`（`rpc-host.ts:80`/`:178-181`），外部插件的 `rpc.handle` 必抛 `cannot get property "webServer" without inject`；插件现在「官方通道优先 → 失败自动回退到自建 `webServer` prefix 路由 `/bigfish`」（`plugin-ops/src/host-route.js`，信封/状态码/fail-closed 鉴权 1:1 复刻宿主，ADR 0004）。dev host 真机探针已 200；**桌面端需重启 DSH 才加载新代码，重启后应显示「在线」而非「未连接后台」**（§5 风险表）。面板底部新增「进程管理」区（`data-role=daemon-manage`）：**启动 daemon / 停止 daemon 两个按钮**，并写明「daemon 是常驻后台监听进程——worker 按固定间隔轮询本地队列执行发布/擦亮/探针，面板只是看板，关掉面板 daemon 照旧运行」；`daemon.start` 走 supervisor 的 `force` 拉起（跳过 30s 冷却），`daemon.stop` 是写端点（要求 `confirm:true`，面板第一次点只上膛、第二次点才发），停止后 daemon 收到 `POST /shutdown` 走优雅退出（先停 worker 释放租约再关 HTTP/SQLite）。**不回退到会话顶部 tab**（`conversation.view`：点侧边栏后 main 换成 bigfish，会话与 tab 条一起离开 DOM） |
 | 账号列表摘要（`GET /accounts` / `xy_accounts_list`） | ✅ 真机 | daemon 只读摘要：accountId / updatedAt / savedFieldCount / ready（`unb`+`_m_h5_tk` 齐备）/ ageMs；单个凭据损坏标 `broken` 不拖垮整表；不带任何 cookie 值。工具只读、不挂门禁。真机：真实数据目录 `%LOCALAPPDATA%/bigfish` 下起 daemon，`GET /accounts` 200 返回 1 个账号（`ready: true`、savedFieldCount 21）；`xy_accounts_list` 仍只有单测 |
 | 批量入队 `xy_publish_batch` + 批次层 | ✅ 工具单测 / 队列批量真机（dry-run） | `plugin-ops/src/batch.js`：逐条校验 + `draftDedupeKey` 幂等 + `mode=dry-run` 默认；按账号逐条预约 `availableAt`（默认 180s，`BF_PUBLISH_MIN_INTERVAL_MS` 可调，失败不占位）；写类工具挂审批门禁（仅 enqueue 需确认）。daemon 侧已有批次层：`EnqueueInput.batchId` / `batchStats` / `GET /batches/:id`（五状态计数 + items）。真机 2026-10-22：HTTP 直接入队 2 条同 `batchId` → 2/2 `done`。**仍缺**：`POST /tasks` 不给 `created` 标志（跨批重复只能显示 queued）、批次真提交未跑、180s pacing 未真机校准 |
 | 批量上架调度 | 🟡 链路通，真提交未做 | 批次层（batchId / `GET /batches/:id` 汇总）+ 单账号串行 + 账号级 pacing 已就位；队列批量 dry-run 真机 2/2；**一条命令真机验收已就绪**：`pnpm accept:publish`（`scripts/publish-acceptance.mjs`，自起 dry-run daemon、同批塞一条支持类目 + 一条不支持类目、轮询到终态、落证据 JSON；只能在非沙箱终端跑，沙箱里 CDP 渲染进程起不来）；**批量真提交仍未跑**，面板尚无批次进度消费 |
@@ -44,7 +44,7 @@ P2 自动发货押后到发布这条线跑顺再切。
 ## 3. 质量基线（可复现）
 
 ```
-node scripts/test-all.mjs     # 845 tests / 845 pass / 31 suites / 83 个测试文件 / ~17s
+node scripts/test-all.mjs     # 863 tests / 863 pass / 33 suites / 84 个测试文件 / ~18s
 ```
 
 | 范围 | 用例数 | 备注 |
@@ -55,10 +55,10 @@ node scripts/test-all.mjs     # 845 tests / 845 pass / 31 suites / 83 个测试�
 | channel-cdp | 102 | 假连接与假页面回放（分类下拉按 AI 推荐刷新/虚拟列表滚动、风控探测） |
 | channel-guanjia | 62 | 纯函数 |
 | channel-im | 32 | 帧解析 / 归一化 / 状态机 |
-| plugin-ops | 158 | 插件契约、门禁、草稿校验、批量入队与 pacing、文案风格注入、账号摘要、参考报告渲染、host rpc 桥（13 端点）、**webServer 兼容路由回退**、**daemon 自动拉起（冷却/单飞/回环守卫）**、client bundle（面板内 6 个模块 tab） |
+| plugin-ops | 170 | 插件契约、门禁、草稿校验、批量入队与 pacing、文案风格注入、账号摘要、参考报告渲染、host rpc 桥（15 端点）、**webServer 兼容路由回退**、**daemon 自动拉起（冷却/单飞/回环守卫）+ 面板内启停（停止需二次确认）**、client bundle（面板内 6 个模块 tab） |
 | scripts | 31 | daemon 常驻服务（参数/状态机/日志尾）16 + 发布真机验收脚本（参数/草稿/批次判定/PNG 生成）15 |
 | integration | 2 | 插件 client ↔ 真 daemon 端到端 |
-| **合计** | **845** | ops-bundle 无测试（只声明组合） |
+| **合计** | **863** | ops-bundle 无测试（只声明组合） |
 
 - 类型检查：**6 个 TS 包** tsc 0 错误（core / daemon / channel-mtop / channel-cdp / channel-guanjia / channel-im）。
   **plugin-ops 与 ops-bundle 是纯 ESM JS，无 tsconfig，不在类型检查覆盖内**——改这两个包只能靠测试。
@@ -82,7 +82,7 @@ node scripts/test-all.mjs     # 845 tests / 845 pass / 31 suites / 83 个测试�
 
 **为什么是它**：单件链路已经真机跑通过一次，缺的不是「能不能发」，而是「一批能不能发得稳、发重了怎么办、发失败了落在哪」——也就是批次层、幂等、可观测。设计见 [auto-publish.md](auto-publish.md)。
 
-**卡点**：①类目矩阵——网页端只支持一小撮类目，且分类候选由 AI 推荐（约 10 个、不可搜索），这是覆盖面天花板；②真提交只成功过 3 次单件（2 次 CLI + 1 次队列），**批量真提交没做过**；③面板读 daemon 状态的通道已落地（`ctx.connection.rpc.handle('/bigfish')`，ADR 0004），面板侧只读消费已接（6 端点 / 3 秒轮询）；宿主 `webServer` bug 已由插件侧兼容路由绕过，**待重启桌面验证**，写类按钮未接；④daemon 常驻已补 `scripts/daemon-service.mjs`（未做开机自启），并且**面板打开时宿主会自动拉起 daemon**（rpc 拿到 NETWORK 即拉起，30s 冷却，日志 `<dataDir>/plugin.log`、`daemon.log`）。
+**卡点**：①类目矩阵——网页端只支持一小撮类目，且分类候选由 AI 推荐（约 10 个、不可搜索），这是覆盖面天花板；②真提交只成功过 3 次单件（2 次 CLI + 1 次队列），**批量真提交没做过**；③面板读 daemon 状态的通道已落地（`ctx.connection.rpc.handle('/bigfish')`，ADR 0004），面板侧只读消费已接（6 端点 / 3 秒轮询）；宿主 `webServer` bug 已由插件侧兼容路由绕过，**待重启桌面验证**，面板启停按钮已接（停止需二次确认；其余写类按钮未接）；④daemon 常驻已补 `scripts/daemon-service.mjs`（未做开机自启），并且**面板打开时宿主会自动拉起 daemon**（rpc 拿到 NETWORK 即拉起，30s 冷却，日志 `<dataDir>/plugin.log`、`daemon.log`）。
 
 | 步骤 | 做什么 | 验收 |
 | --- | --- | --- |
@@ -148,8 +148,8 @@ node scripts/test-all.mjs     # 845 tests / 845 pass / 31 suites / 83 个测试�
 - **发布侧风控识别只有单测**：`channel-cdp/src/risk.ts` 每步前/抛错/步后探测 URL、页面文案、验证组件，命中抛 `RISK_CONTROL`（带 `details.step`）→ daemon 熔断 600s。但**没有真机故意触发过**，页面特征清单是 best-effort，改版会失效；截图+人工过的流程仍靠人。
 - **daemon 常驻已补脚本、未做开机自启**：`pnpm daemon:start/stop/restart/status/logs`（`scripts/daemon-service.mjs`，detached + pid 文件 + 日志重定向 + `/health` 就绪等待），2026-10-22 全生命周期真机验证通过；**插件宿主侧已能自动拉起**（面板 rpc 拿到 NETWORK → detached spawn 同仓 `cli.ts`，20s 轮询 `/health`，30s 冷却、并发单飞、只认回环地址；真机 e2e 拉起 560ms 就绪、`/health` 200；实现在 `plugin-ops/src/daemon-supervisor.js` + `daemon-watch.js`，17 例单测）；**开机自启/崩溃后由系统级服务拉起仍未做**（需要服务管理器或计划任务，另开一题）。
 - **地址搜索在 CDP 下不可用**（候选不回显），只能匹配常用/附近地址。
-- **插件层没有类型门禁**：plugin-ops / ops-bundle 是纯 JS，改动只能靠 158 个测试兜。
-- **面板实时数据**：宿主 bug 仍在（DSH 0.1.5-rc.2 `connection` 插件用自己 ctx 注册 `webServer`，`rpc-host.ts:80`/`:178-181` → 外部插件 `rpc.handle` 必抛 `cannot get property "webServer" without inject`），但插件已自行绕过：官方通道失败即回退到自建 `/bigfish` prefix 路由（信封/状态码/fail-closed 鉴权与宿主一致，ADR 0004）。dev host 上真实 cookie 探针 `/bigfish/health`、`/bigfish/status` 均 200。**桌面端要重启 DSH 才生效**，重启后若仍降级看 server.log 是否出现「webServer 兼容路由」。daemon 没起不再需要手动 `pnpm daemon:start`：面板轮询第一次 NETWORK 时宿主会自动拉起（冷却 30s；日志 `<dataDir>/plugin.log` / `daemon.log`）。写类按钮（导入、扫码、重试、入队、改设置）与「逐任务明细」视图仍未接。
+- **插件层没有类型门禁**：plugin-ops / ops-bundle 是纯 JS，改动只能靠 170 个测试兜。
+- **面板实时数据**：宿主 bug 仍在（DSH 0.1.5-rc.2 `connection` 插件用自己 ctx 注册 `webServer`，`rpc-host.ts:80`/`:178-181` → 外部插件 `rpc.handle` 必抛 `cannot get property "webServer" without inject`），但插件已自行绕过：官方通道失败即回退到自建 `/bigfish` prefix 路由（信封/状态码/fail-closed 鉴权与宿主一致，ADR 0004）。dev host 上真实 cookie 探针 `/bigfish/health`、`/bigfish/status` 均 200。**桌面端要重启 DSH 才生效**，重启后若仍降级看 server.log 是否出现「webServer 兼容路由」。daemon 没起不再需要手动 `pnpm daemon:start`：面板轮询第一次 NETWORK 时宿主会自动拉起（冷却 30s；日志 `<dataDir>/plugin.log` / `daemon.log`）。写类端点目前只消费了 `daemon.start` / `daemon.stop`（面板「进程管理」：启动直接拉起、停止要点两次且带 `confirm:true`）；导入、扫码、重试、入队、改设置与「逐任务明细」视图仍未接。
 - **pacing 未真机校准**：默认 180s 是推导值（同账号 15s 连发被真机风控拦过一次），单条 enqueue 与直接 `POST /tasks` 绕过它，只剩 daemon 写桶 1 次/60s 兜底。
 - **账号风控**：策略是「遇到 x5sec/滑块不硬刚，停队列 + 截图 + 人工过」；识别代码有了但未真机验证，真人验证只用用户自己的账号，且默认 dry-run（AGENTS §5 账号纪律）。
 - **分类只能选 AI 推荐的那 10 个左右**：候选由图片+文案决定、不可搜索，推荐接口偶发「目标不在候选里」→ fail-closed。批量时若某条文案把类目推荐带偏，那条会失败待审（不拖垮整批），但**覆盖面取决于文案质量**，这是产品级天花板，不是 bug 修补能绕过的。

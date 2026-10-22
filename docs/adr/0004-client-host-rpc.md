@@ -41,8 +41,10 @@ DSH 宿主给插件的客户端能力只有两类入口：
 | `accounts.import` | 写 | `client.importAccount({accountId?,port?})` | `accountId`/`port` |
 | `accounts.login` | 写 | `client.loginAccount({accountId?,port?})`，缺失时 `POST /accounts/login` | `accountId`/`port`/`timeoutMs(1..180000)` |
 | `batch.enqueue` | 写 | 逐条 `client.enqueue(task)`（串行） | `batchId`、`items[]`(1..20)，每条 `kind`/`payload`/`dedupeKey`/`availableAt?`/`maxAttempts(1..10)` |
+| `daemon.start` | 写（拉起本地进程） | `supervisor.ensure('panel', {force:true})`（`plugin-ops/src/daemon-control.js`） | 无（空对象） |
+| `daemon.stop` | 写（关停本地进程） | `POST /shutdown` → 250ms 轮询 `/health` 到不可达（同文件 `stopDaemon`） | 无（必须 `confirm:true`） |
 
-3. **写端点必须显式确认**：`tasks.retry`、`accounts.import`、`accounts.login`、`batch.enqueue`、`settings.put` 要求 `payload.confirm === true`，否则直接返回 `{ ok:false, error:{ code:'VALIDATION', message:'需要 confirm:true' } }`，且**不触达 daemon**。
+3. **写端点必须显式确认**：`tasks.retry`、`accounts.import`、`accounts.login`、`batch.enqueue`、`settings.put`、`daemon.stop` 要求 `payload.confirm === true`，否则直接返回 `{ ok:false, error:{ code:'VALIDATION', message:'需要 confirm:true' } }`，且**不触达 daemon**。
 4. **未知端点一律 `UNSUPPORTED`**；payload 先窄化再转发，未知字段**永不**透传（防模型幻觉把 `cookie`/`token` 之类字段塞进 daemon 请求）。
 5. **`handle` 永不向宿主抛错**：任何异常都收敛成 `{ ok:false, error:{ code, message, details? } }`，`code` 只用仓库稳定枚举，未知异常收敛为 `INTERNAL` 且不带栈。
 6. **面板侧是轮询，不是订阅**：client 按需调用端点并设自己的刷新间隔；写操作成功后触发一次重取。宿主的 RPC 通道没有推送语义，伪造推送等于自建一层易漂移的总线。

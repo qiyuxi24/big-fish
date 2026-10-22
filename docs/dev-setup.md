@@ -103,6 +103,10 @@ npm run daemon:start -- --port 47002 --data-dir .scratch/daemon-live
 - 日志：`<dataDir>/plugin.log`（拉起决策/结果）、`<dataDir>/daemon.log`（daemon 自己的输出）。
 - 覆盖点：插件 config `nodePath` / `daemonEntry`（默认按插件位置推 `../daemon/src/cli.ts`）。
 - 测试：`packages/plugin-ops/test/daemon-supervisor.test.mjs`（17 例，纯注入假时钟/假 spawn/假健康探测，不真起进程）。
+- **面板里也能手动启停**：面板「进程管理」区有「启动 daemon / 停止 daemon」按钮（说明文字讲清 daemon 是常驻后台监听进程）。
+  启动走 `daemon.start` → supervisor `ensure('panel', {force:true})`（跳过冷却）；停止走 `daemon.stop`（写端点，必须 `confirm:true`）。
+  停止是优雅退出：daemon 收到 `POST /shutdown`（`packages/daemon/src/lifecycle.ts`）后先停 worker（release 在飞任务）、再关 HTTP 与 SQLite；
+  面板侧要点两次才发（第一次只上膛），避免误触打断正在跑的队列。Windows 上没有可捕获信号，`pnpm daemon:stop` 仍是 taskkill 兜底，但面板停止走 HTTP，跨平台一致。
 
 ### 手动冒烟一次 probe（不发外网）
 

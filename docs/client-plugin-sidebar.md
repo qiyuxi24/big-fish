@@ -89,6 +89,8 @@ ctx.connection.rpc.call('/bigfish', '<endpoint>', payload) // → { ok: true, va
 | `settings.get` | `{}` | copyStyle / defaultCategory / publishMinIntervalMs |
 | `tasks.list` | `{ limit: 50 }` | 反查最新一轮批次的 `batchId`（daemon 没有批次列表端点） |
 | `batches.get` | `{ id: <batchId> }` | 最近批次的 total 与非零 counts；失败只丢这一行，不拖垮主状态 |
+| `daemon.start` | `{}` | 「进程管理」区：让宿主 supervisor 拉起 daemon（`force` 跳过 30s 冷却），返回 `{status}` |
+| `daemon.stop` | `{ confirm: true }` | 「进程管理」区：`POST /shutdown` → 每 250ms 探 `/health` 直到不可达，返回 `{stopped, alreadyStopped}`；写端点，缺 `confirm` 直接 VALIDATION |
 
 - 5 个必需端点任一失败（`{ok:false}` / 抛异常 / 传输层 reject / 宿主没有 `connection` 服务）→ 整块降级为
   一行 `未连接后台（daemon 未启动）` + 一句可执行提示（宿主已尝试自动拉起；仍不行就手动 `pnpm daemon:start`），
@@ -103,6 +105,11 @@ ctx.connection.rpc.call('/bigfish', '<endpoint>', payload) // → { ok: true, va
   依赖只有 `connection`（宿主句柄稳定，切 tab 不重复起定时器）。
 - 写类端点（`tasks.retry` / `accounts.import` / `accounts.login` / `batch.enqueue` / `settings.put`）**本轮不消费**：
   它们要求 `confirm: true` 且需要二次确认 UI，按钮留到下一轮。
+- **面板内启停 daemon（2026-10-22）**：`DaemonView` 在线/离线两个分支都渲染「进程管理（daemon 是常驻后台监听进程）」区：
+  说明 daemon 在后台常驻、worker 轮询队列执行发布/擦亮/探针、面板只是看板；`daemon-start`（在线时禁用）与 `daemon-stop`（离线时禁用）两个按钮。
+  停止是**两段式**：第一次点只上膛并提示「再点一次「确认停止」才会停 daemon：在飞任务会被中断（任务保持 queued，下次启动后继续）」，
+  第二次才带 `{confirm:true}` 调 `daemon.stop`；失败时把 host 侧 `error.message` 直接显示在 `data-role='daemon-manage-notice'` 行。
+  host 侧实现在 `plugin-ops/src/daemon-control.js`（`startDaemon` 走 supervisor、`stopDaemon` 探测→关停→轮询），daemon 侧新增 `POST /shutdown`（`packages/daemon/src/lifecycle.ts`，202 后 `setImmediate` 触发优雅退出）。
 
 > ⚠️ **宿主 bug 已有插件侧绕过（2026-10-22，DSH 0.1.5-rc.2）**：宿主 `connection` 插件的 `rpc` getter 用**自己的** ctx 注册路由
 > （`packages/client/connection/src/rpc-host.ts:80` 的 `const owner = this.ctx`，并在 `:178-181` 执行 `owner.webServer.register(route)`），
