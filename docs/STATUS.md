@@ -1,6 +1,6 @@
 # 项目状态 — 单一事实源
 
-> **最后更新 2026-10-22 深夜（面板 rpc 插件侧绕过 + daemon 宿主自动拉起与面板内启停按钮落地、daemon 常驻化、真机验收一条命令就绪；863 基线）· 代码基线 `main @ e6f87e6` + 本次收尾提交。**
+> **最后更新 2026-10-23 凌晨（T1 daemon 步骤事件流落地：`task_events` 表 + `GET /events` 增量拉取；880 基线）· 代码基线 `main @ f183728` + 本次收尾提交。**
 > 本文是仓库**唯一**的「现在到哪了 / 下一步做什么」入口。其他文档里的测试数字、工具数量、阶段状态一律以本文为准；
 > 若发现别处与本文冲突，以本文为真、并把冲突处改成指向本文。规则看 [AGENTS.md](../AGENTS.md)，实现形态看 [architecture.md](architecture.md)。
 
@@ -44,13 +44,13 @@ P2 自动发货押后到发布这条线跑顺再切。
 ## 3. 质量基线（可复现）
 
 ```
-node scripts/test-all.mjs     # 863 tests / 863 pass / 33 suites / 84 个测试文件 / ~18s
+node scripts/test-all.mjs     # 880 tests / 880 pass / 36 suites / 87 个测试文件 / ~18s
 ```
 
 | 范围 | 用例数 | 备注 |
 | --- | --- | --- |
-| core | 163 | 队列（含 batchId/批次统计/requeue）、仓储、策略、限流熔断、账号级发布间隔、凭据、脱敏、配置、settings 存储、发货规则引擎 |
-| daemon | 200 | HTTP、CLI、执行器、worker、路由、账号导入、账号摘要、参考采集、settings 路由、批次统计、CDP 发布、dry-run 开关、发布侧风控 |
+| core | 171 | 队列（含 batchId/批次统计/requeue）、仓储、策略、限流熔断、账号级发布间隔、凭据、脱敏、配置、settings 存储、发货规则引擎 |
+| daemon | 215 | HTTP、CLI、执行器、worker、路由、账号导入、账号摘要、参考采集、settings 路由、批次统计、CDP 发布、dry-run 开关、发布侧风控、**任务事件流（`GET /events` 增量/游标/过滤、发布步骤落库）** |
 | channel-mtop | 95 | 纯函数（含参考解析与卖点词） |
 | channel-cdp | 102 | 假连接与假页面回放（分类下拉按 AI 推荐刷新/虚拟列表滚动、风控探测） |
 | channel-guanjia | 62 | 纯函数 |
@@ -58,12 +58,12 @@ node scripts/test-all.mjs     # 863 tests / 863 pass / 33 suites / 84 个测试�
 | plugin-ops | 170 | 插件契约、门禁、草稿校验、批量入队与 pacing、文案风格注入、账号摘要、参考报告渲染、host rpc 桥（15 端点）、**webServer 兼容路由回退**、**daemon 自动拉起（冷却/单飞/回环守卫）+ 面板内启停（停止需二次确认）**、client bundle（面板内 6 个模块 tab） |
 | scripts | 31 | daemon 常驻服务（参数/状态机/日志尾）16 + 发布真机验收脚本（参数/草稿/批次判定/PNG 生成）15 |
 | integration | 2 | 插件 client ↔ 真 daemon 端到端 |
-| **合计** | **863** | ops-bundle 无测试（只声明组合） |
+| **合计** | **880** | ops-bundle 无测试（只声明组合） |
 
 - 类型检查：**6 个 TS 包** tsc 0 错误（core / daemon / channel-mtop / channel-cdp / channel-guanjia / channel-im）。
   **plugin-ops 与 ops-bundle 是纯 ESM JS，无 tsconfig，不在类型检查覆盖内**——改这两个包只能靠测试。
 - 运行时零第三方依赖；全仓 `TODO/FIXME/HACK` 0 条。
-- 仓库 8 个包、daemon 13 条 HTTP 路由、插件 14 个 `xy_*` 工具、5 个 TaskKind（probe/polish/publish/deliver/reply）、面板内 6 个模块 tab。
+- 仓库 8 个包、daemon 15 条 HTTP 路由（`POST /shutdown` + `GET /events`）、插件 14 个 `xy_*` 工具、5 个 TaskKind（probe/polish/publish/deliver/reply）、面板内 6 个模块 tab。
 
 ## 4. 下一步
 
@@ -140,6 +140,30 @@ node scripts/test-all.mjs     # 863 tests / 863 pass / 33 suites / 84 个测试�
 9. **（今晚收口，需要你动手两件）** ①**重启 DSH 桌面应用**（关掉再开，会话不丢）让面板兼容路由 + daemon 自动拉起生效：重启后点侧边栏「自动发布」，应几秒内从「未连接后台」变成「在线」（宿主会自己拉起 daemon，日志在数据目录的 plugin.log）；仍降级就看 server.log 有没有「webServer 兼容路由」那行。②在**普通终端**（不是 DSH 沙箱）跑一次 `pnpm accept:publish` 补「同批混不支持类目」的真机证据；它自己起 dry-run daemon、跑完即停，**不会真发**。
 10. **（仍未答）批量真提交授权**：见第 6 条——等你点头才能动真格。
 
+
+### 4.4 施工队列（2026-10-23 凌晨讨论产出，按依赖排序）
+
+> 口径：**daemon 不调 LLM、插件不直接调 LLM、会话/agent 是唯一 LLM 主体**（见 §4.5）。T4/T7 属白名单外扩展点，动工前先补 ADR。
+
+| # | 事项 | 做什么（关键点） | 验收 | 依赖 |
+| --- | --- | --- | --- | --- |
+| T1 ✅ | **daemon 步骤事件流（2026-10-23 已落地）** | 新表 `task_events`（taskId / batchId / step / status / at / seq）；worker 执行时把 `channel-cdp/src/steps.ts:36-51` 已有的每步回调落库；新增 `GET /events?since=<seq>&limit=`（增量） | 单测（写入顺序、增量、越界）+ 真机 dry-run 一批后能拉到 step 级事件 | 无 |
+| T2 | **面板工作流树** | 「自动发布」tab 加三级树（批次→任务→步骤）+ 失败节点展开 lastError / 截图路径；3s 轮询 `events.list?since=` 增量渲染 | client-bundle 测试 + 桌面目视（需重启 DSH） | T1 |
+| T3 | **daemon 异常唤醒 DSH 并回消息** | 插件侧 `ctx.jobs.start` 轮询 `/events`，命中 `failed` / `needs_review` / `RISK_CONTROL` 时去重后 `ctx.agent.followup()` 把摘要注入主会话（任务 id、错误码、截图路径、下一步）；面板显示未读角标 | 手工造一条 failed 任务 → 主会话收到一条消息且同一任务不重复打扰；熔断/断网时不刷屏 | T1 |
+| T4 | **面板 AI 按钮（发布前处理）** | 按钮 → 输入 JSON → `ctx.subagents` 跑 `xianyu-listing-copy` skill → agent 调新写工具 `xy_draft_save` 落草稿 → 面板草稿列表 → 人审 → `xy_publish_draft` 校验入队（LLM 输出必须过工具落盘，不从会话文本抠 JSON） | 一次走通「原图+原话 → 草稿 → 人审 → 入队 dry-run」；ADR 0005 写清 subagents 用法与审批门禁 | 可与 T1 并行 |
+| T5 | **只读「相机」（闲鱼浏览器画面）** | daemon `GET /camera?taskId=` → CDP `Page.captureScreenshot`（只在发布任务运行时截，不常开）→ 面板 `<img>` 刷新；第一版**只读**，可交互（转发鼠标）留第二步 | 真机 dry-run 时面板看到发布页画面 | Chrome 调试端口 |
+| T6 | **工具层重切** | 一 HTTP 端点一工具 → 一业务动作一工具；读类一次拿全并返回 `nextAction`；合并 `publish_draft` / `publish_batch` / `task_enqueue` 的重叠语义 | 工具数从 14 收敛到 ≤10、每个返回带 `nextAction`、测试与文档同步 | T4 |
+| T7 | **browser-skill 评估（bsk_*）** | 评估用它替代 CDP 做「找货源 / 看页面 / 截图回会话」；再评估能否当发布执行器（**登录态不用带调试端口重启 Chrome** 是最大收益） | 一次真机 dry-run 用 bsk_* 走完发布页填表；写 ADR 定 CDP vs bsk 分工 | 需 ADR |
+| T8 | **定时任务** | 复用 DSH schedule（cron → `agent.followup`，白名单内）或 daemon `availableAt` + 面板编辑；先做「每天定时擦亮 N 件」 | 面板能建/停定时擦亮，到点真跑一次（dry-run 可） | T3 |
+
+**今晚（00:15–02:00）只承诺 T1**，跑通且测试全绿再顺延 T2；T3–T8 是明天起的队列。
+
+### 4.5 分层分工（方向性拍板基线，2026-10-22 深夜讨论）
+
+- **daemon**：确定性动作（队列、发布步骤、限流、熔断、凭据）。**绝不调 LLM**（AGENTS §1.1）。
+- **插件 host 侧**：不持有 loop、不直接拿 `ctx.llm` 发请求（否则绕过 `tools/pre-execute` 审批、成本记账、会话审计）。只能经三个公开入口：`ctx.agent.followup(msg)`（注入主会话）、`ctx.agents.create`（新会话）、`ctx.subagents`（隔离子 agent，需 ADR）。
+- **会话 / agent**：唯一 LLM 主体；日常操作在面板，开放式探索（找货源、论证文案）在会话。
+- **面板**：看板 + 一次性可结算动作按钮（启动/停止 daemon、生成草稿、重试任务）；**不做自建 chat UI**。
 
 ## 5. 已知风险（别对外宣称）
 

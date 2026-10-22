@@ -127,6 +127,8 @@ openStore({path: config.dbPath})
 | POST | `/reference` | 参考分析（只读）：`{accountId, itemIds?, sellerId?}` → 价格带/标题长度/类目分布/高频卖点词/图片数/商家量级；单件失败进 `skipped`，`AUTH_EXPIRED`/`RISK_CONTROL`/`UNAUTHORIZED` 中止整批；未注入能力时 `UNSUPPORTED` |
 | GET | `/items?state&accountId&limit` | 本地商品快照；`state ∈ online/offline/unknown` |
 | POST | `/circuits/reset` | `{accountId}` → `{accountId, reset:boolean}`（未注入熔断器时 `reset:false`） |
+| POST | `/shutdown` | 优雅关停：先回 202 `{stopping:true,pid}`，再停止 worker（释放租约）→ 关 HTTP → 关 SQLite；未注入能力时 `UNSUPPORTED` |
+| GET | `/events?since&limit&taskId&batchId` | 任务步骤事件流（增量）：`{items, nextSince}`；`since` 为排他游标（只回 `id > since`），缺省 `limit` 200、上限 1000；未注入事件存储时 `UNSUPPORTED` |
 
 注意：**id 是 UUID，且 `redact` 会保护 UUID 不被长串规则误掩**（早期把 `taskId` 掩成 `[redacted]` 导致客户端回查 404，`packages/core/src/redact.ts` 已修，有单测）。
 
