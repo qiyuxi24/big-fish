@@ -13,7 +13,7 @@ import type { AddressInfo } from 'node:net'
 import { dirname } from 'node:path'
 
 import { XianyuError, fail, toXianyuError } from '@bigfish/core'
-import type { CircuitBreaker, DaemonStatus, ItemRepository, TaskQueue } from '@bigfish/core'
+import type { CircuitBreaker, DaemonStatus, ItemRepository, TaskEventSink, TaskQueue } from '@bigfish/core'
 import { isLoopbackHost } from './config.ts'
 import type { DaemonConfig } from './config.ts'
 import { extractBearer, loadRedact, sendError, sendMappedError, tokenMatches } from './http.ts'
@@ -61,6 +61,8 @@ export interface StartDaemonOptions {
   requestShutdown?: RequestShutdown
   /** 设置存储；缺省时 GET/PUT /settings 返回 UNSUPPORTED。 */
   settings?: SettingsStore
+  /** 任务事件流；缺省时 GET /events 返回 UNSUPPORTED。 */
+  events?: TaskEventSink
   /** 可注入时钟（整数毫秒），测试用假时钟断言 uptime。 */
   now?: () => number
   version?: string
@@ -89,6 +91,7 @@ interface ServerContext {
   referenceCollect: ReferenceCollectHandler | undefined
   requestShutdown: RequestShutdown | undefined
   settings: SettingsStore | undefined
+  events: TaskEventSink | undefined
   now: () => number
   startedAt: number
   version: string
@@ -121,6 +124,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
     referenceCollect: options.referenceCollect,
     requestShutdown: options.requestShutdown,
     settings: options.settings,
+    events: options.events,
     now,
     startedAt,
     version,
@@ -193,6 +197,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, context:
       referenceCollect: context.referenceCollect,
       requestShutdown: context.requestShutdown,
       settings: context.settings,
+      events: context.events,
       now: context.now,
       startedAt: context.startedAt,
       version: context.version,

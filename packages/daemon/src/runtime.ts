@@ -12,6 +12,7 @@ import {
   RateLimiter,
   createItemRepository,
   createLogger,
+  createTaskEventStore,
   createTaskQueue,
   fail,
   openStore,
@@ -89,6 +90,8 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
   const store = openStore({ path: config.dbPath, ...(now === undefined ? {} : { now }) })
   try {
     const queue = createTaskQueue({ store, ...(now === undefined ? {} : { now }) })
+    // 任务事件流：worker/执行器写，GET /events 与面板工作流树读（表由 v3 迁移建）。
+    const events = createTaskEventStore(store, now === undefined ? {} : { now })
     const items = createItemRepository({ store, ...(now === undefined ? {} : { now }) })
     const credentials = new CredentialStore({
       dir: config.credentialsDir,
@@ -122,6 +125,7 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
       credentials,
       limiter,
       circuits,
+      events,
       logger,
       ...(now === undefined ? {} : { now }),
     }
@@ -156,6 +160,7 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
         items,
         circuits,
         settings,
+        events,
         accounts: () => accounts,
         // 账号面板的列表：只读摘要，cookie 值不出进程（见 account-list.ts）。
         accountSummaries: () =>

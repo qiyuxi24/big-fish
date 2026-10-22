@@ -12,6 +12,7 @@ import { XianyuError, checkListing, fail } from '@bigfish/core'
 import type { CredentialRecord, CredentialSaveInput, ItemState } from '@bigfish/core'
 
 import type { ExecuteContext, ExecutorTable, TaskExecutor } from './executor.ts'
+import { emitTaskStep } from './event-emit.ts'
 
 /** 一次通道调用使用的登录态。 */
 export interface Session {
@@ -66,7 +67,13 @@ export interface ReplyRequest {
 export interface OperationPort {
   fetchItemDetail(input: { session: Session; itemId: string; signal: AbortSignal }): Promise<DetailSnapshot>
   polishItem(input: { session: Session; itemId: string; signal: AbortSignal }): Promise<void>
-  publishItem(input: { session: Session; draft: PublishDraft; signal: AbortSignal }): Promise<{ itemId?: string }>
+  publishItem(input: {
+    session: Session
+    draft: PublishDraft
+    signal: AbortSignal
+    /** 通道每步回调（步骤名 + 「开始」/「完成」/「失败：…」）；由执行器转成任务事件。 */
+    onStep?: (step: string, message: string) => void
+  }): Promise<{ itemId?: string }>
   deliverOrder(input: { session: Session; deliver: DeliverRequest; signal: AbortSignal }): Promise<{ delivered: boolean }>
   sendReply(input: { session: Session; reply: ReplyRequest; signal: AbortSignal }): Promise<void>
 }
@@ -126,7 +133,9 @@ export function createExecutors(options: ExecutorOptions): ExecutorTable {
       const session = await requireSession(ctx, accountId)
       await checkCircuit(ctx, accountId)
       await spend(ctx, 'write', accountId)
-      const result = await ports.publishItem({ session, draft, signal: ctx.signal })
+      // 步骤事件写进 task_events：面板工作流树与失败诊断都靠它，见 event-emit.ts。
+      const onStep = (step: string, message: string): void => emitTaskStep(ctx, task, step, message)
+      const result = await ports.publishItem({ session, draft, signal: ctx.signal, onStep })
       if (result.itemId !== undefined && ctx.items !== undefined) {
         ctx.items.upsert({
           itemId: result.itemId,

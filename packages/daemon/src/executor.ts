@@ -13,6 +13,7 @@ import type {
   ItemRepository,
   Logger,
   RateLimiter,
+  TaskEventSink,
   TaskKind,
   TaskRecord,
 } from '@bigfish/core'
@@ -35,6 +36,8 @@ export interface ExecutorDeps {
   /** 账号级熔断器；写操作前必须 isOpen 检查，命中风控后 trip。 */
   circuits?: CircuitBreaker
   logger?: Logger
+  /** 任务事件流；缺省时执行器不写步骤事件（单测与无事件流的装配）。 */
+  events?: TaskEventSink
   /** 可注入时钟（整数毫秒）。 */
   now?: () => number
 }

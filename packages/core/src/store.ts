@@ -80,9 +80,33 @@ interface Migration {
   apply(db: DatabaseSync): void
 }
 
+/**
+ * v3：任务事件流（面板工作流树 / 异常唤醒的数据源）。append-only，只由 worker 与执行器写。
+ * 独立成表而不是复用 v1 的 events：events 是「店铺级流水」（未定语义），任务事件需要
+ * task_id/batch_id 索引才能按面板的轮询增量拉取。
+ */
+const V3_SQL = `
+CREATE TABLE IF NOT EXISTS task_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at INTEGER NOT NULL,
+  task_id TEXT NOT NULL,
+  batch_id TEXT,
+  kind TEXT NOT NULL,
+  step TEXT,
+  state TEXT,
+  code TEXT,
+  message TEXT,
+  details TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, id);
+CREATE INDEX IF NOT EXISTS idx_task_events_batch ON task_events(batch_id, id);
+`
+
 const MIGRATIONS: readonly Migration[] = [
   { version: 1, apply: (db: DatabaseSync): void => db.exec(V1_SQL) },
   { version: 2, apply: applyBatchMigration },
+  // v3 全用 IF NOT EXISTS：手工建过表的库再迁移不会失败（与 v2 的探测同样的理由）。
+  { version: 3, apply: (db: DatabaseSync): void => db.exec(V3_SQL) },
 ]
 
 const CREATE_MIGRATIONS_SQL = `CREATE TABLE IF NOT EXISTS schema_migrations (

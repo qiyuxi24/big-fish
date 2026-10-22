@@ -138,7 +138,12 @@ export function createOperationPort(options: OperationPortOptions = {}): Operati
       })
     },
 
-    async publishItem(input: { session: Session; draft: PublishDraft; signal: AbortSignal }): Promise<{ itemId?: string }> {
+    async publishItem(input: {
+      session: Session
+      draft: PublishDraft
+      signal: AbortSignal
+      onStep?: (step: string, message: string) => void
+    }): Promise<{ itemId?: string }> {
       const publish = options.publish
       const dryRun = publish?.dryRun === true
       if (publish === undefined || (!publish.submit && !dryRun)) {
@@ -156,6 +161,7 @@ export function createOperationPort(options: OperationPortOptions = {}): Operati
         submit,
         ...(publish.chromePort === undefined ? {} : { chromePort: publish.chromePort }),
         ...(publish.screenshotsDir === undefined ? {} : { screenshotsDir: publish.screenshotsDir }),
+        ...(input.onStep === undefined ? {} : { onLog: input.onStep }),
         signal: input.signal,
       })
       if (submit && result.itemId === undefined) fail('INTERNAL', 'CDP 发布返回成功但没有 itemId，按失败处理')

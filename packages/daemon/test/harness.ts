@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { loadDaemonConfig } from '@bigfish/core'
-import type { CircuitBreaker, DaemonConfig, ItemRepository, TaskRecord } from '@bigfish/core'
+import type { CircuitBreaker, DaemonConfig, ItemRepository, TaskEventSink, TaskRecord } from '@bigfish/core'
 
 import { DaemonClient } from '../src/client.ts'
 import { startDaemon } from '../src/server.ts'
@@ -84,6 +84,8 @@ export interface HarnessOptions {
   settings?: SettingsStore
   /** 优雅关停能力（测试 POST /shutdown）；缺省时不注入，路由应返回 UNSUPPORTED。 */
   requestShutdown?: RequestShutdown
+  /** 任务事件流（测试 GET /events）；缺省时不注入，路由应返回 UNSUPPORTED。 */
+  events?: TaskEventSink
 }
 
 /** 建夹具；t.after 负责关服务与清理目录。 */
@@ -117,6 +119,7 @@ export async function createHarness(t: { after(fn: () => Promise<void>): void },
     ...(options.referenceCollect === undefined ? {} : { referenceCollect: options.referenceCollect }),
     ...(options.settings === undefined ? {} : { settings: options.settings }),
     ...(options.requestShutdown === undefined ? {} : { requestShutdown: options.requestShutdown }),
+    ...(options.events === undefined ? {} : { events: options.events }),
   })
   const client = new DaemonClient({ baseUrl: daemon.url, tokenPath: config.tokenPath })
   const baseUrl = daemon.url

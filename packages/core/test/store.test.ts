@@ -52,7 +52,7 @@ function expectCode(code: ErrorCode, body: () => unknown): void {
   assert.equal(caught.code, code)
 }
 
-test('openStore 递归建目录、开 WAL/外键/busy_timeout，并按注入时钟记录 v1+v2 迁移', (t) => {
+test('openStore 递归建目录、开 WAL/外键/busy_timeout，并按注入时钟记录 v1~v3 迁移', (t) => {
   const box = sandbox(t)
   const path = box.path('nested/deeper/core.db')
   const store = box.track(openStore({ path, now: () => 1_700_000_000_000 }), (value: Store) => value.close())
@@ -61,9 +61,9 @@ test('openStore 递归建目录、开 WAL/外键/busy_timeout，并按注入时�
   assert.equal(store.db.prepare('PRAGMA foreign_keys').get()?.foreign_keys, 1)
   assert.equal(store.db.prepare('PRAGMA busy_timeout').get()?.timeout, DEFAULT_BUSY_TIMEOUT_MS)
   const versions = store.db.prepare('SELECT version FROM schema_migrations ORDER BY version').all().map((row) => Number(row.version))
-  assert.deepEqual(versions, [1, 2])
+  assert.deepEqual(versions, [1, 2, 3])
   const appliedAt = store.db.prepare('SELECT applied_at FROM schema_migrations ORDER BY version').all().map((row) => Number(row.applied_at))
-  assert.deepEqual(appliedAt, [1_700_000_000_000, 1_700_000_000_000])
+  assert.deepEqual(appliedAt, [1_700_000_000_000, 1_700_000_000_000, 1_700_000_000_000])
 })
 
 test('close 幂等：连续两次不抛错', (t) => {
@@ -89,7 +89,7 @@ test('重开同一文件：迁移不重复执行，队列状态跨重启保留',
 
   const reopened = box.track(openStore({ path }), (value: Store) => value.close())
   const versions = reopened.db.prepare('SELECT version FROM schema_migrations').all().length
-  assert.equal(versions, 2)
+  assert.equal(versions, 3)
   const queue2 = box.track(createTaskQueue({ store: reopened }), (value) => value.close())
   const again = queue2.enqueue({ kind: 'publish', dedupeKey: 'publish-1', payload: { title: '乙' } })
   assert.equal(again.id, task.id)

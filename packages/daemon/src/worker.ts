@@ -18,6 +18,7 @@ import { XianyuError, redactString, toXianyuError } from '@bigfish/core'
 import type { ErrorCode, FailTaskOptions, LogFields, Logger, TaskQueue, TaskRecord } from '@bigfish/core'
 
 import type { ExecuteContext, ExecutorDeps, ExecutorTable } from './executor.ts'
+import { emitTaskState } from './event-emit.ts'
 
 const DEFAULT_LEASE_TTL_MS = 60_000
 const DEFAULT_POLL_INTERVAL_MS = 1_000
@@ -293,6 +294,7 @@ class Worker implements WorkerHandle {
     }
     this.#stats.done += 1
     this.#log(task, 'done', this.#now() - startedAt)
+    emitTaskState(this.#deps, task, 'done')
   }
 
   #failTask(task: TaskRecord, failure: XianyuError, options: FailTaskOptions, startedAt: number): void {
@@ -304,6 +306,11 @@ class Worker implements WorkerHandle {
     }
     this.#stats.failed += 1
     this.#log(task, 'failed', this.#now() - startedAt, { code: failure.code })
+    // 状态以队列落地后为准：可重试失败可能是 queued，不可重试是 failed，超限是 needs_review。
+    emitTaskState(this.#deps, task, this.#queue.get(task.id)?.state ?? 'failed', {
+      code: failure.code,
+      message: failure.message,
+    })
   }
 
   #releaseTask(task: TaskRecord, state: 'released' | 'skipped', durationMs: number): void {

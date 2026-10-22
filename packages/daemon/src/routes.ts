@@ -15,6 +15,8 @@ import type {
   ItemRepository,
   ItemState,
   ItemSummary,
+  TaskEventQuery,
+  TaskEventSink,
   TaskFilter,
   TaskKind,
   TaskQueue,
@@ -91,6 +93,8 @@ export interface RouteContext {
   requestShutdown: RequestShutdown | undefined
   /** 设置存储；未注入时 GET/PUT /settings 返回 UNSUPPORTED（测试里不必真读盘）。 */
   settings: SettingsStore | undefined
+  /** 任务事件流；未注入时 GET /events 返回 UNSUPPORTED。 */
+  events: TaskEventSink | undefined
   now: () => number
   startedAt: number
   version: string
@@ -148,6 +152,7 @@ const ROUTES: readonly Route[] = [
   { method: 'POST', pattern: /^\/reference\/?$/, handler: referenceHandler },
   { method: 'GET', pattern: /^\/items\/?$/, handler: listItemsHandler },
   { method: 'POST', pattern: /^\/circuits\/reset\/?$/, handler: resetCircuitHandler },
+  { method: 'GET', pattern: /^\/events\/?$/, handler: listEventsHandler },
   { method: 'GET', pattern: /^\/settings\/?$/, handler: getSettingsHandler },
   { method: 'PUT', pattern: /^\/settings\/?$/, handler: putSettingsHandler },
   // 生命周期路由单独成文件：关停是运维动作，不跟业务读写在同一个模块里改。
@@ -459,6 +464,34 @@ async function resetCircuitHandler(ctx: RouteContext): Promise<void> {
 }
 
 /** 读设置：面板启动时拉一次，显示当前文案风格/默认类目/发布节奏。 */
+/**
+ * 增量事件流：since 是排他主键游标，返回 {items, nextSince}，面板每 3 秒带上一次
+ * nextSince 再拉一次即可；没有新事件时 items 为空且 nextSince 不回退。
+ */
+async function listEventsHandler(ctx: RouteContext): Promise<void> {
+  const events = ctx.events
+  if (events === undefined) fail('UNSUPPORTED', '事件流未开启：daemon 未注入任务事件存储')
+  const query: TaskEventQuery = {}
+  const since = ctx.url.searchParams.get('since')
+  if (since !== null) query.since = parseSince(since)
+  const limit = ctx.url.searchParams.get('limit')
+  if (limit !== null) query.limit = parseLimit(limit)
+  const taskId = ctx.url.searchParams.get('taskId')
+  if (taskId !== null && taskId !== '') query.taskId = taskId
+  const batchId = ctx.url.searchParams.get('batchId')
+  if (batchId !== null && batchId !== '') query.batchId = batchId
+  const items = events.list(query)
+  const last = items.length === 0 ? undefined : items[items.length - 1]
+  const nextSince = last === undefined ? (query.since ?? 0) : last.id
+  await sendJson(ctx.res, 200, ok({ items, nextSince }), ctx.redact)
+}
+
+/** since 是事件主键游标：只接受非负整数，别让「上次失败的游标」把面板卡死。 */
+function parseSince(raw: string): number {
+  if (!/^\d+$/.test(raw)) fail('VALIDATION', 'since 必须是非负整数：' + raw)
+  return Number(raw)
+}
+
 async function getSettingsHandler(ctx: RouteContext): Promise<void> {
   const store = ctx.settings ?? fail('UNSUPPORTED', 'daemon 未注入设置存储')
   await sendJson(ctx.res, 200, ok(await store.get()), ctx.redact)
