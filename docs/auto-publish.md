@@ -26,10 +26,10 @@
 | 段 | 现在有什么 | 缺什么 |
 | --- | --- | --- |
 | ① 草稿与校验 | `plugin-ops/src/draft.js`：`validatePublishDraft`（title/desc/priceCents/images 绝对路径/quantity/shipping/pricingMode/address/category）+ `draftDedupeKey`（内容哈希，同草稿重复入队只留一条） | 批次层：一次处理 N 条、单条非法不拖垮整批、批内重复先挡 |
-| ② 入队 | `POST /tasks`（`kind: publish`，payload `{accountId,title,desc,priceCents,images,category?}`）；`core/src/queue.ts` 的 dedupeKey `ON CONFLICT DO NOTHING`（命中不新建、不重置 attempts） | 批量入队工具（`xy_publish_batch`）+ 每条结果状态表（queued / skipped-duplicate / invalid） |
-| ③ 执行 | `packages/daemon/src/worker.ts`：concurrency 默认 1、同 accountId 最多一个在飞、租约 60s；`UNSUPPORTED/VALIDATION/AUTH_EXPIRED` 等不可重试码直接 failed 进待审 | 批量进度汇总；单条 `POST /tasks` 直接入队**不受账号级 pacing 约束**（写桶 1/60s 兜底） |
+| ② 入队 | `POST /tasks`（`kind: publish`，payload `{accountId,title,desc,priceCents,images,category?}`）；`core/src/queue.ts` 的 dedupeKey `ON CONFLICT DO NOTHING`（命中不新建、不重置 attempts） | 剩：`POST /tasks` 不回 `created` 标志（跨批重复只能显示 queued）；工具层已有 `xy_publish_batch` + 每条状态（queued / skipped-duplicate / invalid） |
+| ③ 执行 | `packages/daemon/src/worker.ts`：concurrency 默认 1、同 accountId 最多一个在飞、租约 60s；`UNSUPPORTED/VALIDATION/AUTH_EXPIRED` 等不可重试码直接 failed 进待审 | 剩：整批进度/重试；批次统计已有（`GET /batches/:id` 五状态计数）；单条 `POST /tasks` 直接入队**不受账号级 pacing 约束**（写桶 1/60s 兜底，实测第 2 条被 `RATE_LIMITED` 退避后成功） |
 | ④ CDP 发布 | `packages/channel-cdp/src/publish.ts` 步骤机 + `category.ts` 选类目；`operations.ts` 里 `publishItem` 只在 `BF_PUBLISH_SUBMIT=1` 时真提交；每步截图（`BF_PUBLISH_SCREENSHOTS`，默认 `<data-dir>/publish-shots`） | 批量下的失败分类统计；类目不支持时提前拦（现在到提交才 `VALIDATION`） |
-| ⑤ 结果 | `items` 表 upsert、任务 failed→待审（`needs_review` 语义）；failed / needs_review 可用 `POST /tasks/:id/retry` + `xy_task_retry` 重新排队（单测，未真机重放） | 批次维度结果汇总（这一批几成几败、卡在哪、截图路径）；整批重试 |
+| ⑤ 结果 | `items` 表 upsert、任务 failed→待审（`needs_review` 语义）；failed / needs_review 可用 `POST /tasks/:id/retry` + `xy_task_retry` 重新排队（单测，未真机重放） | 剩：整批重试/整批放行；批次维度汇总已有（`GET /batches/:id` → `{batchId,total,counts,items}`），截图路径仍按任务分散在 `BF_PUBLISH_SCREENSHOTS` 目录 |
 
 ## 3. 幂等与失败语义（不许破的规则）
 
@@ -42,7 +42,7 @@
 
 | 编号 | 做什么 | 文件 | 验收 |
 | --- | --- | --- | --- |
-| A1 | 侧边栏面板内「自动发布」tab（`PANEL_TABS` 第一项、默认选中）：流水线说明 + 草稿集粘贴 + 发布前校验 + 产出请求 JSON（不联网、不执行） | `packages/plugin-ops/client.js`（面板内模块 tab） | 桌面端 GUI 实拍点开看到面板；`plugin-ops` 测试全绿 |
+| A1 | 侧边栏面板内「自动发布」tab（`PANEL_TABS` 第一项、默认选中）：流水线说明 + 草稿集粘贴 + 发布前校验 + 产出请求 JSON（不执行；只读状态走 `/bigfish` rpc 轮询） | `packages/plugin-ops/client.js`（面板内模块 tab） | 桌面端 GUI 实拍点开看到面板；`plugin-ops` 测试全绿 |
 | A2 | `xy_publish_batch`：批量校验 + 幂等入队 + 逐条状态汇总；`mode=dry-run` 默认 | `packages/plugin-ops/src/batch.js`、`tools.js`、`gate.js` | 单测（假 daemon client）+ 全量测试；写类工具走审批门禁 |
 | A3 | 真机小批量试验：1 条 dry-run → 1 条真发 → 观察队列/截图/itemId | 无代码（用已导入的账号，默认 dry-run，真发须用户点头） | 见 §5 验收口径 |
 
@@ -51,7 +51,7 @@
 **已落地**：
 - **A1 ✅**：`packages/plugin-ops/client.js` 的 `PANEL_TABS` 第一项 = 自动发布（点侧边栏「BigFish 闲鱼运营」进面板即默认这个分区）。面板 = 流水线四步说明 + 草稿集 textarea（每行内联 JSON 或 `.json` 路径）+ 发布前校验（JSON 合法性、缺字段、类目矩阵提示）+ 模式 chips（dry-run / enqueue，默认 dry-run）+ 「生成批量发布请求」产出 `xy_publish_batch` 参数 JSON + 发布命令清单。纯客户端：不联网、不调模型、不执行写操作。**2026-10-21 曾注册成会话顶部 tab（`conversation.view`），用户要求主页面在侧边栏面板里，已收回面板内**。
 - **A2 ✅ 单测**：`packages/plugin-ops/src/batch.js`（`normalizeBatchArgs` / `prepareBatch` / `runBatch` / `formatBatchResult`）+ 第 11 个工具 `xy_publish_batch` + `gate.js` 审批口径（仅 `mode=enqueue` 需确认）。单条与批量共用 `publish-flow.js` 的 `buildPublishEnqueueInput`，幂等键同口径（`publish:<8hex>`）。
-- **A3 🟡 半程**：单件 dry-run（含类目 + 地址）与**单件真提交**均已真机通过，见 §5.1；**批量（≥2 条）与「含不支持类目」还没跑**。
+- **A3 🟡 dry-run 段完成**：单件 dry-run（含类目 + 地址）、单件真提交、**队列批量 dry-run（2 条同批 → 2/2 done）** 均已真机通过，见 §5.1；**批量真提交、同批混「不支持类目」、失败重放还没跑**。
 - **A4 失败收尾 ✅ 单测**：`core/src/queue.ts` 的 `requeue`（failed / needs_review → queued，attempts 归零、清租约与 lastError、保留 dedupeKey/payload）+ `POST /tasks/:id/retry` + 工具 `xy_task_retry`（写类、挂审批，理由写明 `BF_PUBLISH_SUBMIT=1` 下会真重放）。**未真机重放发布。**
 - **A5 账号级 pacing ✅ 单测**：`core/src/limiter.ts` 的 `resolvePublishMinIntervalMs`（默认 180s，夹 30s..3600s）与 `nextPublishAvailableAt`；`plugin-ops/src/batch.js` 批量按账号逐条预约 `availableAt`，支持 `BF_PUBLISH_MIN_INTERVAL_MS`，入队失败不占位。**180s 是推导值、未真机校准；单条 enqueue / 直接 `POST /tasks` 不受约束**（写桶 1/60s 兜底）。
 - **A6 发布侧风控识别 ✅ 单测**：`channel-cdp/src/risk.ts`（`detectPublishRisk` 探测 URL/文案/验证组件；`withRiskGuards` 每步前/抛错/步后探测，命中抛 `RISK_CONTROL` 带 `details.step`）；daemon 侧任务命中即熔断 600s。**只有单测、未真机故意触发。**
@@ -65,22 +65,35 @@
 
 修法（`channel-cdp/src/category.ts` + 新增 `category-page.ts`）：按 `aria-controls/aria-owns` 绑定当前 Select 的下拉、只认可见下拉、不对选项滚动页面、点击前 `elementFromPoint` 命中测试、用 `.ant-select-open`+`aria-expanded` 判打开、连续 2 次回读一致才算选中（最多重试 3 次），仍不一致就 fail-closed。16 个单测守护（含隐藏 dropdown 同名选项、下拉没开先开、回读不一致重试后成功）。
 
-**批量还缺（daemon 侧，B 阶段做）**：
-1. 没有批次概念：批量只是 N 条独立 publish 任务，无 `batchId` / 批次进度 / 批次失败汇总查询。
+### 4.2 分类的第二层真相（2026-10-22 真机逆向，决定覆盖面天花板）
+
+**闲鱼 PC 发布页的「分类」不是全量类目树**：它是 antd Select（无 `show-search`、内部 input 是 `readonly` 且 `opacity:0`），**不能搜索、不能手输**；下拉一次只给约 10 个候选，候选来自 `mtop.taobao.idle.kgraph.property.recommend`（入参 `title` / `description` / `imageInfos`），因此**图片和文案决定你能选哪些类目**。
+
+- 未传图前「分类」表单项根本不渲染；传图后 AI 立刻按图片猜一个（占位图 → 「女士包」）。
+- 文案写进描述区后会**重新触发推荐**：实测填「高数笔记 手写整理 考研数学…」后候选变成 `电子资料 / 学习资料定制 / 学习笔记 / 考研咨询 / …`，比传图阶段多出「学习笔记」。
+- 候选有时在可视区外（`.rc-virtual-list-holder` clientHeight 256 / scrollHeight 320），坐标取不到；必须滚**下拉内部** holder，滚页面会让 antd 重排。
+
+**因此发布步骤机的顺序不能改**：上传图片 → 填写文案 → 选择分类。`86ca47e` 的修法：目标不在候选里时关下拉、等 `REFRESH_WAIT_MS`（700ms×尝试次数，受步骤预算约束）再重开重读；候选在可视区外先滚下拉内部再点；仍没有就 fail-closed，报错里列出当前 10 个候选并提示「把品类关键词写进标题/描述后重试」或「显式选『其他闲置』兜底」。
+
+**产品含义**：能发哪些类目取决于文案写得好不好，不是代码能绕的。批量时某条文案把推荐带偏 → 那条失败待审，不拖垮整批。
+
+**批量还缺（2026-10-22 更新）**：
+1. ✅ 批次概念已补：`EnqueueInput.batchId` / `TaskRecord.batchId` / `batchStats` / `GET /batches/:id`（迁移 v2 加 `tasks.batch_id` + 索引）。
 2. 跨批重复识别不出：`POST /tasks` 对重复 `dedupeKey` 也回 201 + 既有记录、没有 `created` 标志，插件侧只能显示 queued（批内重复才能标 skipped-duplicate）。建议 daemon 返回 `{created:boolean}` 或 200/201 区分。
 3. 待审任务已能逐条 retry（`xy_task_retry`，单测级），但仍缺「整批重试/整批放行」。
+4. 批次真提交没跑过；同批混一条不支持类目、失败重放、pacing 校准都还欠真机。
 
 ## 5. 真机试验验收口径（做不到就不算完成）
 
-- [ ] `BF_PUBLISH_SUBMIT=1` 起 daemon，`/status` 的 worker 在轮询、accounts 里有已导入的账号。**未做**：目前的真发走的是 CLI `publish --submit`（单件），没经过队列。
-- [ ] 同一批次连续 enqueue 两次：第二次全部 `skipped-duplicate`，`/tasks` 不新增。**未做真机**（批内重复有单测）。
+- [x] daemon 起来后 worker 在轮询、accounts 有已导入账号、队列在跑：**已真机**（`BF_PUBLISH_DRYRUN=1` 队列模式，2 条同批 dry-run 全 done）。`BF_PUBLISH_SUBMIT=1` 的**队列真提交**仍未跑。
+- [ ] 同一批次连续 enqueue 两次：第二次全部 `skipped-duplicate`，`/tasks` 不新增。**未做真机**（批内重复有单测）。注意：直接 `POST /tasks` 重复 `dedupeKey` 仍回 201，只能靠 `xy_publish_batch` 的批内去重。
 - [ ] 真发成功后 `items` 表有 itemId，截图目录有每一步 PNG。**一半**：真发成功拿到 itemId、每步截图齐；但 CLI 直发**不落 items 表**（items 是 daemon 队列路径才写）。
 - [ ] 故意给一条不支持类目的草稿：`VALIDATION`、`needs_review`，同批其他条仍继续，不整批崩。**未做真机**（category 层 fail-closed 有单测）。
 - [ ] 失败任务不重试不可重试码（看队列 attempts 不变）。**未做真机**（worker 单测覆盖）。
 - [ ] 用 `xy_task_retry` 把 failed 任务重新排队并**真机重放一次发布**。**未做**（`requeue` / 端点 / 工具均有单测）。
-- [ ] 账号级 pacing 真机校准：连发两件确认间隔 ≥180s 且不再被风控。**未做**（180s 是推导值，只有单测）。
+- [ ] 账号级 pacing 真机校准：连发两件确认间隔 ≥180s 且不再被风控。**半个证据**：2026-10-22 队列 dry-run 里第 2 条在 15s 内被写桶 `RATE_LIMITED`、退避后成功（说明写桶兜底生效）；180s 这个数仍未校准（直接 `POST /tasks` 绕过了它）。
 - [ ] 真机故意触发一次发布侧风控，确认 `RISK_CONTROL` + 熔断 600s。**未做**（只有单测）。
-- [x] 全仓测试全绿 + 6 个 TS 包 tsc 0 错误（709 tests / 27 suites / 73 个测试文件；core、daemon、mtop、cdp、guanjia、im 六个包 tsc 0）。
+- [x] 全仓测试全绿 + 6 个 TS 包 tsc 0 错误（779 tests / 31 suites / 79 个测试文件；core、daemon、mtop、cdp、guanjia、im 六个包 tsc 0）。
 
 ### 5.1 真机记录（2026-10-21/22，用户大号 `2206569289277`——AGENTS §5：这个账号不是测试小号，真发须用户点头、一次一件）
 
@@ -93,7 +106,10 @@
 | 更早一次真发（人工留档） | itemId `1093817229436`，已下架 | 无 repo 内证据（当时未留脚本产物） |
 | 队列路径真发（`POST /tasks` → worker → `operations.publish`） | itemId `1091940243200` 落 items 表，已下架；同账号约 15s 内发第二件被风控（RATE_LIMITED → INTERNAL），由此定为需要账号级 pacing | `.scratch/pubtest/qdata/`、`.scratch/pubtest/queue-trial.mjs` |
 
-**边界（别扩写）**：真发只跑过**单件**（3 次：2 次 CLI 直发 + 1 次队列路径）、只跑过**「学习笔记」**类目；批量、重复去重、不支持类目混批、失败重放都还没真机验证。
+| **队列批量 dry-run**（`BF_PUBLISH_DRYRUN=1`，2 条同 `batchId`） | 2/2 `done`；第 2 条先 `RATE_LIMITED`（写桶满）退避后成功；批次终态 `{counts:{done:2,failed:0,needs_review:0}}` | `.scratch/e2e3/run.log`、`.scratch/e2e3/shots/`（两轮各 7 张）、`.scratch/e2e3/daemon.log` |
+| dry-run，队列批量（重复入队） | 相同 `dedupeKey` 第二次 enqueue 回 201 但不新建任务（无 `created` 标志可依） | 同上（`xy_publish_batch` 批内才有 `skipped-duplicate`） |
+
+**边界（别扩写）**：真发只跑过**单件**（3 次：2 次 CLI 直发 + 1 次队列路径）、只跑过**「学习笔记」**类目；**批量只跑过 dry-run**；批量真提交、同批混不支持类目、失败重放都还没真机验证。
 
 ## 6. 与 P2（自动发货）的关系
 

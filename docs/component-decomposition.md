@@ -10,7 +10,7 @@
 
 ## 0. 实施状态（P1.0 已完成）
 
-三个 channel 包已按 §4 契约落地。**当前全量口径**（以 [STATUS.md](STATUS.md) 为准）：`node scripts/test-all.mjs` = **709 tests / 709 pass（27 suites / 73 个测试文件）**，6 个 TS 包 tsc 0 错误（`plugin-ops` / `ops-bundle` 是纯 ESM JS，无 tsconfig，**不在类型检查覆盖内**）；当前形态以 [architecture.md](architecture.md) 与 [STATUS.md](STATUS.md) 为准。
+三个 channel 包已按 §4 契约落地。**当前全量口径**（以 [STATUS.md](STATUS.md) 为准）：`node scripts/test-all.mjs` = **779 tests / 779 pass（31 suites / 79 个测试文件）**，6 个 TS 包 tsc 0 错误（`plugin-ops` / `ops-bundle` 是纯 ESM JS，无 tsconfig，**不在类型检查覆盖内**）；当前形态以 [architecture.md](architecture.md) 与 [STATUS.md](STATUS.md) 为准。
 
 | 包 | 条数 | 关键实现 | 偏差（已在包 README 记录） |
 | --- | --- | --- | --- |
@@ -285,7 +285,7 @@ export class GuanJiaClient {
 ## 6. 验收
 
 ```sh
-node scripts/test-all.mjs            # 709 tests / 709 pass（27 suites / 73 个测试文件；口径见 STATUS.md）
+node scripts/test-all.mjs            # 779 tests / 779 pass（31 suites / 79 个测试文件；口径见 STATUS.md）
 node scripts/typecheck.mjs           # 6 个 TS 包全通过；plugin-ops / ops-bundle 是纯 JS，不参与
 ```
 
