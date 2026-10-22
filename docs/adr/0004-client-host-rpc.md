@@ -84,7 +84,7 @@ DSH 宿主给插件的客户端能力只有两类入口：
 而 connection 插件的 `inject` 只有 `['credentials']`（`packages/client/connection/src/index.ts`），所以 owner ctx 上取不到
 `webServer`。**这不是本仓库能绕开的**：不用 `rpc.handle` 就只剩「自建 HTTP 路由（client 侧被禁 `fetch(`）或 Typert namespace（不可用）」两条死路。
 
-**已验证的临时修法（仅用于取证，未提交到任何仓库）**：把 connection 插件 `inject` 改成 `['credentials','webServer']`，
+**取证时验证过的宿主修法（仅用于证明根因；改动已全部还原，未提交到任何仓库）**：把 connection 插件 `inject` 改成 `['credentials','webServer']`，
 同时改编译产物 `lib/index.js` 对应行，重启 host → `/bigfish` 注册成功，面板渲染出真实数据：
 daemon 在线 · v0.0.0 · 已运行 12 分钟、账号 1/1 可写、队列 0/0/1/1/0、批次 `b-e2e-mvj2gf5w`、设置 plain/未设置/180 秒
 （截图 `.scratch/shots/panel-online.png`；未打补丁的降级态 `.scratch/shots/panel-offline.png`）。改动已全部还原，checkout 干净。
@@ -93,10 +93,35 @@ daemon 在线 · v0.0.0 · 已运行 12 分钟、账号 1/1 可写、队列 0/0/
 1. connection 插件 `inject` 增加 `webServer`（最小改动，与现状注册路径一致）；
 2. `get rpc()` 不再用 `this.ctx`，改由调用方把 ctx 传进来（例如 `rpc.handle(channel, handler, { ctx })` 或注册时显式传 ctx）。
 
-**在那个修复落地前**：面板实时数据属「代码已完成、桌面不可见」状态；发布链路（工具 + daemon）不受影响。
-桌面端还需重启一次进程（运行中的进程里没有新插件代码，旧 bundle 也没有 `/bigfish` 调用）。
+### 插件侧绕过：自建 webServer 兼容路由（2026-10-22 已实现，随 `@bigfish/plugin-ops` 发布）
+
+不能改用户安装的宿主，也不能让面板一直降级，所以插件自己注册一条与宿主 `rpcFetchHandler` **同协议**的 HTTP 路由：
+
+- **注册顺序**（`packages/plugin-ops/index.js` 的 `registerRpcChannel`）：先走官方 `ctx.inject(['connection'], …)` → `rpc.handle('/bigfish', bridge.handle)`；
+  官方通道缺失或抛错（命中上面这个宿主 bug）才回退 `ctx.inject(['webServer','connection'], …)`，用 `webServer.register` 注册 `createPanelRoute(...)`。
+  宿主修好后自动走官方通道，插件不用改。
+- **路由与信封**：`packages/plugin-ops/src/host-route.js` 的 `createPanelRoute` 返回 `{ kind: 'prefix', path: '/bigfish', handler }`；
+  请求体 `{ type: 'client-request', rpcId, method, payload }`，响应 `{ type: 'server-response', rpcId, result }`，`result` 即 `bridge.handle` 的 `{ ok: true, value }` / `{ ok: false, error }`。
+  client bundle 一行不用改（它只认 `ctx.connection.rpc.call('/bigfish', endpoint, payload)`）。
+- **鉴权 fail-closed**：每个请求先调 `connection.requestRejection(req)`（宿主公开方法，内部查 trusted host + 浏览器 cookie）：
+  返回 403/401 就直接回 `forbidden` / `unauthorized`，**绝不**无鉴权暴露 daemon 数据；拿不到 `requestRejection` 就拒绝注册路由（记一条 warn，面板保持降级）。
+- **与宿主 rpcFetchHandler 对齐**：非 POST 或缺 endpoint → 404；content-type 主类型不是 `application/json` → 415；JSON 解析失败 → 400；
+  信封不合法或 `method !== endpoint` → **HTTP 200 + `gateway/bad-request` 错误信封**（与宿主一致，client 才能按同一逻辑解析）；
+  `bridge.handle` 抛错 → 500 `handler failure: ...`；请求体上限 1 MiB / 15 s（超限 413 / 408）。
+  endpoint 段只允许 `[A-Za-z0-9_$.-]`、禁空段与 `.`/`..`、不做 percent 解码（与宿主 `endpointFromPath` 一致）。
+- **卸载与中断**：注册包在 `webCtx.effect(() => webServer.register(route), …)` 里，插件卸载自动释放；client 断开（res close）会 abort 透传给 `bridge.handle` 的 signal。
+- **日志**（单行 JSON，稳定字段）：成功 `{ msg: "面板 rpc 通道已启用 webServer 兼容路由（绕过 DSH 已知宿主 bug…）", rpcChannel: "registered-webServer", hostBug: true }`；失败才 warn。
+  **注意**：真实 Cordis 的 `ctx.inject` 回调是异步的，`apply` 同步返回的加载汇总日志里 `rpcChannel` 仍是 `"deferred"`，真正状态看随后那条 info/warn；排障时不要只看第一行。
+- **验证**：`packages/plugin-ops/test/host-route.test.mjs`（13 条，直接挂 `node:http`，覆盖 401/403/404/415/400/413、信封回显、method 不匹配、bridge 抛错、abort）
+  + `test/rpc.test.mjs` 的「命中宿主 bug 时回退兼容路由」用例；隔离 dev host 实测（`node scripts/dsh-dev.mjs`，127.0.0.1:47080）：
+  server.log 出现上面那条 info 且无 webServer warn；带登录 cookie `POST /bigfish/health` 返回 200 与真实 daemon 数据，无 cookie 返回 401。
+  （本会话沙箱禁止 spawn 浏览器，桌面截图这一步需在非沙箱环境重启 DSH 后人工确认。）
+
+**当前状态**：面板实时数据不再依赖宿主补丁——插件侧兼容路由已随 `@bigfish/plugin-ops` 生效；发布链路（工具 + daemon）不受影响。
+桌面端需重启一次 DSH 进程（运行中的进程没有新插件代码）。宿主修好后（上面二选一）自动回到官方通道，插件侧路由成为兼容旧宿主的回退路径。
 
 ## 验收（当前状态）
 
-- 单测：`packages/plugin-ops/test/rpc.test.mjs`（白名单透传、写端点缺 `confirm` 拒绝、未知端点 `UNSUPPORTED`、客户端异常收敛信封、`ctx.effect` 卸载释放、无 `connection` 时降级不抛错）。
+- 单测：`packages/plugin-ops/test/rpc.test.mjs`（白名单透传、写端点缺 `confirm` 拒绝、未知端点 `UNSUPPORTED`、客户端异常收敛信封、`ctx.effect` 卸载释放、无 `connection` 时降级不抛错；宿主 bug 时回退 webServer 兼容路由）。
+- 兼容路由：`packages/plugin-ops/test/host-route.test.mjs`（node:http 直挂路由，覆盖鉴权、路径解析、415/400/413/500、信封与 signal）。
 - 面板侧接线与 daemon 路由（`/settings`、`/batches/:id`、`POST /tasks` 的 `{task,created}`）由 C2/C3 落地；本文锁的是「通道 + 白名单 + `confirm`」这一层契约。

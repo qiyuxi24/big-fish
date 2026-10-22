@@ -185,15 +185,35 @@ function createRpcHostCtx(options = {}) {
   const injected = []
   const disposers = []
   const registered = []
+  const webRoutes = []
+  const webDisposers = []
+  // 用 getter 动态读：测试可以在 apply 前才把 connection 塞进来。
+  const readService = (name) => {
+    if (name === 'connection') return base.ctx.connection
+    if (name === 'webServer') return options.webServer
+    return undefined
+  }
   base.ctx.inject = (deps, callback) => {
     injected.push(deps)
-    callback({
-      // 用 getter 动态读：测试可以在 apply 前才把 connection 塞进来。
-      get: (name) => (name === 'connection' ? base.ctx.connection : undefined),
+    const scope = {
+      get: readService,
       effect: (fn) => {
         disposers.push(fn())
       },
-    })
+    }
+    // 只有用例提供 webServer 时才暴露子 inject：默认保持「宿主 bug + 无 webServer」的降级路径。
+    if (options.webServer !== undefined) {
+      scope.inject = (nestedDeps, nestedCallback) => {
+        injected.push(nestedDeps)
+        nestedCallback({
+          get: readService,
+          effect: (fn) => {
+            webDisposers.push(fn())
+          },
+        })
+      }
+    }
+    callback(scope)
   }
   if (options.connection !== undefined) base.ctx.connection = options.connection
   return {
@@ -201,6 +221,8 @@ function createRpcHostCtx(options = {}) {
     injected,
     disposers,
     registered,
+    webRoutes,
+    webDisposers,
     setConnection(connection) {
       base.ctx.connection = connection
     },
@@ -298,3 +320,60 @@ test('命中 DSH 宿主 bug（webServer 未 inject）时告警里带上 ADR 指�
   assert.match(record.msg, /adr\/0004-client-host-rpc/)
   assert.match(record.error, /webServer/)
 })
+
+test('命中宿主 bug 时改用插件自己的 webServer 兼容路由，面板不降级（不改宿主）', () => {
+  let released = false
+  const routes = []
+  const webServer = {
+    register(route) {
+      routes.push(route)
+      return () => {
+        released = true
+      }
+    },
+  }
+  const host = createRpcHostCtx({
+    webServer,
+    connection: {
+      // 宿主官方通道：照 0.1.5-rc.2 的行为抛 webServer inject 错误。
+      rpc: {
+        handle: () => {
+          throw new Error('cannot get property "webServer" without inject')
+        },
+      },
+      // 兼容路由的鉴权入口：本用例模拟已登录。
+      requestRejection: () => undefined,
+    },
+  })
+  const original = console.log
+  const logs = []
+  console.log = (line) => logs.push(line)
+  try {
+    apply(host.ctx, { tokenPath: '/tmp/daemon.token' })
+  } finally {
+    console.log = original
+  }
+
+  // 先官方后兼容：官方失败不再单独告警（能绕开时不该出现「面板不可用」的误导信息）。
+  assert.deepEqual(host.injected, [['connection'], ['webServer', 'connection']])
+  assert.equal(host.registered.length, 0)
+  assert.equal(routes.length, 1)
+  assert.equal(routes[0].kind, 'prefix')
+  assert.equal(routes[0].path, '/bigfish')
+  assert.equal(typeof routes[0].handler, 'function')
+
+  assert.equal(logs.length, 2)
+  const active = JSON.parse(logs[0])
+  assert.equal(active.level, 'info')
+  assert.equal(active.rpcChannel, 'registered-webServer')
+  assert.match(active.msg, /webServer 兼容路由/)
+  assert.equal(JSON.parse(logs[1]).rpcChannel, 'registered-webServer')
+  assert.equal(logs.some((line) => /rpc 通道注册失败/.test(line)), false)
+  assert.equal(logs.some((line) => JSON.parse(line).level === 'warn'), false)
+
+  // 卸载时路由随 effect 释放。
+  assert.equal(host.webDisposers.length, 1)
+  host.webDisposers[0]()
+  assert.equal(released, true)
+})
+

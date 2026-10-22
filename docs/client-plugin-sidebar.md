@@ -97,15 +97,16 @@ ctx.connection.rpc.call('/bigfish', '<endpoint>', payload) // → { ok: true, va
 - 写类端点（`tasks.retry` / `accounts.import` / `accounts.login` / `batch.enqueue` / `settings.put`）**本轮不消费**：
   它们要求 `confirm: true` 且需要二次确认 UI，按钮留到下一轮。
 
-> ⚠️ **宿主阻塞（2026-10-22 实测，DSH 0.1.5-rc.2）**：当前桌面端面板**只能显示降级行**，因为宿主 `connection` 插件的
-> `rpc` getter 用**自己的** ctx 去注册路由（`packages/client/connection/src/rpc-host.ts:80` 的 `const owner = this.ctx`，
-> 并在 `:178-181` 执行 `owner.webServer.register(route)`），而该插件 `inject` 只有 `['credentials']`——所以任何外部插件调
-> `ctx.connection.rpc.handle('/bigfish', …)` 必抛 `cannot get property "webServer" without inject`，路由注册失败。
-> 证据：桌面/隔离 host 的 server.log 出现该错误、`POST /bigfish/health` 返回 405（路由不存在）；
-> 临时把 connection 插件 `inject` 改成 `['credentials','webServer']` 并重启 host 后，`/bigfish` 注册成功、
-> 面板出现真实数据（截图 `.scratch/shots/panel-online.png`；降级态见 `.scratch/shots/panel-offline.png`）。
-> **修法在宿主侧**（connection 插件 inject 加 `webServer`，或 `get rpc()` 改用调用方 ctx），本仓库不需要改代码；
-> 在宿主修复前，面板的实时数据只能在「打过补丁的 dev host」上验证。详见 [adr/0004-client-host-rpc.md](adr/0004-client-host-rpc.md) §已知阻塞。
+> ⚠️ **宿主 bug 已有插件侧绕过（2026-10-22，DSH 0.1.5-rc.2）**：宿主 `connection` 插件的 `rpc` getter 用**自己的** ctx 注册路由
+> （`packages/client/connection/src/rpc-host.ts:80` 的 `const owner = this.ctx`，并在 `:178-181` 执行 `owner.webServer.register(route)`），
+> 而该插件 `inject` 只有 `['credentials']`——所以外部插件调 `ctx.connection.rpc.handle('/bigfish', …)` 必抛
+> `cannot get property "webServer" without inject`。
+> 插件现在的做法：官方通道失败时回退到自建 `webServer` 兼容路由（`packages/plugin-ops/src/host-route.js`），
+> 请求/响应信封与状态码和宿主一致，鉴权走 `connection.requestRejection`（fail-closed，拿不到鉴权就不注册）；
+> 宿主修好后自动优先走官方通道。隔离 dev host 已实测：带登录 cookie `POST /bigfish/health` 返回 200 与真实 daemon 数据、
+> 无 cookie 返回 401，加载日志出现 `rpcChannel:"registered-webServer"` 且无 webServer 报错。
+> 桌面端需重启一次 DSH 进程（旧进程里没有新插件代码）。细节与建议的宿主侧修法见
+> [adr/0004-client-host-rpc.md](adr/0004-client-host-rpc.md) §已知阻塞。
 
 ## 2. 调试（一条命令）
 
@@ -113,6 +114,7 @@ ctx.connection.rpc.call('/bigfish', '<endpoint>', payload) // → { ok: true, va
 node scripts/dsh-dev.mjs --fresh   # 造隔离 DSH_HOME(.scratch/.dshdev)，起 web 到 127.0.0.1:47080
                                   # 注意：本沙箱禁止 junction，隔离实例只能在沙箱外起（见 §3 坑 10）
 node scripts/dsh-shot.mjs          # headless Chrome 通过 CDP 打开、点栏位、断言面板、截图
+                                  # （注意：脚本里的文案/ tab 断言落后于当前 6 tab 版本，见 §1.1；沙箱内 spawn 浏览器会 EPERM）
 node scripts/dsh-shot.mjs --hmr    # 改 client.js → 断言不刷新页面就换文案 → 自动还原
 node scripts/dsh-dev.mjs --stop    # 停实例
 ```
