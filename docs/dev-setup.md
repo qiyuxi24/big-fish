@@ -99,6 +99,7 @@ npm run daemon:start -- --port 47002 --data-dir .scratch/daemon-live
 
 - 冷却 30s（失败后 `plugin.log` 记一条 warn，面板不会每 3 秒 fork 一次）；并发轮询单飞，只拉一个。
 - 关掉：插件 config `autoStartDaemon: false`；远端 daemon（非回环 `daemonUrl`）永远不本地拉起。
+- **异常唤醒**（另一件事，别和自动拉起混）：插件每 10s 拉 `GET /events`，发布任务落到 `failed`/`needs_review` 时用 `agent.followup` 往当前会话推一条 notice（任务/批次/错误码/下一步）。不需要的话在插件 config 里设 `enableAlerts: false`；没有活着的会话时它不会轮询，不会在后台空转。
 - 找不到 node / daemon 入口时降级为「请手动 `pnpm daemon:start`」，并给可执行的下一步提示（面板降级文案里就有）。
 - 日志：`<dataDir>/plugin.log`（拉起决策/结果）、`<dataDir>/daemon.log`（daemon 自己的输出）。
 - 覆盖点：插件 config `nodePath` / `daemonEntry`（默认按插件位置推 `../daemon/src/cli.ts`）。

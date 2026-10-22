@@ -143,6 +143,25 @@ daemon 在 T1 加了 `GET /events`（`task_events` 表的增量视图），面�
   `rpc.test.mjs` 2 条（白名单字段透传、非法 `since/limit/taskId/batchId` → VALIDATION 且不触达 daemon），
   `client.test.mjs` 1 条（查询串拼接）。
 
+### 1.3 异常唤醒：daemon 出事时把消息推到会话里（2026-10-23，host 侧）
+
+面板只在「有人在看」时有用；发布是 daemon 异步跑的，失败时用户往往已经切走。这里用宿主公开扩展点补一条**主动通知**：
+
+- **数据源**：同 `events.list`，但由 host 侧 `startAlertWatcher`（`src/alert-watch.js`）每 10s 拉一次，游标与去重集合都在内存里。
+- **口径**：只认 `kind === 'task.state'` 且 `state` 为 `failed` / `needs_review` 的事件（`src/alerts.js` 的 `isAlertEvent`）；
+  `task.step` 不推——步骤太密，推给会话等于刷屏。
+- **不打扰历史**：启动时先翻页把游标定在「现在」（`primeAlertCursor`，最多 20 页），昨天的失败不会在插件加载时炸出来。
+- **怎么推**：拼一条 `{role:'user', content:[{type:'text',…}], source:{kind:'plugin', form:'notice', summary}}`，
+  调 `agent.followup(message)` 注入最近创建的顶层会话（`ctx.get('agents').roots()` 取最后一个）。
+  插件零依赖，所以没有 import `@deepseek-ai/*`，形状照宿主 `createUserMessage` 手写。
+- **不刷屏**：同一事件 id 只推一次；同轮多条合并成一条（「⚠️ 闲鱼自动发布出现 N 条异常」+ 最多 5 条明细 + 另有 N 条 + 下一步建议）；
+  daemon 离线导致连续失败只记**一条** warn，恢复后自动继续。
+- **不空转**：没有活着的 agent 时只注册 `agent/created` 监听、不 arm 定时器；定时器 `unref()`，不拖住 DSH 退出。
+- **配置**：插件 config `enableAlerts`（默认开）；关掉就不会注册监听。
+- 测试：`test/alerts.test.mjs` 12 条（判定/去重/文案/提示语/消息形状）、`test/alert-watch.test.mjs` 11 条
+  （定基线/游标/合并/agent 消失后补推/连续失败只 warn 一条/stop 后不再 tick）、`config.test.mjs` 与 `apply.test.mjs` 各补配置与加载断言。
+- **未做**：面板未读角标、真机 failed 场景（沙箱里 CDP 起不来，需普通终端跑一次失败发布）。
+
 ## 2. 调试（一条命令）
 
 ```sh

@@ -1,6 +1,6 @@
 # 项目状态 — 单一事实源
 
-> **最后更新 2026-10-23 凌晨（T1 daemon 步骤事件流落地：`task_events` 表 + `GET /events` 增量拉取；T2 面板工作流树落地；887 基线）· 代码基线 `main @ 6ddc95a` + 本次收尾提交。**
+> **最后更新 2026-10-23 凌晨（T1 daemon 步骤事件流、T2 面板工作流树、T3 daemon 异常唤醒会话均已落地；913 基线）· 代码基线 `main @ 2f7cb8c` + 本次提交。**
 > 本文是仓库**唯一**的「现在到哪了 / 下一步做什么」入口。其他文档里的测试数字、工具数量、阶段状态一律以本文为准；
 > 若发现别处与本文冲突，以本文为真、并把冲突处改成指向本文。规则看 [AGENTS.md](../AGENTS.md)，实现形态看 [architecture.md](architecture.md)。
 
@@ -39,12 +39,13 @@ P2 自动发货押后到发布这条线跑顺再切。
 | AI 生图 | 📝 方案 | 选型与管线见 [copywriting-and-imagegen-plan.md](copywriting-and-imagegen-plan.md)，未实现调用 |
 | 地址库 / 别名匹配 | ❌ 未做 | CDP 下地址搜索候选不回显，只能匹配「常用地址/附近地址」；匹配不到就失败回显候选 |
 | 闲管家开放平台 | 📝 客户端在 | `channel-guanjia`（MIT 移植）无消费者、缺凭证 |
+| daemon 异常唤醒会话 | ✅ 单测（host 侧） | 发布任务落到 `failed`/`needs_review` 时，插件 10s 轮询 `/events` 并用 `agent.followup` 往当前会话推一条 notice（任务 id / 批次 / 错误码 / 下一步建议），同一事件不重复推、连续离线只记一条 warn；配置 `enableAlerts: false` 可关。**面板未读角标、真机 failed 场景验证未做** |
 | Web GUI 侧边栏面板 | ✅ 只读 | 静态快照 + 手动刷新；按钮 disabled 是刻意的（DSH 无「面板按钮调 host 工具」公开 API） |
 
 ## 3. 质量基线（可复现）
 
 ```
-node scripts/test-all.mjs     # 887 tests / 887 pass / 36 suites / 87 个测试文件 / ~19s
+node scripts/test-all.mjs     # 913 tests / 913 pass / 36 suites / 87 个测试文件 / ~18s
 ```
 
 | 范围 | 用例数 | 备注 |
@@ -55,10 +56,10 @@ node scripts/test-all.mjs     # 887 tests / 887 pass / 36 suites / 87 个测试�
 | channel-cdp | 102 | 假连接与假页面回放（分类下拉按 AI 推荐刷新/虚拟列表滚动、风控探测） |
 | channel-guanjia | 62 | 纯函数 |
 | channel-im | 32 | 帧解析 / 归一化 / 状态机 |
-| plugin-ops | 177 | 插件契约、门禁、草稿校验、批量入队与 pacing、文案风格注入、账号摘要、参考报告渲染、host rpc 桥（15 端点）、**webServer 兼容路由回退**、**daemon 自动拉起（冷却/单飞/回环守卫）+ 面板内启停（停止需二次确认）**、client bundle（面板内 6 个模块 tab、**工作流树 `events.list` 增量轮询**） |
+| plugin-ops | 203 | 插件契约、门禁、草稿校验、批量入队与 pacing、文案风格注入、账号摘要、参考报告渲染、host rpc 桥（15 端点）、**webServer 兼容路由回退**、**daemon 自动拉起（冷却/单飞/回环守卫）+ 面板内启停（停止需二次确认）**、**异常唤醒（事件去重/合并/提示语、游标定基线、无 agent 不轮询、失败不刷屏）**、client bundle（面板内 6 个模块 tab、**工作流树 `events.list` 增量轮询**） |
 | scripts | 31 | daemon 常驻服务（参数/状态机/日志尾）16 + 发布真机验收脚本（参数/草稿/批次判定/PNG 生成）15 |
 | integration | 2 | 插件 client ↔ 真 daemon 端到端 |
-| **合计** | **887** | ops-bundle 无测试（只声明组合） |
+| **合计** | **913** | ops-bundle 无测试（只声明组合） |
 
 - 类型检查：**6 个 TS 包** tsc 0 错误（core / daemon / channel-mtop / channel-cdp / channel-guanjia / channel-im）。
   **plugin-ops 与 ops-bundle 是纯 ESM JS，无 tsconfig，不在类型检查覆盖内**——改这两个包只能靠测试。
@@ -149,14 +150,14 @@ node scripts/test-all.mjs     # 887 tests / 887 pass / 36 suites / 87 个测试�
 | --- | --- | --- | --- | --- |
 | T1 ✅ | **daemon 步骤事件流（2026-10-23 已落地）** | 新表 `task_events`（taskId / batchId / step / status / at / seq）；worker 执行时把 `channel-cdp/src/steps.ts:36-51` 已有的每步回调落库；新增 `GET /events?since=<seq>&limit=`（增量） | 单测（写入顺序、增量、越界）+ 真机 dry-run 一批后能拉到 step 级事件 | 无 |
 | T2 ✅ | **面板工作流树（2026-10-23 已落地）** | 新增 rpc 端点 `events.list`（白名单 `since`/`limit`/`taskId`/`batchId`，`limit≤1000`）+ daemon 客户端 `listEvents`；client 侧 `useWorkflowEvents`（3s 增量、闭包 `since` 游标、缓冲 300 条）→ `groupEventsByTask` 聚合成「任务→步骤」→ `WorkflowTree`（挂在「自动发布」页 daemon 状态块之后，最近 6 任务 × 6 步，`data-role='workflow-tree'/'workflow-task'/'workflow-step'`）；失败只降级工作流区、不影响在线状态行 | client-bundle 4 条（树结构/游标推进/端点缺失降级/空流）+ rpc 2 条（白名单/非法参数）+ client 1 条；全量 887 绿。**桌面目视仍需用户重启 DSH 后看一眼** | T1 |
-| T3 | **daemon 异常唤醒 DSH 并回消息** | 插件侧 `ctx.jobs.start` 轮询 `/events`，命中 `failed` / `needs_review` / `RISK_CONTROL` 时去重后 `ctx.agent.followup()` 把摘要注入主会话（任务 id、错误码、截图路径、下一步）；面板显示未读角标 | 手工造一条 failed 任务 → 主会话收到一条消息且同一任务不重复打扰；熔断/断网时不刷屏 | T1 |
+| T3 ✅ | **daemon 异常唤醒 DSH 并回消息（2026-10-23 已落地，host 侧）** | 不走 `ctx.jobs.start`（常驻轮询会被当成长任务），改 `setTimeout` 链 + `unref()`：`alerts.js`（纯函数：`isAlertEvent` 只认 `task.state` 的 `failed`/`needs_review`、按 id 去重、合并成一条中文摘要、风控/登录态/待复核三类下一步建议、`source.form='notice'` 的 user message）+ `alert-watch.js`（10s 轮询 `/events`，启动时先翻页定基线**不把历史失败当新告警**，无活着的 agent 不 arm 只等 `agent/created`，推送成功才清队列，连续失败只记一条 warn）；`agent.followup()` 用宿主公开扩展点，插件名走 `ctx.get('agents').roots()` 取最新会话；配置 `enableAlerts`（默认开） | 26 条单测（去重/合并/提示语/基线/agent 消失补推/失败不刷屏/stop 后不再 tick）+ 全量 913 绿；**面板未读角标未做**（下一步）；真机验证需 daemon 里真跑出一条 failed | T1 |
 | T4 | **面板 AI 按钮（发布前处理）** | 按钮 → 输入 JSON → `ctx.subagents` 跑 `xianyu-listing-copy` skill → agent 调新写工具 `xy_draft_save` 落草稿 → 面板草稿列表 → 人审 → `xy_publish_draft` 校验入队（LLM 输出必须过工具落盘，不从会话文本抠 JSON） | 一次走通「原图+原话 → 草稿 → 人审 → 入队 dry-run」；ADR 0005 写清 subagents 用法与审批门禁 | 可与 T1 并行 |
 | T5 | **只读「相机」（闲鱼浏览器画面）** | daemon `GET /camera?taskId=` → CDP `Page.captureScreenshot`（只在发布任务运行时截，不常开）→ 面板 `<img>` 刷新；第一版**只读**，可交互（转发鼠标）留第二步 | 真机 dry-run 时面板看到发布页画面 | Chrome 调试端口 |
 | T6 | **工具层重切** | 一 HTTP 端点一工具 → 一业务动作一工具；读类一次拿全并返回 `nextAction`；合并 `publish_draft` / `publish_batch` / `task_enqueue` 的重叠语义 | 工具数从 14 收敛到 ≤10、每个返回带 `nextAction`、测试与文档同步 | T4 |
 | T7 | **browser-skill 评估（bsk_*）** | 评估用它替代 CDP 做「找货源 / 看页面 / 截图回会话」；再评估能否当发布执行器（**登录态不用带调试端口重启 Chrome** 是最大收益） | 一次真机 dry-run 用 bsk_* 走完发布页填表；写 ADR 定 CDP vs bsk 分工 | 需 ADR |
 | T8 | **定时任务** | 复用 DSH schedule（cron → `agent.followup`，白名单内）或 daemon `availableAt` + 面板编辑；先做「每天定时擦亮 N 件」 | 面板能建/停定时擦亮，到点真跑一次（dry-run 可） | T3 |
 
-**今晚（00:15–02:00）承诺 T1 + T2，两者均已落地并测试全绿（887）**；T3–T8 是下一轮队列。T2 的桌面目视验收需用户重启一次 DSH 桌面应用（面板 host 侧代码在插件启动时加载）。
+**T1 + T2 + T3 均已落地并测试全绿（913）**；T4–T8 是下一轮队列。T2 的桌面目视验收需用户重启一次 DSH 桌面应用（面板 host 侧代码在插件启动时加载；重启后异常唤醒也会一并生效）。
 
 ### 4.5 分层分工（方向性拍板基线，2026-10-22 深夜讨论）
 
