@@ -101,14 +101,20 @@ window.__ModuleLoader__.load({
         return connection
       } catch { return null }
     }
-    /** 单次只读 rpc：传输失败、信封非法、handler 抛错都折成 { ok:false }，绝不冒泡。 */
+    /**
+     * 单次只读 rpc：传输失败、信封非法、handler 抛错都折成 { ok:false }，绝不冒泡。
+     * 失败时带上 error.code（可能是空串）：面板要区分「daemon 断了」和「宿主加载的是旧插件、
+     * 根本没有这个 rpc」——两者都表现为一次失败的 rpc，但用户该做的事完全不同。
+     */
     async function callRead(connection, endpoint, payload) {
-      if (connection === null) return { ok: false }
+      if (connection === null) return { ok: false, code: '' }
       try {
         const reply = await connection.rpc.call(RPC_CHANNEL, endpoint, payload ?? {})
-        if (reply === null || typeof reply !== 'object' || reply.ok !== true) return { ok: false }
-        return { ok: true, value: reply.value }
-      } catch { return { ok: false } }
+        if (reply !== null && typeof reply === 'object' && reply.ok === true) return { ok: true, value: reply.value }
+        const error = reply !== null && typeof reply === 'object' ? reply.error : undefined
+        const code = error !== null && typeof error === 'object' && typeof error.code === 'string' ? error.code : ''
+        return { ok: false, code }
+      } catch { return { ok: false, code: '' } }
     }
     /** 面板动作（启停 daemon）：与只读快照不同，这里要把 error.message 带回 UI。 */
     async function callAction(connection, endpoint, payload) {
@@ -200,7 +206,7 @@ window.__ModuleLoader__.load({
      * 连接句柄变了就重建 effect、游标归零重播最近一页。
      */
     function useWorkflowEvents(connection) {
-      const [stream, setStream] = React.useState({ phase: 'loading', events: [] })
+      const [stream, setStream] = React.useState({ phase: 'loading', events: [], code: '' })
       React.useEffect(() => {
         let alive = true
         let since = 0
@@ -208,18 +214,22 @@ window.__ModuleLoader__.load({
           callRead(connection, 'events.list', { since, limit: EVENT_PAGE_LIMIT })
             .then(reply => {
               if (!alive) return
-              if (!reply.ok) { setStream(previous => previous.phase === 'offline' ? previous : { ...previous, phase: 'offline' }); return }
+              if (!reply.ok) {
+                setStream(previous => previous.phase === 'offline' && previous.code === reply.code
+                  ? previous : { ...previous, phase: 'offline', code: reply.code })
+                return
+              }
               const value = reply.value ?? {}
               const items = Array.isArray(value.items) ? value.items : []
               const nextSince = Number.isInteger(value.nextSince) && value.nextSince >= since ? value.nextSince : since
               if (items.length === 0 && nextSince === since) {
-                setStream(previous => previous.phase === 'ok' ? previous : { ...previous, phase: 'ok' })
+                setStream(previous => previous.phase === 'ok' ? previous : { ...previous, phase: 'ok', code: '' })
                 return
               }
               since = nextSince
-              setStream(previous => ({ phase: 'ok', events: previous.events.concat(items).slice(-EVENT_BUFFER_LIMIT) }))
+              setStream(previous => ({ phase: 'ok', events: previous.events.concat(items).slice(-EVENT_BUFFER_LIMIT), code: '' }))
             })
-            .catch(() => { if (alive) setStream(previous => previous.phase === 'offline' ? previous : { ...previous, phase: 'offline' }) })
+            .catch(() => { if (alive) setStream(previous => previous.phase === 'offline' ? previous : { ...previous, phase: 'offline', code: '' }) })
         }
         tick()
         const timer = setInterval(tick, POLL_MS)
@@ -458,8 +468,12 @@ window.__ModuleLoader__.load({
     function WorkflowTree({ connection }) {
       const stream = useWorkflowEvents(connection)
       const tasks = groupEventsByTask(stream.events).slice(-6).reverse()
+      // UNSUPPORTED 只可能来自「宿主里加载的是重启前的旧插件」：宿主的 handler 表里没有这个 endpoint。
+      // 这时 daemon 状态块照常在线，用户不该去重启 daemon，而该重启 DSH 桌面应用。
       const hint = stream.phase === 'loading' ? '正在读取步骤事件…'
-        : stream.phase === 'offline' ? '事件流拉取失败（daemon 离线，或旧 daemon 没有 /events）；启动 daemon 后自动恢复'
+        : stream.phase === 'offline' ? (stream.code === 'UNSUPPORTED'
+          ? '这一版面板需要宿主里加载新版插件，但现在跑的是重启前的旧代码（没有 events.list 这个 rpc）：重启 DSH 桌面应用后自动恢复；上面的 daemon 状态不受影响'
+          : '事件流拉取失败（daemon 离线，或旧 daemon 没有 /events）；启动 daemon 后自动恢复')
           : tasks.length === 0 ? '还没有步骤事件：daemon 执行任务时才会写（发布 / 擦亮 / 探针都会产生）'
             : '最近 ' + String(tasks.length) + ' 个任务，事件每 3 秒增量追加'
       const stateLabel = value => {

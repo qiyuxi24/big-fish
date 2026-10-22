@@ -1,6 +1,6 @@
 # 项目状态 — 单一事实源
 
-> **最后更新 2026-10-23 凌晨（T1 daemon 步骤事件流、T2 面板工作流树、T3 daemon 异常唤醒会话均已落地；913 基线）· 代码基线 `main @ 2f7cb8c` + 本次提交。**
+> **最后更新 2026-10-23 凌晨（T1 daemon 步骤事件流、T2 面板工作流树、T3 daemon 异常唤醒会话均已落地；914 基线）· 代码基线 `main @ 2f7cb8c` + 本次提交。**
 > 本文是仓库**唯一**的「现在到哪了 / 下一步做什么」入口。其他文档里的测试数字、工具数量、阶段状态一律以本文为准；
 > 若发现别处与本文冲突，以本文为真、并把冲突处改成指向本文。规则看 [AGENTS.md](../AGENTS.md)，实现形态看 [architecture.md](architecture.md)。
 
@@ -45,7 +45,7 @@ P2 自动发货押后到发布这条线跑顺再切。
 ## 3. 质量基线（可复现）
 
 ```
-node scripts/test-all.mjs     # 913 tests / 913 pass / 36 suites / 87 个测试文件 / ~18s
+node scripts/test-all.mjs     # 914 tests / 914 pass / 36 suites / 87 个测试文件 / ~18s
 ```
 
 | 范围 | 用例数 | 备注 |
@@ -56,10 +56,10 @@ node scripts/test-all.mjs     # 913 tests / 913 pass / 36 suites / 87 个测试�
 | channel-cdp | 102 | 假连接与假页面回放（分类下拉按 AI 推荐刷新/虚拟列表滚动、风控探测） |
 | channel-guanjia | 62 | 纯函数 |
 | channel-im | 32 | 帧解析 / 归一化 / 状态机 |
-| plugin-ops | 203 | 插件契约、门禁、草稿校验、批量入队与 pacing、文案风格注入、账号摘要、参考报告渲染、host rpc 桥（15 端点）、**webServer 兼容路由回退**、**daemon 自动拉起（冷却/单飞/回环守卫）+ 面板内启停（停止需二次确认）**、**异常唤醒（事件去重/合并/提示语、游标定基线、无 agent 不轮询、失败不刷屏）**、client bundle（面板内 6 个模块 tab、**工作流树 `events.list` 增量轮询**） |
+| plugin-ops | 204 | 插件契约、门禁、草稿校验、批量入队与 pacing、文案风格注入、账号摘要、参考报告渲染、host rpc 桥（15 端点）、**webServer 兼容路由回退**、**daemon 自动拉起（冷却/单飞/回环守卫）+ 面板内启停（停止需二次确认）**、**异常唤醒（事件去重/合并/提示语、游标定基线、无 agent 不轮询、失败不刷屏）**、client bundle（面板内 6 个模块 tab、**工作流树 `events.list` 增量轮询**） |
 | scripts | 31 | daemon 常驻服务（参数/状态机/日志尾）16 + 发布真机验收脚本（参数/草稿/批次判定/PNG 生成）15 |
 | integration | 2 | 插件 client ↔ 真 daemon 端到端 |
-| **合计** | **913** | ops-bundle 无测试（只声明组合） |
+| **合计** | **914** | ops-bundle 无测试（只声明组合） |
 
 - 类型检查：**6 个 TS 包** tsc 0 错误（core / daemon / channel-mtop / channel-cdp / channel-guanjia / channel-im）。
   **plugin-ops 与 ops-bundle 是纯 ESM JS，无 tsconfig，不在类型检查覆盖内**——改这两个包只能靠测试。
@@ -157,7 +157,9 @@ node scripts/test-all.mjs     # 913 tests / 913 pass / 36 suites / 87 个测试�
 | T7 | **browser-skill 评估（bsk_*）** | 评估用它替代 CDP 做「找货源 / 看页面 / 截图回会话」；再评估能否当发布执行器（**登录态不用带调试端口重启 Chrome** 是最大收益） | 一次真机 dry-run 用 bsk_* 走完发布页填表；写 ADR 定 CDP vs bsk 分工 | 需 ADR |
 | T8 | **定时任务** | 复用 DSH schedule（cron → `agent.followup`，白名单内）或 daemon `availableAt` + 面板编辑；先做「每天定时擦亮 N 件」 | 面板能建/停定时擦亮，到点真跑一次（dry-run 可） | T3 |
 
-**T1 + T2 + T3 均已落地并测试全绿（913）**；T4–T8 是下一轮队列。T2 的桌面目视验收需用户重启一次 DSH 桌面应用（面板 host 侧代码在插件启动时加载；重启后异常唤醒也会一并生效）。
+**T1 + T2 + T3 均已落地并测试全绿（914）**；T4–T8 是下一轮队列。T2/T3 的桌面目视验收需用户重启一次 DSH 桌面应用（面板 host 侧代码在插件启动时加载；重启后异常唤醒也会一并生效）。
+
+> **现场根因已实锤（2026-10-23 01:0x）**：桌面壳 23:24 启动时加载的是当时的旧 host 插件，T2 的 `events.list` 与 T3 的告警 watcher 都还没写（文件 mtime 00:36–00:43）。在渲染进程 DevTools Console 里 `fetch('/bigfish/events.list', …)` 返回 `200 {"ok":false,"error":{"code":"UNSUPPORTED","message":"不支持的 rpc endpoint：events.list"}}`，而同一时刻 5 个老端点全部正常 → 面板 daemon 状态块正确、只有工作流区报错。已在面板里把这种情况和其它失败分开：`UNSUPPORTED` → 「重启 DSH 桌面应用后自动恢复」，`NETWORK` 等 → 「启动 daemon 后恢复」（`client.js` 的 `callRead` 现在带回 `error.code`）。**重启桌面应用是本条的解法，不是 daemon 的问题。**
 
 ### 4.5 分层分工（方向性拍板基线，2026-10-22 深夜讨论）
 

@@ -744,16 +744,29 @@ test('工作流树：下一轮带上一次 nextSince 增量拉取，不重复拉
   assert.equal(secondRound[1].payload.since, 4)
 })
 
-test('工作流树降级：events.list 不可用（旧 daemon 没有 /events）时只给提示，不影响 daemon 状态块', async () => {
+test('工作流树降级：events.list 返回 UNSUPPORTED（宿主加载的是重启前旧插件）时提示重启 DSH', async () => {
   const replies = daemonReplies()
   delete replies['events.list']
   const { connection } = createFakeConnection(replies)
   const mounted = mountPanel({ connection })
   const text = await snapshotText(mounted)
 
-  assert.match(text, /事件流拉取失败/)
+  // 现场根因（2026-10-23）：宿主进程 23:24 启动，T2 才加 events.list，旧 handler 表里没有它。
+  assert.match(text, /重启前的旧代码/)
+  assert.match(text, /重启 DSH 桌面应用后自动恢复/)
   assert.match(text, /在线 · v0\.3\.0/)
   assert.match(text, /最近批次batch-new · 共 4/)
+})
+
+test('工作流树降级：传输层失败（daemon 离线）仍走「启动 daemon 后恢复」文案', async () => {
+  const replies = daemonReplies()
+  replies['events.list'] = { ok: false, error: { code: 'NETWORK', message: 'connect ECONNREFUSED' } }
+  const { connection } = createFakeConnection(replies)
+  const mounted = mountPanel({ connection })
+  const text = await snapshotText(mounted)
+
+  assert.match(text, /事件流拉取失败/)
+  assert.doesNotMatch(text, /重启 DSH 桌面应用后自动恢复/)
 })
 
 test('工作流树为空：daemon 在线但没有事件，给出「执行任务时才会写」的解释', async () => {

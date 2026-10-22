@@ -137,9 +137,14 @@ daemon 在 T1 加了 `GET /events`（`task_events` 表的增量视图），面�
   结构锚点 `data-role='workflow-tree' / 'workflow-task'(data-task-id) / 'workflow-step'(data-step-state)`，
   失败步骤用 `S.badText`。空态/降级各有独立文案（「还没有步骤事件…」/「事件流拉取失败…」），
   **不影响**上面 daemon 实时状态块。
+- **两种降级要分开说**（2026-10-23 实锤后补）：`callRead` 失败时把 `error.code` 带回 UI。
+  `code === 'UNSUPPORTED'` 只可能是「宿主进程里加载的是重启前的旧插件、handler 表里没有 events.list」，
+  文案直接写「重启 DSH 桌面应用后自动恢复」；其余（`NETWORK` 等）才是 daemon 离线，写「启动 daemon 后恢复」。
+  现场症状就是两者混在一起：面板 daemon 状态块全部正确（5 个老端点都在旧代码里），
+  只有工作流区报错，用户会以为「daemon 在线但面板坏了」，其实坏的是宿主里的插件版本。
 - **为什么 3 秒轮询而不是订阅**：宿主的 connection rpc 没有推送语义（ADR 0004 决策 6），
   `ctx.jobs.start` 那套是给「异常唤醒主会话」用的，面板可见时按需拉更便宜。
-- 测试：`client-bundle.test.mjs` 里 4 条（树渲染与`data-step-state`、游标推进不重拉、`events.list` 不可用降级、空流提示），
+- 测试：`client-bundle.test.mjs` 里 5 条（树渲染与`data-step-state`、游标推进不重拉、`UNSUPPORTED` → 重启文案、`NETWORK` → daemon 离线文案、空流提示），
   `rpc.test.mjs` 2 条（白名单字段透传、非法 `since/limit/taskId/batchId` → VALIDATION 且不触达 daemon），
   `client.test.mjs` 1 条（查询串拼接）。
 
