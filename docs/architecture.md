@@ -184,7 +184,7 @@ queued ──lease──► leased ──ack──► done
 - **发布页地址搜索在 CDP 下不可用**：联想请求能发出、响应正常，但候选列表 UI 不回显，只能从「常用地址/附近地址」里匹配（§13.3）。类目：页面 AI 自动识别，草稿可用 `category` 覆盖；**网页端只支持部分类目**，不支持时立即失败（§13.5）。
 - **发货未实现、IM 已提交未接线**：`deliver/reply` 仍是 `UNSUPPORTED`；`packages/channel-im` 已提交（32 tests：帧解析/消息归一化/会话状态机）但**未接 daemon**（daemon 无该依赖），websocket 长连/消息发送/鉴权握手均未实现；协议与规则见 [im-protocol.md](im-protocol.md)、[delivery-rules.md](delivery-rules.md)。
 - **登录态导入与扫码登录均已实现**：导入走 `npm run daemon:import-account`（或 `POST /accounts/import`、插件 `xy_import_account`），从带 `--remote-debugging-port=9222` 的浏览器读 cookie；扫码走 `npm run daemon:login` / `POST /accounts/login`，轮询到 `unb` + `_m_h5_tk` 齐备才算成功（默认超时 180s）。两者都写 `CredentialStore`（AES-256-GCM），accountId 默认取 cookie 里的 `unb`。
-- **侧边栏面板内的模块 tab（2026-10-21 纠正）**：插件只注册 `sidebar.panellist` + `main` 两个插槽；主面板内部用 `PANEL_TABS` 切 6 个分区——自动发布（默认）/ 账号 / 文案 / 采集 / 概览 / 诊断（见 `plugin-ops/client.js` 的 `PANEL_TABS` 与 `PanelBody` 分发）。**不注册会话顶部 tab**（`conversation.view` 与「点侧边栏进面板」互斥，试过后已移除）。面板不读凭据、不调模型，需要执行的动作交给 agent 调工具或 daemon；但**状态是真实数据**：走 host rpc 通道 `/bigfish`（ADR 0004）每 3 秒轮询 `health`/`status`/`accounts`/`settings.get`/`tasks.list`/`batches.get` 六个只读端点，任一失败整块降级成「未连接后台」。DSH 宿主没有「面板按钮调 host 工具」的公开 API，所以写操作按钮仍 disabled 或只产出参数 JSON；写类端点（`accounts.import`/`accounts.login`/`tasks.retry`/`batch.enqueue`/`settings.put`）要配二次确认 UI 再接。
+- **侧边栏面板内的模块 tab（2026-10-21 纠正）**：插件只注册 `sidebar.panellist` + `main` 两个插槽；主面板内部用 `PANEL_TABS` 切 6 个分区——自动发布（默认）/ 账号 / 文案 / 采集 / 概览 / 诊断（见 `plugin-ops/client.js` 的 `PANEL_TABS` 与 `PanelBody` 分发）。**不注册会话顶部 tab**（`conversation.view` 与「点侧边栏进面板」互斥，试过后已移除）。面板不读凭据、不调模型，需要执行的动作交给 agent 调工具或 daemon；但**状态是真实数据**：走 host rpc 通道 `/bigfish`（ADR 0004）每 3 秒轮询 `health`/`status`/`accounts`/`settings.get`/`tasks.list`/`batches.get` 六个只读端点，任一失败整块降级成「未连接后台」。DSH 宿主没有「面板按钮调 host 工具」的公开 API，所以写操作按钮仍 disabled 或只产出参数 JSON；写类端点（`accounts.import`/`accounts.login`/`tasks.retry`/`batch.enqueue`/`settings.put`）要配二次确认 UI 再接。⚠️ 该通道在 DSH 0.1.5-rc.2 上**注册必失败**（宿主 `connection` 插件用自己 ctx 注册 `webServer`，`rpc-host.ts:80`/`:178-181`，inject 只有 `['credentials']`），桌面面板当前只显示降级行；修法在宿主侧，详见 [adr/0004-client-host-rpc.md](adr/0004-client-host-rpc.md) §已知阻塞。
 - **没有打包**：Electron/headless 分发形态待用户决策。
 - **没有真实联调**：所有测试都不发真实网络（AGENTS §5），首次真机验证需小号。
 
@@ -192,11 +192,11 @@ queued ──lease──► leased ──ack──► done
 
 | 层 | 数量 | 说明 |
 | --- | --- | --- |
-| 全仓 | 779 tests / 779 pass（31 suites / 79 个测试文件） | `node scripts/test-all.mjs`，约 17s |
+| 全仓 | 780 tests / 780 pass（31 suites / 79 个测试文件） | `node scripts/test-all.mjs`，约 17s |
 | core | 163 | 队列（含 batchId/批次统计/requeue）、仓储、策略、限流熔断与账号级 pacing、凭据、脱敏、配置、settings 存储、发货规则引擎（P2）、参考分析统计 |
 | daemon | 200 | HTTP、CLI、客户端、执行器、worker、路由、账号导入/扫码登录、settings 与批次统计路由、CDP 发布通道（含 5 条 `runtime.test.ts` 全链路集成：真 HTTP + 真 SQLite + 假 mtop transport）、发布 dry-run 开关、参考采集、失败重排 |
 | channel-mtop / channel-cdp / channel-guanjia / channel-im | 95 / 102 / 62 / 32 | 纯函数、假连接与假页面（channel-mtop 含参考解析；channel-cdp 含富文本/地址/预检假页面回放与发布侧风控探测；channel-im 帧解析/会话状态机，未接 daemon） |
-| plugin-ops | 123 | 插件契约、审批门禁、草稿校验、批量入队与 pacing、账号摘要渲染、参考采集客户端、host rpc 桥（13 端点）、client bundle（含面板内 6 个模块 tab 与 rpc 轮询降级） |
+| plugin-ops | 124 | 插件契约、审批门禁、草稿校验、批量入队与 pacing、账号摘要渲染、参考采集客户端、host rpc 桥（13 端点）、client bundle（含面板内 6 个模块 tab 与 rpc 轮询降级） |
 | integration | 2 | 插件 client ↔ 真 daemon 的跨层端到端 |
 | 类型检查 | 6 个 TS 包 0 错误 | 借 DSH checkout 的 `tsc --noEmit`；`plugin-ops` / `ops-bundle` 是纯 ESM JS（无 tsconfig，靠 JSDoc + 单测），**不在类型检查覆盖内** |
 

@@ -1,6 +1,6 @@
 # 项目状态 — 单一事实源
 
-> **最后更新 2026-10-21（四模块改造：发布 / 账号 / 采集 R1 已落地，预处理只有文案部分）· 代码基线 `main @ 5ffda24`。**
+> **最后更新 2026-10-22（面板 rpc 只读轮询代码完成、桌面被 DSH 0.1.5-rc.2 宿主 bug 挡住；780 基线）· 代码基线 `main @ 263f445`（面板 rpc 修正提交）。**
 > 本文是仓库**唯一**的「现在到哪了 / 下一步做什么」入口。其他文档里的测试数字、工具数量、阶段状态一律以本文为准；
 > 若发现别处与本文冲突，以本文为真、并把冲突处改成指向本文。规则看 [AGENTS.md](../AGENTS.md)，实现形态看 [architecture.md](architecture.md)。
 
@@ -28,7 +28,7 @@ P2 自动发货押后到发布这条线跑顺再切。
 | `publish` 单件发布（CDP 步骤机，真提交） | ✅ 真机（3 次） | CLI 直发 2 次：`1093817229436`（2026-10-21 首次）、`1091938715735`（分类修复后，14.5s 拿到 itemId）；队列路径 1 次：`1091940243200`（`POST /tasks` → worker → `operations.publish`，落 items 表）。**3 次都是单件、都是「学习笔记」类目、都已下架留档**。真提交需 `--submit` / `BF_PUBLISH_SUBMIT=1`；类目受网页端支持矩阵限制（电子资料/学习笔记/课业本 ✅；教材教辅/语言培训/学习资料定制/文学/考研咨询 ❌）。itemId 是人工试验的产物，仓库代码里没有痕迹 |
 | `publish` dry-run（填表不提交） | ✅ 真机 | 发布页 → 传 2 图 → 文案 → 选类目 → 价格/包邮 → 地址 → 必填预检 → 收尾，每步截图。**不带 category/address 时能填表但过不了提交前预检**。两条路径都真机过：CLI `publish`（单件）+ **daemon 队列批量**（2026-10-22，批次 `b-e2e-mvj3aedp`，2 条同批 → 2/2 `done`，第 2 条先 `RATE_LIMITED`（写桶满）退避后成功，两轮各 7 张截图在 `.scratch/e2e3/shots/`） |
 | 草稿指定类目 + 不支持即失败 | ✅ 真机 | **网页端分类不是全量类目树**：候选来自 `mtop.taobao.idle.kgraph.property.recommend`（入参标题/描述/图片，一次约 10 个），**不可搜索、不可手输**，文案与图片会重新触发推荐。`channel-cdp/src/category.ts`（+ `category-page.ts`）：按 `aria-controls` 绑定当前下拉、点前 `elementFromPoint` 命中测试、**不对 portal 选项 scrollIntoView**（会滚主页面导致点击落空）、候选在可视区外时只滚下拉内部 `.rc-virtual-list-holder`、连续 2 次回读一致才算选中；目标不在候选里时关下拉等推荐刷新再重开（`REFRESH_WAIT_MS`，受步骤预算约束），仍不在就 fail-closed 并在报错里列出当前候选；命中「网页版暂不支持」立即 `VALIDATION`。真机：上传图片 → 填文案 → 分类从「电子资料」按文案刷新出「学习笔记」并选中（`86ca47e`） |
-| 面板内模块 tab（切换） | ✅ 真机（桌面端 GUI 实拍） | 插件只注册 `sidebar.panellist` + `main`；面板内 `PANEL_TABS` 切 6 个分区：自动发布（默认）/ 账号 / 文案 / 采集 / 概览 / 诊断，`PanelBody` 分发。面板本身不联网、不执行写操作，但 daemon 状态是**真实数据**：`ctx.connection.rpc.call('/bigfish', endpoint)` 每 3 秒轮询 6 个只读端点（`health`/`status`/`accounts`/`settings.get`/`tasks.list`/`batches.get`），任一失败整块降级成「未连接后台」一行；写类端点本轮不消费（`docs/client-plugin-sidebar.md` §1.1）。**不回退到会话顶部 tab**（`conversation.view`：点侧边栏后 main 换成 bigfish，会话与 tab 条一起离开 DOM） |
+| 面板内模块 tab（切换） | ✅ 真机（桌面端 GUI 实拍） | 插件只注册 `sidebar.panellist` + `main`；面板内 `PANEL_TABS` 切 6 个分区：自动发布（默认）/ 账号 / 文案 / 采集 / 概览 / 诊断，`PanelBody` 分发。面板本身不联网、不执行写操作，但 daemon 状态是**真实数据**：`ctx.connection.rpc.call('/bigfish', endpoint)` 每 3 秒轮询 6 个只读端点（`health`/`status`/`accounts`/`settings.get`/`tasks.list`/`batches.get`），任一失败整块降级成「未连接后台」一行；写类端点本轮不消费（`docs/client-plugin-sidebar.md` §1.1）。⚠️ **桌面端当前只显示降级**：DSH 0.1.5-rc.2 的 `connection` 插件用自己 ctx 注册 `webServer`（`rpc-host.ts:80`/`:178-181`），外部插件的 `rpc.handle` 必抛 `cannot get property "webServer" without inject`——宿主修好前，实时数据只能在打过补丁的 dev host 上验证（§5 风险表）。**不回退到会话顶部 tab**（`conversation.view`：点侧边栏后 main 换成 bigfish，会话与 tab 条一起离开 DOM） |
 | 账号列表摘要（`GET /accounts` / `xy_accounts_list`） | ✅ 真机 | daemon 只读摘要：accountId / updatedAt / savedFieldCount / ready（`unb`+`_m_h5_tk` 齐备）/ ageMs；单个凭据损坏标 `broken` 不拖垮整表；不带任何 cookie 值。工具只读、不挂门禁。真机：真实数据目录 `%LOCALAPPDATA%/bigfish` 下起 daemon，`GET /accounts` 200 返回 1 个账号（`ready: true`、savedFieldCount 21）；`xy_accounts_list` 仍只有单测 |
 | 批量入队 `xy_publish_batch` + 批次层 | ✅ 工具单测 / 队列批量真机（dry-run） | `plugin-ops/src/batch.js`：逐条校验 + `draftDedupeKey` 幂等 + `mode=dry-run` 默认；按账号逐条预约 `availableAt`（默认 180s，`BF_PUBLISH_MIN_INTERVAL_MS` 可调，失败不占位）；写类工具挂审批门禁（仅 enqueue 需确认）。daemon 侧已有批次层：`EnqueueInput.batchId` / `batchStats` / `GET /batches/:id`（五状态计数 + items）。真机 2026-10-22：HTTP 直接入队 2 条同 `batchId` → 2/2 `done`。**仍缺**：`POST /tasks` 不给 `created` 标志（跨批重复只能显示 queued）、批次真提交未跑、180s pacing 未真机校准 |
 | 批量上架调度 | 🟡 链路通，真提交未做 | 批次层（batchId / `GET /batches/:id` 汇总）+ 单账号串行 + 账号级 pacing 已就位；队列批量 dry-run 真机 2/2；**批量真提交与「含不支持类目」同批混合未跑**，面板尚无批次进度消费 |
@@ -44,7 +44,7 @@ P2 自动发货押后到发布这条线跑顺再切。
 ## 3. 质量基线（可复现）
 
 ```
-node scripts/test-all.mjs     # 779 tests / 779 pass / 31 suites / 79 个测试文件 / ~17s
+node scripts/test-all.mjs     # 780 tests / 780 pass / 31 suites / 79 个测试文件 / ~17s
 ```
 
 | 范围 | 用例数 | 备注 |
@@ -55,9 +55,9 @@ node scripts/test-all.mjs     # 779 tests / 779 pass / 31 suites / 79 个测试�
 | channel-cdp | 102 | 假连接与假页面回放（分类下拉按 AI 推荐刷新/虚拟列表滚动、风控探测） |
 | channel-guanjia | 62 | 纯函数 |
 | channel-im | 32 | 帧解析 / 归一化 / 状态机 |
-| plugin-ops | 123 | 插件契约、门禁、草稿校验、批量入队与 pacing、文案风格注入、账号摘要、参考报告渲染、host rpc 桥（13 端点）、client bundle（面板内 6 个模块 tab） |
+| plugin-ops | 124 | 插件契约、门禁、草稿校验、批量入队与 pacing、文案风格注入、账号摘要、参考报告渲染、host rpc 桥（13 端点）、client bundle（面板内 6 个模块 tab） |
 | integration | 2 | 插件 client ↔ 真 daemon 端到端 |
-| **合计** | **779** | ops-bundle 无测试（只声明组合） |
+| **合计** | **780** | ops-bundle 无测试（只声明组合） |
 
 - 类型检查：**6 个 TS 包** tsc 0 错误（core / daemon / channel-mtop / channel-cdp / channel-guanjia / channel-im）。
   **plugin-ops 与 ops-bundle 是纯 ESM JS，无 tsconfig，不在类型检查覆盖内**——改这两个包只能靠测试。
@@ -99,7 +99,7 @@ node scripts/test-all.mjs     # 779 tests / 779 pass / 31 suites / 79 个测试�
 
 **没做**：①面板里直接点「导入 / 扫码」——通道已有（ADR 0004 `/bigfish`，13 端点），本轮只消费只读端点；写类（`accounts.import`/`accounts.login`/`tasks.retry`/`batch.enqueue`/`settings.put`）还缺按钮与二次确认 UI；②多账号切换 / 把账号绑定到发布任务；③凭据备份与恢复（`daemon.token` / 凭据目录的备份脚本）。
 
-**验收**：全量 779 全绿 ✅；真机 `GET /accounts`（daemon + 真实凭据目录）✅ 2026-10-21 实测 ready=true / ageMs 可用；面板内 `xy_accounts_list` 走工具层仍需在 GUI 里点一次（未做）。
+**验收**：全量 780 全绿 ✅；真机 `GET /accounts`（daemon + 真实凭据目录）✅ 2026-10-21 实测 ready=true / ageMs 可用；面板内 `xy_accounts_list` 走工具层仍需在 GUI 里点一次（未做）。
 
 ### 4.1.3 采集参考模块（第三个做，R1 只读统计已落地）
 
@@ -145,8 +145,8 @@ node scripts/test-all.mjs     # 779 tests / 779 pass / 31 suites / 79 个测试�
 - **发布侧风控识别只有单测**：`channel-cdp/src/risk.ts` 每步前/抛错/步后探测 URL、页面文案、验证组件，命中抛 `RISK_CONTROL`（带 `details.step`）→ daemon 熔断 600s。但**没有真机故意触发过**，页面特征清单是 best-effort，改版会失效；截图+人工过的流程仍靠人。
 - **daemon 无常驻**：`npm run daemon` 前台阻塞，仓库没有服务化/开机自启/日志文件配置；关终端即丢现场。
 - **地址搜索在 CDP 下不可用**（候选不回显），只能匹配常用/附近地址。
-- **插件层没有类型门禁**：plugin-ops / ops-bundle 是纯 JS，改动只能靠 123 个测试兜。
-- **面板只有只读实时数据**：rpc 通道已落地（ADR 0004），面板轮询 health/账号/队列/最近批次/设置；写类按钮（导入、扫码、重试、入队、改设置）还没接，也没有「逐任务明细」视图（daemon 无任务列表分页端点给面板用）。
+- **插件层没有类型门禁**：plugin-ops / ops-bundle 是纯 JS，改动只能靠 124 个测试兜。
+- **面板实时数据被宿主 bug 挡住**：rpc 通道代码已落地（ADR 0004）、面板侧只读轮询已实现并有 23 条 client 测试；但 DSH 0.1.5-rc.2 的 `connection` 插件用自己 ctx 注册 `webServer`（`rpc-host.ts:80`、`:178-181`），外部插件 `rpc.handle` 必抛 `cannot get property "webServer" without inject`，所以桌面面板只能显示「未连接后台」。宿主侧修 `inject`（加 `webServer`）或改成用调用方 ctx 后即可用；修好前该能力只在打过补丁的 dev host 上验证过（`panel-online.png`）。写类按钮（导入、扫码、重试、入队、改设置）与「逐任务明细」视图仍未接。
 - **pacing 未真机校准**：默认 180s 是推导值（同账号 15s 连发被真机风控拦过一次），单条 enqueue 与直接 `POST /tasks` 绕过它，只剩 daemon 写桶 1 次/60s 兜底。
 - **账号风控**：策略是「遇到 x5sec/滑块不硬刚，停队列 + 截图 + 人工过」；识别代码有了但未真机验证，真人验证只用用户自己的账号，且默认 dry-run（AGENTS §5 账号纪律）。
 - **分类只能选 AI 推荐的那 10 个左右**：候选由图片+文案决定、不可搜索，推荐接口偶发「目标不在候选里」→ fail-closed。批量时若某条文案把类目推荐带偏，那条会失败待审（不拖垮整批），但**覆盖面取决于文案质量**，这是产品级天花板，不是 bug 修补能绕过的。

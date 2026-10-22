@@ -93,7 +93,7 @@
 - [ ] 用 `xy_task_retry` 把 failed 任务重新排队并**真机重放一次发布**。**未做**（`requeue` / 端点 / 工具均有单测）。
 - [ ] 账号级 pacing 真机校准：连发两件确认间隔 ≥180s 且不再被风控。**半个证据**：2026-10-22 队列 dry-run 里第 2 条在 15s 内被写桶 `RATE_LIMITED`、退避后成功（说明写桶兜底生效）；180s 这个数仍未校准（直接 `POST /tasks` 绕过了它）。
 - [ ] 真机故意触发一次发布侧风控，确认 `RISK_CONTROL` + 熔断 600s。**未做**（只有单测）。
-- [x] 全仓测试全绿 + 6 个 TS 包 tsc 0 错误（779 tests / 31 suites / 79 个测试文件；core、daemon、mtop、cdp、guanjia、im 六个包 tsc 0）。
+- [x] 全仓测试全绿 + 6 个 TS 包 tsc 0 错误（780 tests / 31 suites / 79 个测试文件；core、daemon、mtop、cdp、guanjia、im 六个包 tsc 0）。
 
 ### 5.1 真机记录（2026-10-21/22，用户大号 `2206569289277`——AGENTS §5：这个账号不是测试小号，真发须用户点头、一次一件）
 

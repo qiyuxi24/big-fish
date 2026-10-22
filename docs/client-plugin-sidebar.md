@@ -1,7 +1,7 @@
 # Client 插件与侧边栏栏位（P0.5）
 
 本文件记录「在 DSH Web GUI 侧边栏注册 big fish 栏位」的完整机制、调试方法与实测坑。
-代码只有一处：`packages/plugin-ops/client.js`（手写 loader bundle、518 行、零依赖、无构建；四模块面板都在这一个 bundle 里，
+代码只有一处：`packages/plugin-ops/client.js`（手写 loader bundle、519 行、零依赖、无构建；四模块面板都在这一个 bundle 里，
 行数上限放宽到 700，本轮任务口径收紧到 520）。面板里的 daemon 状态是**真实数据**：走
 `ctx.connection.rpc.call('/bigfish', endpoint)` 每 3 秒轮询只读端点（见 §1.1）。
 
@@ -96,6 +96,16 @@ ctx.connection.rpc.call('/bigfish', '<endpoint>', payload) // → { ok: true, va
   依赖只有 `connection`（宿主句柄稳定，切 tab 不重复起定时器）。
 - 写类端点（`tasks.retry` / `accounts.import` / `accounts.login` / `batch.enqueue` / `settings.put`）**本轮不消费**：
   它们要求 `confirm: true` 且需要二次确认 UI，按钮留到下一轮。
+
+> ⚠️ **宿主阻塞（2026-10-22 实测，DSH 0.1.5-rc.2）**：当前桌面端面板**只能显示降级行**，因为宿主 `connection` 插件的
+> `rpc` getter 用**自己的** ctx 去注册路由（`packages/client/connection/src/rpc-host.ts:80` 的 `const owner = this.ctx`，
+> 并在 `:178-181` 执行 `owner.webServer.register(route)`），而该插件 `inject` 只有 `['credentials']`——所以任何外部插件调
+> `ctx.connection.rpc.handle('/bigfish', …)` 必抛 `cannot get property "webServer" without inject`，路由注册失败。
+> 证据：桌面/隔离 host 的 server.log 出现该错误、`POST /bigfish/health` 返回 405（路由不存在）；
+> 临时把 connection 插件 `inject` 改成 `['credentials','webServer']` 并重启 host 后，`/bigfish` 注册成功、
+> 面板出现真实数据（截图 `.scratch/shots/panel-online.png`；降级态见 `.scratch/shots/panel-offline.png`）。
+> **修法在宿主侧**（connection 插件 inject 加 `webServer`，或 `get rpc()` 改用调用方 ctx），本仓库不需要改代码；
+> 在宿主修复前，面板的实时数据只能在「打过补丁的 dev host」上验证。详见 [adr/0004-client-host-rpc.md](adr/0004-client-host-rpc.md) §已知阻塞。
 
 ## 2. 调试（一条命令）
 

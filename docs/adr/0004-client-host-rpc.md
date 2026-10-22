@@ -72,6 +72,30 @@ DSH 宿主给插件的客户端能力只有两类入口：
 | daemon 路由假设 | `GET/PUT /settings`、`GET /batches/:id`、`POST /tasks` 返回 `{task,created}`、`POST /tasks/:id/retry` | 路由改名时同步改 `rpc.js` 的 fallback 分支（都在同文件，便于 grep） |
 | 鉴权 | 复用 `src/client.js` 的 Bearer + token 文件 | 面板出现多用户/远程访问时，另立鉴权 ADR |
 
+## 已知阻塞：宿主 0.1.5-rc.2 的 connection 插件不给自己 inject webServer（2026-10-22 实测）
+
+**现象**：外部插件执行 `ctx.connection.rpc.handle('/bigfish', handler)` 必抛
+`cannot get property "webServer" without inject`；面板因此只显示「未连接后台（daemon 未启动）」一行。
+`POST /bigfish/health` 返回 **405**（路由根本没注册）。
+
+**根因**（DSH checkout `C:/Users/34239/Documents/GitHub/deepseek-harness`）：
+`packages/client/connection/src/rpc-host.ts:80` 的 `get rpc()` 取的是 `const owner = this.ctx`——即 **connection 插件自己的 ctx**，
+而不是调用方传进来的 ctx；同文件 `:178-181` 注册时执行 `owner.webServer.register(route)`。
+而 connection 插件的 `inject` 只有 `['credentials']`（`packages/client/connection/src/index.ts`），所以 owner ctx 上取不到
+`webServer`。**这不是本仓库能绕开的**：不用 `rpc.handle` 就只剩「自建 HTTP 路由（client 侧被禁 `fetch(`）或 Typert namespace（不可用）」两条死路。
+
+**已验证的临时修法（仅用于取证，未提交到任何仓库）**：把 connection 插件 `inject` 改成 `['credentials','webServer']`，
+同时改编译产物 `lib/index.js` 对应行，重启 host → `/bigfish` 注册成功，面板渲染出真实数据：
+daemon 在线 · v0.0.0 · 已运行 12 分钟、账号 1/1 可写、队列 0/0/1/1/0、批次 `b-e2e-mvj2gf5w`、设置 plain/未设置/180 秒
+（截图 `.scratch/shots/panel-online.png`；未打补丁的降级态 `.scratch/shots/panel-offline.png`）。改动已全部还原，checkout 干净。
+
+**建议的正式修法（二选一，在 DSH 侧）**：
+1. connection 插件 `inject` 增加 `webServer`（最小改动，与现状注册路径一致）；
+2. `get rpc()` 不再用 `this.ctx`，改由调用方把 ctx 传进来（例如 `rpc.handle(channel, handler, { ctx })` 或注册时显式传 ctx）。
+
+**在那个修复落地前**：面板实时数据属「代码已完成、桌面不可见」状态；发布链路（工具 + daemon）不受影响。
+桌面端还需重启一次进程（运行中的进程里没有新插件代码，旧 bundle 也没有 `/bigfish` 调用）。
+
 ## 验收（当前状态）
 
 - 单测：`packages/plugin-ops/test/rpc.test.mjs`（白名单透传、写端点缺 `confirm` 拒绝、未知端点 `UNSUPPORTED`、客户端异常收敛信封、`ctx.effect` 卸载释放、无 `connection` 时降级不抛错）。
