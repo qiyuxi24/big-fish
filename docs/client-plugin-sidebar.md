@@ -89,10 +89,11 @@ ctx.connection.rpc.call('/bigfish', '<endpoint>', payload) // → { ok: true, va
 | `settings.get` | `{}` | copyStyle / defaultCategory / publishMinIntervalMs |
 | `tasks.list` | `{ limit: 50 }` | 反查最新一轮批次的 `batchId`（daemon 没有批次列表端点） |
 | `batches.get` | `{ id: <batchId> }` | 最近批次的 total 与非零 counts；失败只丢这一行，不拖垮主状态 |
+| `events.list` | `{ since, limit: 200 }` | 任务步骤事件流增量（`{items,nextSince}`），喂「工作流树」；**独立于主快照**，失败只降级工作流区 |
 | `daemon.start` | `{}` | 「进程管理」区：让宿主 supervisor 拉起 daemon（`force` 跳过 30s 冷却），返回 `{status}` |
 | `daemon.stop` | `{ confirm: true }` | 「进程管理」区：`POST /shutdown` → 每 250ms 探 `/health` 直到不可达，返回 `{stopped, alreadyStopped}`；写端点，缺 `confirm` 直接 VALIDATION |
 
-- 5 个必需端点任一失败（`{ok:false}` / 抛异常 / 传输层 reject / 宿主没有 `connection` 服务）→ 整块降级为
+- 5 个必需端点（`health`/`status`/`accounts`/`settings.get`/`tasks.list`）任一失败（`{ok:false}` / 抛异常 / 传输层 reject / 宿主没有 `connection` 服务）→ 整块降级为
   一行 `未连接后台（daemon 未启动）` + 一句可执行提示（宿主已尝试自动拉起；仍不行就手动 `pnpm daemon:start`），
   **不抛错、不 console.error**。
 - **daemon 自动拉起（2026-10-22）**：宿主侧 rpc 桥在拿到 `error.code === "NETWORK"` 时调
@@ -121,6 +122,26 @@ ctx.connection.rpc.call('/bigfish', '<endpoint>', payload) // → { ok: true, va
 > 无 cookie 返回 401，加载日志出现 `rpcChannel:"registered-webServer"` 且无 webServer 报错。
 > 桌面端需重启一次 DSH 进程（旧进程里没有新插件代码）。细节与建议的宿主侧修法见
 > [adr/0004-client-host-rpc.md](adr/0004-client-host-rpc.md) §已知阻塞。
+
+### 1.2 工作流树：把「现在在干嘛」画出来（2026-10-23）
+
+daemon 在 T1 加了 `GET /events`（`task_events` 表的增量视图），面板侧是它的唯一消费者：
+
+- **轮询**：`useWorkflowEvents(connection)`（`client.js`）每 `POLL_MS` 调一次 `events.list { since, limit: 200 }`；
+  `since` 存在闭包里（React setState 是异步的，放 state 里会重复拉同一段），成功后推进到 `nextSince`，
+  本地缓冲最多 300 条（`EVENT_BUFFER_LIMIT`），长开侧边栏不会无限长。
+- **聚合**：`groupEventsByTask(events)` 按 `taskId` 首次出现顺序成树，节点 `{taskId,batchId,state,steps[]}`；
+  任务状态只认 `kind === 'task.state'` 的事件，步骤事件（`kind === 'task.step'`）只进 `steps[]`——
+  否则步骤的 `started/done` 会把任务状态覆盖成步骤状态。
+- **渲染**：`WorkflowTree` 挂在「自动发布」页 `DaemonView` 之后，只显示最近 6 个任务 × 每任务最近 6 步；
+  结构锚点 `data-role='workflow-tree' / 'workflow-task'(data-task-id) / 'workflow-step'(data-step-state)`，
+  失败步骤用 `S.badText`。空态/降级各有独立文案（「还没有步骤事件…」/「事件流拉取失败…」），
+  **不影响**上面 daemon 实时状态块。
+- **为什么 3 秒轮询而不是订阅**：宿主的 connection rpc 没有推送语义（ADR 0004 决策 6），
+  `ctx.jobs.start` 那套是给「异常唤醒主会话」用的，面板可见时按需拉更便宜。
+- 测试：`client-bundle.test.mjs` 里 4 条（树渲染与`data-step-state`、游标推进不重拉、`events.list` 不可用降级、空流提示），
+  `rpc.test.mjs` 2 条（白名单字段透传、非法 `since/limit/taskId/batchId` → VALIDATION 且不触达 daemon），
+  `client.test.mjs` 1 条（查询串拼接）。
 
 ## 2. 调试（一条命令）
 
@@ -187,7 +208,7 @@ node scripts/dsh-dev.mjs --stop    # 停实例
    `--dump-config` 不触发 heal，仍可用来核对装配。
 ## 4. 测试
 
-`packages/plugin-ops/test/client-bundle.test.mjs`（23 条）：用 `vm.runInNewContext` 跑 client.js，
+`packages/plugin-ops/test/client-bundle.test.mjs`（33 条）：用 `vm.runInNewContext` 跑 client.js，
 stub `window.__ModuleLoader__.load` 捕获注册、假 `react`（`useState` **按组件身份分槽**：`__enter(type)` / `__exit(prev)`
 切换当前组件，父子组件不会串位；`useEffect` 只登记，由 `__flush()` 执行、`__unmount()` 跑 cleanup），
 假 `setInterval/clearInterval` 时钟（可 `advance()`、可查 `size`/`period`），假 `ctx.slots` 与假 `connection.rpc`，断言：
@@ -210,13 +231,15 @@ stub `window.__ModuleLoader__.load` 捕获注册、假 `react`（`useState` **�
 - 草稿集逐行解析：内联 JSON 合法 / JSON 坏 / 缺 `images` / `.json` 路径 / 非法行，逐行给 `data-ok` 与提示；
 - 至少 2 条合法草稿才启用「生成批量发布请求」：禁用时用 title 说明原因；产出 `xy_publish_batch` 参数
   JSON（`mode` dry-run/enqueue、`draftPaths`/`drafts`、可选 `accountId`），任何输入变化都会撤销旧 JSON；
-- **rpc 在线**：假 connection 回放 6 个只读端点 → 面板出现 `在线 · v0.3.0 · 已运行 2 分钟`、`1 个账号 · 1 个可写`、
+- **rpc 在线**：假 connection 回放 6 个只读端点 + `events.list` → 面板出现 `在线 · v0.3.0 · 已运行 2 分钟`、`1 个账号 · 1 个可写`、
   队列五态计数、`batch-new · 共 4 …`、`文案风格 warm（亲切安利） · 默认类目 电子资料 · 发布间隔 180 秒`；
-  并断言调用顺序 `health/status/accounts/settings.get/tasks.list/batches.get`、channel `/bigfish`、
-  `tasks.list` payload `{limit:50}`、`batches.get` payload `{id:'batch-new'}`（跨 realm 按字段断）；
+  并断言调用顺序 `health/status/accounts/settings.get/tasks.list/events.list/batches.get`、channel `/bigfish`、
+  `tasks.list` payload `{limit:50}`、`events.list` payload `{since:0, limit:200}`、`batches.get` payload `{id:'batch-new'}`（跨 realm 按字段断）；
 - **降级三条路**：error 信封（`status` 返 `{ok:false}`，且不再发 `batches.get`）、rpc 同步 throw / Promise reject、
   宿主没有 `connection` 服务 → 都只出现一行 `未连接后台（daemon 未启动）`，渲染不抛错；
-- **轮询生命周期**：`clock.period === 3000`、同时只有一个定时器；`__unmount()` 后 `clock.size === 0`，
+- **工作流树 4 条**：事件聚合成「任务 → 步骤」并断言 `data-role` / `data-step-state`、游标按 `nextSince` 推进不重拉、
+  `events.list` 缺失时只降级工作流区（daemon 状态块仍在线）、空流给「执行任务时才会写」的解释；
+- **轮询生命周期**：`clock.period === 3000`、发布页两个定时器（daemon 快照 + 工作流事件流）；`__unmount()` 后 `clock.size === 0`，
   推进时钟不再新增 rpc 调用；
 - 「诊断」页同样显示实时状态，切 tab 不重复起轮询；
 - bundle 里没有 `localStorage`、`document.`、`fetch(`，且确实出现 `RPC_CHANNEL = '/bigfish'` 与 `connection.rpc.call`

@@ -33,6 +33,7 @@ DSH 宿主给插件的客户端能力只有两类入口：
 | `accounts` | 读 | `client.listAccounts()` | 无 |
 | `items.list` | 读 | `client.listItems()` | 无 |
 | `tasks.list` | 读 | `client.listTasks(filter)` | `state`/`kind`/`limit(1..200)` |
+| `events.list` | 读 | `client.listEvents(filter)` → `GET /events` | `since`(≥0)/`limit`(1..1000)/`taskId`/`batchId`；返回 `{items,nextSince}` |
 | `tasks.retry` | 写 | `client.retryTask(id)`，缺失时 `POST /tasks/:id/retry` | `id` |
 | `batches.get` | 读 | `client.getBatch(id)`，缺失时 `GET /batches/:id` | `id` |
 | `reference.collect` | 读（会写抓取结果） | `client.collectReferences(input)` | `accountId` 必填；`itemIds`(≤20, 去重) 或 `sellerId` 至少一个 |
