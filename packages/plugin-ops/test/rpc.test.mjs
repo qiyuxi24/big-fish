@@ -280,3 +280,21 @@ test('rpc.handle 注册失败（频道被占）只告警，不影响工具注册
   assert.match(logs[0], /rpc 通道注册失败/)
   assert.equal(JSON.parse(logs[1]).rpcChannel, 'failed')
 })
+
+test('命中 DSH 宿主 bug（webServer 未 inject）时告警里带上 ADR 指引', () => {
+  const host = createRpcHostCtx({
+    connection: { rpc: { handle: () => { throw new Error('cannot get property "webServer" without inject') } } },
+  })
+  const original = console.log
+  const logs = []
+  console.log = (line) => logs.push(line)
+  try {
+    apply(host.ctx, { tokenPath: '/tmp/daemon.token' })
+  } finally {
+    console.log = original
+  }
+  const record = JSON.parse(logs[0])
+  assert.match(record.msg, /DSH 已知宿主 bug/)
+  assert.match(record.msg, /adr\/0004-client-host-rpc/)
+  assert.match(record.error, /webServer/)
+})

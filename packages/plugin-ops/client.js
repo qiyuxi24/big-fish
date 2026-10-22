@@ -180,8 +180,9 @@ window.__ModuleLoader__.load({
       const style = COPY_STYLE_OPTIONS.find(option => option.id === styleId)
       const interval = Number(settings.publishMinIntervalMs)
       const seconds = Number.isFinite(interval) ? String(Math.round(interval / 1000)) + ' 秒' : '?'
+      const category = typeof settings.defaultCategory === 'string' && settings.defaultCategory.trim() !== '' ? settings.defaultCategory : '未设置'
       return '文案风格 ' + (style === undefined ? styleId : styleId + '（' + style.label + '）')
-        + ' · 默认类目 ' + String(settings.defaultCategory ?? '未设置') + ' · 发布间隔 ' + seconds
+        + ' · 默认类目 ' + category + ' · 发布间隔 ' + seconds
     }
 
     /** 侧边栏栏位图标。 */

@@ -117,12 +117,20 @@ function registerRpcChannel(ctx, bridge) {
   return mount(ctx)
 }
 
-/** 通道注册失败只告警：面板降级，但工具/门禁必须照常可用。 */
+/**
+ * 通道注册失败只告警：面板降级，但工具/门禁必须照常可用。
+ * DSH 0.1.5-rc.2 有一个已知宿主 bug（connection 插件用自己 ctx 注册 webServer），
+ * 命中时补一句指向 ADR，免得把宿主问题当成插件坏掉。见 docs/adr/0004-client-host-rpc.md。
+ */
 function logRpcFailure(error) {
+  const message = error instanceof Error ? error.message : String(error)
+  const hostBug = message.includes('webServer')
   console.log(JSON.stringify({
     level: 'warn',
     plugin: name,
-    msg: 'bigfish 面板 rpc 通道注册失败，面板实时数据暂不可用（工具不受影响）',
-    error: error instanceof Error ? error.message : String(error),
+    msg: hostBug
+      ? 'bigfish 面板 rpc 通道注册失败：命中 DSH 已知宿主 bug（connection 插件未 inject webServer），面板实时数据暂不可用（工具不受影响）；修法见 docs/adr/0004-client-host-rpc.md'
+      : 'bigfish 面板 rpc 通道注册失败，面板实时数据暂不可用（工具不受影响）',
+    error: message,
   }))
 }
