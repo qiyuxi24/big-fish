@@ -91,7 +91,14 @@ ctx.connection.rpc.call('/bigfish', '<endpoint>', payload) // → { ok: true, va
 | `batches.get` | `{ id: <batchId> }` | 最近批次的 total 与非零 counts；失败只丢这一行，不拖垮主状态 |
 
 - 5 个必需端点任一失败（`{ok:false}` / 抛异常 / 传输层 reject / 宿主没有 `connection` 服务）→ 整块降级为
-  一行 `未连接后台（daemon 未启动）`，**不抛错、不 console.error**。
+  一行 `未连接后台（daemon 未启动）` + 一句可执行提示（宿主已尝试自动拉起；仍不行就手动 `pnpm daemon:start`），
+  **不抛错、不 console.error**。
+- **daemon 自动拉起（2026-10-22）**：宿主侧 rpc 桥在拿到 `error.code === "NETWORK"` 时调
+  `supervisor.ensure()`（`packages/plugin-ops/src/daemon-supervisor.js` + `daemon-watch.js`）：只认回环 `daemonUrl`，
+  用同一份 `dataDir`/`tokenPath` detached spawn 同仓 `packages/daemon/src/cli.ts`，20s 内轮询 `/health`；
+  30s 冷却、并发单飞，日志 `<dataDir>/plugin.log`（拉起决策）与 `<dataDir>/daemon.log`（daemon 输出）。
+  关掉：config `autoStartDaemon: false`；覆盖 node/入口：config `nodePath` / `daemonEntry`。
+  面板首次轮询（3s 内）就会触发，所以「打开面板 → 自动出现在线」是预期行为；测试不触发（注入假 bridge）。
 - 轮询：`POLL_MS = 3000`，`useEffect` 里 `setInterval`，cleanup 里 `alive = false` + `clearInterval`；
   依赖只有 `connection`（宿主句柄稳定，切 tab 不重复起定时器）。
 - 写类端点（`tasks.retry` / `accounts.import` / `accounts.login` / `batch.enqueue` / `settings.put`）**本轮不消费**：

@@ -93,6 +93,17 @@ npm run daemon:start -- --port 47002 --data-dir .scratch/daemon-live
 - daemon 是 detached 子进程：关掉当前终端不会带走它；需要停止用 `npm run daemon:stop`（或 `status` 拿 pid 后手动结束）。
 - 真机验证（隔离数据与状态，避免打扰已导入账号）：`npm run daemon:start -- --port 47999 --data-dir .scratch/svc/data --state-dir .scratch/svc/state` → `status` 看到 pid / 端口 / uptime → `stop` 确认「端口已释放」。
 
+### 面板打开时宿主自动拉起（不用先跑命令）
+
+插件宿主侧（`packages/plugin-ops/src/daemon-supervisor.js`）会在**面板 rpc 拿到 NETWORK 错误**（= daemon 没起）时，自己 detached 拉起一个 daemon：从回环 `daemonUrl` 取 host/port，用**同一份** `dataDir`/`tokenPath` spawn `packages/daemon/src/cli.ts`（node 取 配置 `nodePath` > 当前进程是可执行 node 时用自己 > PATH），20s 内轮询 `/health` 到就绪为止。
+
+- 冷却 30s（失败后 `plugin.log` 记一条 warn，面板不会每 3 秒 fork 一次）；并发轮询单飞，只拉一个。
+- 关掉：插件 config `autoStartDaemon: false`；远端 daemon（非回环 `daemonUrl`）永远不本地拉起。
+- 找不到 node / daemon 入口时降级为「请手动 `pnpm daemon:start`」，并给可执行的下一步提示（面板降级文案里就有）。
+- 日志：`<dataDir>/plugin.log`（拉起决策/结果）、`<dataDir>/daemon.log`（daemon 自己的输出）。
+- 覆盖点：插件 config `nodePath` / `daemonEntry`（默认按插件位置推 `../daemon/src/cli.ts`）。
+- 测试：`packages/plugin-ops/test/daemon-supervisor.test.mjs`（17 例，纯注入假时钟/假 spawn/假健康探测，不真起进程）。
+
 ### 手动冒烟一次 probe（不发外网）
 
 daemon 用的是真 mtop 传输，没有登录态时任务会以 `AUTH_EXPIRED` 失败——这本身就是正确结果。要验证「校验→限流→凭据→通道」的顺序，跑集成测试更省事：
