@@ -111,6 +111,30 @@
 
 **边界（别扩写）**：真发只跑过**单件**（3 次：2 次 CLI 直发 + 1 次队列路径）、只跑过**「学习笔记」**类目；**批量只跑过 dry-run**；批量真提交、同批混不支持类目、失败重放都还没真机验证。
 
+
+### 5.2 一条命令补真机验收（2026-10-22 起）
+
+沙箱环境（DSH 里的 bash/run_code）**跑不了发布步骤机**：Chrome 渲染进程起不来，CDP 页面命令（`Runtime.evaluate` 等）一律超时。所以把「混合类目批量 dry-run」沉淀成脚本，在**普通终端**里一条命令跑完：
+
+```sh
+# 前置：本机 Chrome 带调试端口启动并已登录闲鱼（脚本不会自己起浏览器、也不会注入 cookie）
+"C:/Program Files/Google/Chrome/Application/chrome.exe" --remote-debugging-port=9222 --user-data-dir=%TEMP%/bigfish-accept
+
+pnpm accept:publish          # = node scripts/publish-acceptance.mjs
+```
+
+脚本行为（`scripts/publish-acceptance.mjs` + 纯函数层 `scripts/lib/publish-acceptance.mjs`）：
+
+1. 检查 Chrome 调试端口；连不上就直接报错并打印启动命令（不会静默降级）。
+2. 自己拉起一个 **`BF_PUBLISH_DRYRUN=1`** 的 daemon（默认端口 47991，避开日常 daemon；默认数据目录与日常一致），跑完即停；dry-run 语义 = 只填表、**绝不点提交**。
+3. 同一 `batchId` 入队两条：`学习笔记`（应 `done`）+ `教材教辅`（应 `failed`，验证单条失败不拖垮整批）；图片没给就现场生成两张 600×600 PNG 到 `.scratch/acceptance/images`。
+4. 轮询 `GET /batches/:id` 到终态，判定「total=2 / done=1 / failed=1 / failed 的原因是类目」。
+5. 打印报告 + 落证据 JSON（`.scratch/acceptance/<batchId>.json`）+ 退出码 0/1/2。
+
+覆盖 §5 里两条未做真机项：**同批混不支持类目**、**批次视图终态**。仍不覆盖：批量真提交、失败重放、pacing 180s 校准、风控熔断（这些必须真发，需用户授权）。
+
+已有 daemon 在跑时不要用这个脚本抢端口：先 `pnpm daemon:stop`，或 `--url http://127.0.0.1:47001` 复用它（**必须确认那个 daemon 也是 dry-run 启动的**，脚本无法替你验证）。
+
 ## 6. 与 P2（自动发货）的关系
 
 自动发布不动 IM/订单。P2 的三步（P2.0 半自动 → P2.1 IM 接线 → P2.2 全自动）仍按 [STATUS.md](STATUS.md) §4 走，等发布这条线跑顺再切。

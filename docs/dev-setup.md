@@ -70,6 +70,29 @@ node packages/daemon/src/cli.ts --data-dir .scratch/daemon --port 47001
 - 日志是一行一条 JSON（`{"t":...,"level":"info","name":"bigfish-daemon","msg":"daemon 已启动","url":...,"workerOwner":...}`）。
 - `SIGINT` 优雅退出：先停 worker（release 在飞任务）再关 HTTP 与 store。
 
+## 常驻运行（过夜跑）
+
+前台 `npm run daemon` 关终端即丢现场；需要过夜跑时用 `scripts/daemon-service.mjs`（detached 子进程 + 日志文件 + pid 文件）：
+
+```sh
+npm run daemon:start                          # 后台起，等 /health 就绪后打印 pid/端口/日志路径
+npm run daemon:status                         # pid + 进程 + /health 三判据，附带 uptime 与日志尾部
+npm run daemon:logs                           # 看日志尾部（默认 40 行；-- --tail 100 调整）
+npm run daemon:stop                           # 优雅停止（超时强杀），并确认端口释放
+npm run daemon:restart                        # stop + start
+npm run daemon:start -- --port 47002 --data-dir .scratch/daemon-live
+```
+
+- 状态目录（pid + 日志）默认 `%LOCALAPPDATA%\bigfish`，非 Windows 用 `~/.bigfish`：pid 在 `run/daemon.pid`（JSON：pid/port/host/startedAt/dataDir/logPath），日志在 `logs/daemon.log`（daemon 的结构化 JSON 行原样落盘）。
+- 状态目录与数据目录分离：`--data-dir` 只换 daemon 的 SQLite/token/凭据，pid 与日志仍固定在状态目录；需要完全隔离（如本地验证）时加 `--state-dir .scratch/daemon-state`。
+- 单实例：已有 pid 且 `/health` 可达 → 提示「已在运行」并退出 0，不会重复起；pid 残留但进程已死 → 自动清理；pid 丢了但端口上有 daemon 应答 → 接管补写 pid 文件；端口被别的进程占 → 退出 1 并提示换端口。
+- 端口：`--port` > 环境变量 `BF_PORT` > 47001；常驻模式不接受 `--port 0`（无法轮询固定端口）。
+- 退出码：`0` 成功 / `1` 失败（`status` 在 daemon 未运行时也返回 1，便于脚本判断） / `2` 参数错误。
+- 停止语义：POSIX 发 `SIGTERM`，daemon 的 handler 会先停 worker（release 在飞任务）再关 HTTP/store，是真正的优雅退出。**Windows 无法向别的进程投递可捕获信号**：先尝试 `taskkill /PID <pid> /T`（控制台程序一般失败），回落 `TerminateProcess`，相当于崩溃退出；10s 未退出再 `taskkill /T /F` 强杀。因此 Windows 上 stop 依赖 crash-safe 设计：SQLite WAL + 队列任务租约（60s TTL）保证重启后能恢复，不会重复发布（uniqueCode 幂等）。
+- `logs` 只读尾部、不 `-f` 跟随，避免占住终端；`--tail` 最多 1000 行。
+- daemon 是 detached 子进程：关掉当前终端不会带走它；需要停止用 `npm run daemon:stop`（或 `status` 拿 pid 后手动结束）。
+- 真机验证（隔离数据与状态，避免打扰已导入账号）：`npm run daemon:start -- --port 47999 --data-dir .scratch/svc/data --state-dir .scratch/svc/state` → `status` 看到 pid / 端口 / uptime → `stop` 确认「端口已释放」。
+
 ### 手动冒烟一次 probe（不发外网）
 
 daemon 用的是真 mtop 传输，没有登录态时任务会以 `AUTH_EXPIRED` 失败——这本身就是正确结果。要验证「校验→限流→凭据→通道」的顺序，跑集成测试更省事：

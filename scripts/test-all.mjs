@@ -7,6 +7,7 @@
  * node:test 在进程内同样会打印 TAP 汇总，并在有失败时把退出码置为 1。
  *
  * 收集范围：packages/*​/test/**​/*.test.(ts|mjs|js) + integration/**​/*.test.(ts|mjs|js)
+ *          + scripts/**​/*.test.(ts|mjs|js)（tools 脚本的纯函数单测也纳入全量）
  * 用法：node scripts/test-all.mjs [相对路径前缀 ...]
  */
 import { readdir } from 'node:fs/promises'
@@ -33,7 +34,7 @@ async function collect(dir) {
   return out
 }
 
-const roots = [join(root, 'packages'), join(root, 'integration')]
+const roots = [join(root, 'packages'), join(root, 'integration'), join(root, 'scripts')]
 let files = []
 for (const dir of roots) files.push(...await collect(dir))
 files = files
