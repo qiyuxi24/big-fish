@@ -447,7 +447,7 @@ export function buildTools(deps) {
     }),
     textTool({
       name: 'xy_copy_plan',
-      description: '按选定的语言风格，把商品事实组装成「listing 文案生成请求」：产出注入好的提示词（skill + 风格约束 + 事实 + 输出契约 + 待补项）。只读、不调模型、不写文件——拿到提示词后由你按 skills/xianyu-listing-copy 出草稿 JSON，再走 xy_publish_draft。',
+      description: '按选定的语言风格，把商品事实组装成「listing 文案生成请求」：产出注入好的提示词（skill + 风格约束 + 事实 + 输出契约 + 待补项）。只读、不调模型、不写文件——拿到提示词后由你按 .agents/skills/xianyu-listing-copy 出草稿 JSON，再走 xy_publish_draft。',
       parameters: {
         type: 'object',
         properties: {
@@ -533,6 +533,7 @@ export function buildTools(deps) {
           accountId: { type: 'string', minLength: 1, maxLength: 64, description: '发布账号 id；mode=enqueue 必填，dry-run 可选。' },
           mode: { type: 'string', enum: ['dry-run', 'enqueue'], description: 'dry-run（默认）只出计划；enqueue 才写 daemon 队列。' },
           maxItems: { type: 'integer', minimum: 1, maximum: 20, description: '本批最多处理多少条，默认 20（上限 20）。' },
+          batchId: { type: 'string', minLength: 1, maxLength: 64, pattern: '^[A-Za-z0-9._-]+$', description: '批次 id（字母数字 . _ -，≤64）；不给则自动生成。用于事后按批次查进度（GET /batches/:id / 面板「批次」视图）。' },
         },
         anyOf: [{ required: ['drafts'] }, { required: ['draftPaths'] }],
         additionalProperties: false,

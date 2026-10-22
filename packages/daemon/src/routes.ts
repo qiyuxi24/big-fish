@@ -10,6 +10,7 @@ import type {
   CircuitBreaker,
   DaemonStatus,
   EnqueueInput,
+  EnqueueReceipt,
   ItemFilter,
   ItemRepository,
   ItemState,
@@ -17,6 +18,7 @@ import type {
   TaskFilter,
   TaskKind,
   TaskQueue,
+  TaskQueueHandle,
   TaskRecord,
   TaskState,
 } from '@bigfish/core'
@@ -40,6 +42,7 @@ import type { LoginInput, LoginResult } from './login.ts'
 import type { AccountSummary } from './account-list.ts'
 import { parseReferenceRequest } from './reference.ts'
 import type { ReferenceReport, ReferenceRequest } from './reference.ts'
+import type { SettingsStore } from './settings.ts'
 
 /** 账号导入能力的注入签名；未注入时路由返回 UNSUPPORTED（HTTP 500）。 */
 export type ImportAccountHandler = (input: ImportAccountInput) => Promise<ImportedAccount>
@@ -80,6 +83,8 @@ export interface RouteContext {
   retryTask: RetryTaskHandler | undefined
   /** 参考采集能力；未注入时 POST /reference 返回 UNSUPPORTED。 */
   referenceCollect: ReferenceCollectHandler | undefined
+  /** 设置存储；未注入时 GET/PUT /settings 返回 UNSUPPORTED（测试里不必真读盘）。 */
+  settings: SettingsStore | undefined
   now: () => number
   startedAt: number
   version: string
@@ -92,7 +97,7 @@ export interface RouteContext {
 
 /** 一条路由：方法 + 路径正则 + 处理函数。 */
 export interface Route {
-  method: 'GET' | 'POST'
+  method: 'GET' | 'POST' | 'PUT'
   pattern: RegExp
   handler: (ctx: RouteContext) => Promise<void>
   /** 唯一公开路由：GET /health 不需要 token。 */
@@ -129,12 +134,16 @@ const ROUTES: readonly Route[] = [
   { method: 'POST', pattern: /^\/accounts\/login\/?$/, handler: loginAccountHandler },
   { method: 'GET', pattern: /^\/tasks\/?$/, handler: listTasksHandler },
   { method: 'POST', pattern: /^\/tasks\/?$/, handler: enqueueHandler },
+  // 批次视图只是 tasks.batch_id 的聚合，放在 /tasks 之后、/tasks/:id 之前读起来最顺。
+  { method: 'GET', pattern: /^\/batches\/([^/]+)\/?$/, handler: batchStatsHandler },
   { method: 'GET', pattern: /^\/tasks\/([^/]+)\/?$/, handler: getTaskHandler },
   { method: 'POST', pattern: /^\/tasks\/([^/]+)\/(ack|fail|release)$/, handler: taskActionHandler },
   { method: 'POST', pattern: /^\/tasks\/([^/]+)\/retry\/?$/, handler: retryTaskHandler },
   { method: 'POST', pattern: /^\/reference\/?$/, handler: referenceHandler },
   { method: 'GET', pattern: /^\/items\/?$/, handler: listItemsHandler },
   { method: 'POST', pattern: /^\/circuits\/reset\/?$/, handler: resetCircuitHandler },
+  { method: 'GET', pattern: /^\/settings\/?$/, handler: getSettingsHandler },
+  { method: 'PUT', pattern: /^\/settings\/?$/, handler: putSettingsHandler },
 ]
 
 /** 装饰 URL 参数解码失败时按 VALIDATION 处理。 */
@@ -300,15 +309,40 @@ async function getTaskHandler(ctx: RouteContext): Promise<void> {
 
 async function enqueueHandler(ctx: RouteContext): Promise<void> {
   const body = asRecord(await readJsonBody(ctx.req), '入队请求体')
-  let record: TaskRecord
+  let receipt: EnqueueReceipt
   try {
     // kind / dedupeKey / payload 的语义校验交给 queue：它才知道幂等键与状态机约束。
-    record = ctx.queue.enqueue(body as unknown as EnqueueInput)
+    receipt = enqueueWithReceipt(ctx.queue, body as unknown as EnqueueInput)
   } catch (error) {
     await sendMappedError(ctx.res, error, 400, ctx.redact)
     return
   }
-  await sendJson(ctx.res, 201, ok(record), ctx.redact)
+  // created 摊平到顶层：既有调用方读 data.kind/data.id 的行为不变，新调用方靠 created 区分「新建/幂等命中」。
+  await sendJson(ctx.res, 201, ok({ ...receipt.task, created: receipt.created }), ctx.redact)
+}
+
+/** 老队列实现没有 enqueueWithReceipt 时退回 enqueue，并保守地报告 created=true（它确实完成了入队语义）。 */
+function enqueueWithReceipt(queue: TaskQueue, input: EnqueueInput): EnqueueReceipt {
+  const handle = queue as TaskQueueHandle
+  if (typeof handle.enqueueWithReceipt === 'function') return handle.enqueueWithReceipt(input)
+  return { task: queue.enqueue(input), created: true }
+}
+
+/**
+ * 批次视图：一次批量入队的进度聚合。
+ * 未知批次按 404 处理——total=0 的「空批次」对 UI 没有意义，而且 batchId 会由调用方生成，
+ * 拼错 id 时沉默返回全零比报错更难排查。
+ */
+async function batchStatsHandler(ctx: RouteContext): Promise<void> {
+  const batchId = ctx.params[0] ?? fail('VALIDATION', '缺少批次 id')
+  const handle = ctx.queue as TaskQueueHandle
+  if (typeof handle.batchStats !== 'function') fail('UNSUPPORTED', '队列实现不支持批次视图')
+  const stats = handle.batchStats(batchId)
+  if (stats.total === 0) {
+    await sendError(ctx.res, 404, batchNotFound(batchId), ctx.redact)
+    return
+  }
+  await sendJson(ctx.res, 200, ok(stats), ctx.redact)
 }
 
 /**
@@ -416,7 +450,34 @@ async function resetCircuitHandler(ctx: RouteContext): Promise<void> {
   await sendJson(ctx.res, 200, ok({ accountId, reset: ctx.circuits !== undefined }), ctx.redact)
 }
 
+/** 读设置：面板启动时拉一次，显示当前文案风格/默认类目/发布节奏。 */
+async function getSettingsHandler(ctx: RouteContext): Promise<void> {
+  const store = ctx.settings ?? fail('UNSUPPORTED', 'daemon 未注入设置存储')
+  await sendJson(ctx.res, 200, ok(await store.get()), ctx.redact)
+}
+
+/**
+ * 改设置：只接受补丁（缺省字段保持不变）；非法字段/越界值由 core 的 parseSettingsPatch 抛 VALIDATION → 400。
+ * 与入队一样，写接口不做「部分成功」：校验不过就一个字段都不写。
+ */
+async function putSettingsHandler(ctx: RouteContext): Promise<void> {
+  const store = ctx.settings ?? fail('UNSUPPORTED', 'daemon 未注入设置存储')
+  const body = await readJsonBody(ctx.req)
+  let next: Awaited<ReturnType<SettingsStore['update']>>
+  try {
+    next = await store.update(body)
+  } catch (error) {
+    await sendMappedError(ctx.res, error, 400, ctx.redact)
+    return
+  }
+  await sendJson(ctx.res, 200, ok(next), ctx.redact)
+}
+
 /** 构造 404 错误：code 用 VALIDATION（core 没有 NOT_FOUND 码，HTTP 状态已表达语义）。 */
 function taskNotFound(id: string): XianyuError {
   return new XianyuError({ code: 'VALIDATION', message: '任务不存在：' + id })
+}
+
+function batchNotFound(batchId: string): XianyuError {
+  return new XianyuError({ code: 'VALIDATION', message: '批次不存在：' + batchId })
 }

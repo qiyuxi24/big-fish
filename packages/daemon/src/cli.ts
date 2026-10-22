@@ -222,17 +222,32 @@ async function readDraftJson(path: string): Promise<unknown> {
 }
 
 /**
- * 从环境变量读队列发布配置：只有 BF_PUBLISH_SUBMIT=1/true 才开启（默认关闭）。
- * 截图目录默认 <data-dir>/publish-shots：真发布出问题时截图是唯一现场证据。
+ * 从环境变量读队列发布配置（默认关闭，必须显式开启）。
+ *
+ * - `BF_PUBLISH_DRYRUN=1`：队列发布只填表、不点提交。这是真机校准队列链路的开关，
+ *   不会产生任何线上商品，所以可以对着真实账号跑。
+ * - `BF_PUBLISH_SUBMIT=1`：队列发布真提交。两个都开时 **dryRun 优先**（防误发）。
+ *
+ * 截图目录默认 <data-dir>/publish-shots：出问题时截图是唯一现场证据。
  */
 export function publishOptionsFromEnv(env: EnvLike, config: DaemonConfig): PublishPortOptions | undefined {
-  const submit = (env['BF_PUBLISH_SUBMIT'] ?? '').trim().toLowerCase()
-  if (submit !== '1' && submit !== 'true') return undefined
+  const enabled = (value: string | undefined): boolean => {
+    const normalized = (value ?? '').trim().toLowerCase()
+    return normalized === '1' || normalized === 'true'
+  }
+  const dryRun = enabled(env['BF_PUBLISH_DRYRUN'])
+  const submit = enabled(env['BF_PUBLISH_SUBMIT'])
+  if (!dryRun && !submit) return undefined
   const chromePortRaw = (env['BF_CHROME_PORT'] ?? '').trim()
   const chromePort = chromePortRaw === '' ? undefined : parsePortFlag(chromePortRaw, 'BF_CHROME_PORT', false)
   const screenshotsRaw = (env['BF_PUBLISH_SCREENSHOTS'] ?? '').trim()
   const screenshotsDir = screenshotsRaw === '' ? join(dirname(config.dbPath), 'publish-shots') : screenshotsRaw
-  return { submit: true, screenshotsDir, ...(chromePort === undefined ? {} : { chromePort }) }
+  return {
+    submit: submit && !dryRun,
+    ...(dryRun ? { dryRun: true } : {}),
+    screenshotsDir,
+    ...(chromePort === undefined ? {} : { chromePort }),
+  }
 }
 
 /** 起队列 + worker + HTTP 服务，然后阻塞等 SIGINT/SIGTERM；启动失败返回 1。 */

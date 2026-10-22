@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://bigfish.local/skills/xianyu-listing-copy/input-schema.json",
+  "$id": "https://bigfish.local/.agents/skills/xianyu-listing-copy/input-schema.json",
   "title": "xianyu-listing-copy 输入契约",
   "type": "object",
   "additionalProperties": false,

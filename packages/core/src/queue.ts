@@ -7,25 +7,43 @@
  *
  * 人工收尾：failed / needs_review 可经 requeue 回到 queued，attempts 归零（重获完整重试预算），
  * 这是救回「dedupeKey 已占用且已停下」任务的唯一通道。
+ *
+ * 批次：tasks.batch_id 只是归属标记，让「一次批量发布跑到哪了」可被 batchStats 观察；
+ * 它不引入新的状态机——批次里的任务仍然各自调度、各自重试、各自失败。
  * @module @bigfish/core/queue
  */
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
-import { XianyuError, fail } from './errors.ts'
+import { fail } from './errors.ts'
+import {
+  assertBatchId,
+  assertKind,
+  assertPositiveInt,
+  assertState,
+  assertText,
+  assertTimestamp,
+  backoffMs,
+  emptyStateCounts,
+  errorMessage,
+  requireKind,
+  requireState,
+} from './queue-guards.ts'
+import { pickListStatement, prepareStatements } from './queue-sql.ts'
+import type { QueueStatements } from './queue-sql.ts'
 import { asSqlRow, decodePayload, encodePayload, openStore, readSqlNumber, readSqlOptionalNumber, readSqlOptionalText, readSqlText, withTransaction } from './store.ts'
-import type { SqlRow, Store } from './store.ts'
-import type { EnqueueInput, FailTaskOptions, LeaseOptions, TaskFilter, TaskKind, TaskQueue, TaskRecord, TaskState } from './types.ts'
+import type { Store } from './store.ts'
+import type { BatchStats, EnqueueInput, EnqueueReceipt, FailTaskOptions, LeaseOptions, TaskFilter, TaskQueue, TaskRecord, TaskState } from './types.ts'
 
-/** 任务种类白名单，与 tasks 表的 CHECK 约束一致。 */
-export const TASK_KINDS: readonly TaskKind[] = ['publish', 'deliver', 'polish', 'reply', 'probe']
-
-/** 任务状态白名单，与 tasks 表的 CHECK 约束一致。 */
-export const TASK_STATES: readonly TaskState[] = ['queued', 'leased', 'done', 'failed', 'needs_review']
+// 值域白名单与断言搬到了 queue-guards.ts；这里转出以保持既有 import 路径可用。
+export { TASK_KINDS, TASK_STATES, isTaskKind, isTaskState } from './queue-guards.ts'
 
 const DEFAULT_MAX_ATTEMPTS = 3
 const DEFAULT_LIST_LIMIT = 50
 const MAX_LIST_LIMIT = 500
 const MAX_LAST_ERROR_CHARS = 500
+
+/** 单次 batchStats 最多回 200 条明细：批次只用于观察，不是分页接口。 */
+export const MAX_BATCH_ITEMS = 200
 
 /** 队列构造参数：path 与 store 至少给一个。 */
 export interface TaskQueueOptions {
@@ -46,6 +64,10 @@ export interface RequeueOptions { availableAt?: number }
 export interface TaskQueueHandle extends TaskQueue {
   fail(id: string, owner: string, error: string | Error, options?: FailTaskOptions): void
   requeue(id: string, options?: RequeueOptions): TaskRecord
+  /** 入队并告知是否新建；created=false 表示 dedupeKey 命中已有任务（不重置 attempts/状态）。 */
+  enqueueWithReceipt(input: EnqueueInput): EnqueueReceipt
+  /** 一批任务的聚合视图；明细按 created_at 升序，最多 MAX_BATCH_ITEMS 条。 */
+  batchStats(batchId: string): BatchStats
 }
 
 /** 建队列；path 与 store 都不给 → VALIDATION。 */
@@ -53,6 +75,7 @@ export function createTaskQueue(options: TaskQueueOptions): TaskQueueHandle {
   const ctx = createContext(options)
   return {
     enqueue: (input: EnqueueInput): TaskRecord => enqueueTask(ctx, input),
+    enqueueWithReceipt: (input: EnqueueInput): EnqueueReceipt => enqueueWithReceipt(ctx, input),
     lease: (leaseOptions: LeaseOptions): TaskRecord[] => leaseTasks(ctx, leaseOptions),
     ack: (id: string, owner: string): void => ackTask(ctx, id, owner),
     fail: (id: string, owner: string, error: string | Error, failOptions?: FailTaskOptions): void => {
@@ -62,17 +85,10 @@ export function createTaskQueue(options: TaskQueueOptions): TaskQueueHandle {
     requeue: (id: string, requeueOptions?: RequeueOptions): TaskRecord => requeueTask(ctx, id, requeueOptions),
     get: (id: string): TaskRecord | undefined => getTask(ctx, id),
     list: (filter?: TaskFilter): TaskRecord[] => listTasks(ctx, filter),
+    batchStats: (batchId: string): BatchStats => batchStatsOf(ctx, batchId),
     stats: (): Record<TaskState, number> => taskStats(ctx),
     close: (): void => closeQueue(ctx),
   }
-}
-
-export function isTaskKind(value: unknown): value is TaskKind {
-  return typeof value === 'string' && (TASK_KINDS as readonly string[]).includes(value)
-}
-
-export function isTaskState(value: unknown): value is TaskState {
-  return typeof value === 'string' && (TASK_STATES as readonly string[]).includes(value)
 }
 
 interface QueueContext {
@@ -82,78 +98,6 @@ interface QueueContext {
   now: () => number
   newId: () => string
   closed: boolean
-}
-
-type Statement = ReturnType<DatabaseSync['prepare']>
-
-interface QueueStatements {
-  insertTask: Statement
-  selectById: Statement
-  selectByDedupe: Statement
-  selectClaimable: Statement
-  leaseTask: Statement
-  markDone: Statement
-  markFailed: Statement
-  markQueued: Statement
-  markRequeued: Statement
-  listAll: Statement
-  listByState: Statement
-  listByKind: Statement
-  listByStateKind: Statement
-  countByState: Statement
-}
-
-const TASK_COLUMNS =
-  'id, kind, dedupe_key, payload, state, attempts, max_attempts, lease_owner, lease_until, available_at, last_error, created_at, updated_at'
-
-const LIST_ORDER = 'ORDER BY created_at ASC, rowid ASC'
-
-const SQL_TEXT = {
-  insertTask: `INSERT INTO tasks (${TASK_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(dedupe_key) DO NOTHING`,
-  selectById: `SELECT ${TASK_COLUMNS} FROM tasks WHERE id = ?`,
-  selectByDedupe: `SELECT ${TASK_COLUMNS} FROM tasks WHERE dedupe_key = ?`,
-  // 可领取 = 到期的 queued，或租约已过期（owner 崩溃）的 leased。
-  selectClaimable: `SELECT ${TASK_COLUMNS} FROM tasks
-    WHERE (state = 'queued' AND available_at <= ?)
-       OR (state = 'leased' AND lease_until IS NOT NULL AND lease_until <= ?)
-    ORDER BY available_at ASC, created_at ASC, rowid ASC
-    LIMIT ?`,
-  leaseTask: `UPDATE tasks SET state = 'leased', lease_owner = ?, lease_until = ?,
-    attempts = attempts + 1, updated_at = ? WHERE id = ?`,
-  markDone: `UPDATE tasks SET state = 'done', lease_owner = NULL, lease_until = NULL,
-    updated_at = ? WHERE id = ?`,
-  markFailed: `UPDATE tasks SET state = ?, available_at = ?, lease_owner = NULL, lease_until = NULL,
-    last_error = ?, updated_at = ? WHERE id = ?`,
-  markQueued: `UPDATE tasks SET state = 'queued', available_at = ?, lease_owner = NULL, lease_until = NULL,
-    updated_at = ? WHERE id = ?`,
-  // 与 markQueued 的差别：attempts 归零 + 清 last_error，语义是「人工重获完整重试预算」。
-  markRequeued: `UPDATE tasks SET state = 'queued', attempts = 0, available_at = ?, lease_owner = NULL,
-    lease_until = NULL, last_error = NULL, updated_at = ? WHERE id = ?`,
-  listAll: `SELECT ${TASK_COLUMNS} FROM tasks ${LIST_ORDER} LIMIT ?`,
-  listByState: `SELECT ${TASK_COLUMNS} FROM tasks WHERE state = ? ${LIST_ORDER} LIMIT ?`,
-  listByKind: `SELECT ${TASK_COLUMNS} FROM tasks WHERE kind = ? ${LIST_ORDER} LIMIT ?`,
-  listByStateKind: `SELECT ${TASK_COLUMNS} FROM tasks WHERE state = ? AND kind = ? ${LIST_ORDER} LIMIT ?`,
-  countByState: 'SELECT state, COUNT(*) AS total FROM tasks GROUP BY state',
-} as const
-
-function prepareStatements(db: DatabaseSync): QueueStatements {
-  return {
-    insertTask: db.prepare(SQL_TEXT.insertTask),
-    selectById: db.prepare(SQL_TEXT.selectById),
-    selectByDedupe: db.prepare(SQL_TEXT.selectByDedupe),
-    selectClaimable: db.prepare(SQL_TEXT.selectClaimable),
-    leaseTask: db.prepare(SQL_TEXT.leaseTask),
-    markDone: db.prepare(SQL_TEXT.markDone),
-    markFailed: db.prepare(SQL_TEXT.markFailed),
-    markQueued: db.prepare(SQL_TEXT.markQueued),
-    markRequeued: db.prepare(SQL_TEXT.markRequeued),
-    listAll: db.prepare(SQL_TEXT.listAll),
-    listByState: db.prepare(SQL_TEXT.listByState),
-    listByKind: db.prepare(SQL_TEXT.listByKind),
-    listByStateKind: db.prepare(SQL_TEXT.listByStateKind),
-    countByState: db.prepare(SQL_TEXT.countByState),
-  }
 }
 
 function createContext(options: TaskQueueOptions): QueueContext {
@@ -174,11 +118,22 @@ function resolveStore(options: TaskQueueOptions, now: () => number): Store {
 }
 
 function enqueueTask(ctx: QueueContext, input: EnqueueInput): TaskRecord {
+  return enqueueWithReceipt(ctx, input).task
+}
+
+/**
+ * 入队并区分「新建」与「dedupeKey 命中」。
+ * 拆出 receipt 是为了让 HTTP/面板能回答「这批实际排进去几条」：命中已有任务时既不能
+ * 假装成功（批量数量会虚高），也不能报错（重放同一批是幂等语义）。
+ */
+function enqueueWithReceipt(ctx: QueueContext, input: EnqueueInput): EnqueueReceipt {
   assertOpen(ctx)
   if (typeof input !== 'object' || input === null) fail('VALIDATION', 'enqueue 需要入参对象')
   const kind = assertKind(input.kind)
   const dedupeKey = assertText(input.dedupeKey, 'dedupeKey')
   const payloadText = encodePayload(input.payload)
+  // undefined = 不属于任何批次（单件任务）；空串之类的非法值必须报错，不能悄悄当单件。
+  const batchId = input.batchId === undefined ? undefined : assertBatchId(input.batchId)
   const maxAttempts =
     input.maxAttempts === undefined ? DEFAULT_MAX_ATTEMPTS : assertPositiveInt(input.maxAttempts, 'maxAttempts')
   const at = ctx.now()
@@ -186,8 +141,11 @@ function enqueueTask(ctx: QueueContext, input: EnqueueInput): TaskRecord {
   const id = assertText(ctx.newId(), 'idFactory 返回值')
   return withTransaction(ctx.db, () => {
     // ON CONFLICT DO NOTHING：dedupeKey 命中时既不新建、也不重置既有记录的 attempts/状态。
-    ctx.sql.insertTask.run(id, kind, dedupeKey, payloadText, 'queued', 0, maxAttempts, null, null, availableAt, null, at, at)
-    return toTaskRecord(ctx.sql.selectByDedupe.get(dedupeKey))
+    // 因此 changes=0 就是「这条已经入过队」的可靠信号，不用再比时间戳。
+    const result = ctx.sql.insertTask.run(
+      id, kind, dedupeKey, payloadText, 'queued', 0, maxAttempts, null, null, availableAt, null, at, at, batchId ?? null,
+    )
+    return { task: toTaskRecord(ctx.sql.selectByDedupe.get(dedupeKey)), created: Number(result.changes) > 0 }
   })
 }
 
@@ -290,14 +248,33 @@ function listTasks(ctx: QueueContext, filter?: TaskFilter): TaskRecord[] {
   return statement.all(...params).map((raw) => toTaskRecord(raw))
 }
 
+/**
+ * 批次聚合：counts 覆盖全部状态（缺键会让面板显示成"无数据"），total 是真实总数，
+ * items 只是前 200 条明细——两者刻意可能不等，调用方不能拿 items.length 当 total。
+ */
+function batchStatsOf(ctx: QueueContext, batchId: string): BatchStats {
+  assertOpen(ctx)
+  const id = assertBatchId(batchId)
+  const counts = emptyStateCounts()
+  let total = 0
+  for (const raw of ctx.sql.countByBatch.all(id)) {
+    const row = asSqlRow(raw)
+    if (row === undefined) continue
+    const count = readSqlNumber(row, 'total')
+    counts[requireState(readSqlText(row, 'state'))] = count
+    total += count
+  }
+  const items = ctx.sql.selectByBatch.all(id, MAX_BATCH_ITEMS).map((raw) => toTaskRecord(raw))
+  return { batchId: id, total, counts, items }
+}
+
 function taskStats(ctx: QueueContext): Record<TaskState, number> {
   assertOpen(ctx)
-  const stats: Record<TaskState, number> = { queued: 0, leased: 0, done: 0, failed: 0, needs_review: 0 }
+  const stats = emptyStateCounts()
   for (const raw of ctx.sql.countByState.all()) {
     const row = asSqlRow(raw)
     if (row === undefined) continue
-    const state = readSqlText(row, 'state')
-    if (isTaskState(state)) stats[state] = readSqlNumber(row, 'total')
+    stats[requireState(readSqlText(row, 'state'))] = readSqlNumber(row, 'total')
   }
   return stats
 }
@@ -306,13 +283,6 @@ function closeQueue(ctx: QueueContext): void {
   if (ctx.closed) return
   ctx.closed = true
   ctx.store.close()
-}
-
-function pickListStatement(sql: QueueStatements, hasState: boolean, hasKind: boolean): Statement {
-  if (hasState && hasKind) return sql.listByStateKind
-  if (hasState) return sql.listByState
-  if (hasKind) return sql.listByKind
-  return sql.listAll
 }
 
 function requireLease(ctx: QueueContext, id: string, owner: string, action: string): TaskRecord {
@@ -333,6 +303,7 @@ function toTaskRecord(raw: unknown): TaskRecord {
   const leaseOwner = readSqlOptionalText(row, 'lease_owner')
   const leaseUntil = readSqlOptionalNumber(row, 'lease_until')
   const lastError = readSqlOptionalText(row, 'last_error')
+  const batchId = readSqlOptionalText(row, 'batch_id')
   return {
     id,
     kind: requireKind(readSqlText(row, 'kind')),
@@ -347,61 +318,10 @@ function toTaskRecord(raw: unknown): TaskRecord {
     ...(lastError === undefined ? {} : { lastError }),
     createdAt: readSqlNumber(row, 'created_at'),
     updatedAt: readSqlNumber(row, 'updated_at'),
+    ...(batchId === undefined ? {} : { batchId }),
   }
-}
-
-function requireKind(value: string): TaskKind {
-  if (isTaskKind(value)) return value
-  fail('STORAGE', `tasks.kind 非法：${value}`)
-}
-
-function requireState(value: string): TaskState {
-  if (isTaskState(value)) return value
-  fail('STORAGE', `tasks.state 非法：${value}`)
-}
-
-/** AGENTS 硬规则：退避 = min(60 * 2^(attempts-1), 1800) 秒；attempts 从 1 起算。 */
-function backoffMs(attempts: number): number {
-  const exponent = Math.max(0, attempts - 1)
-  return Math.min(60 * 2 ** exponent, 1800) * 1000
-}
-
-function errorMessage(error: string | Error): string {
-  if (typeof error === 'string') return error.length === 0 ? '未知错误' : error
-  if (error instanceof Error) return error.message.length === 0 ? error.name : error.message
-  fail('VALIDATION', 'fail() 的 error 必须是字符串或 Error')
 }
 
 function assertOpen(ctx: QueueContext): void {
   if (ctx.closed) fail('STORAGE', '任务队列已关闭')
-}
-
-function assertKind(value: unknown): TaskKind {
-  if (isTaskKind(value)) return value
-  fail('VALIDATION', `kind 非法：${String(value)}`)
-}
-
-function assertState(value: unknown): TaskState {
-  if (isTaskState(value)) return value
-  fail('VALIDATION', `state 非法：${String(value)}`)
-}
-
-function assertText(value: unknown, field: string): string {
-  if (typeof value !== 'string') fail('VALIDATION', `${field} 必须是字符串`)
-  if (value.trim().length === 0) fail('VALIDATION', `${field} 不能为空`)
-  return value
-}
-
-function assertPositiveInt(value: unknown, field: string): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
-    fail('VALIDATION', `${field} 必须是正整数`)
-  }
-  return value
-}
-
-function assertTimestamp(value: unknown, field: string): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
-    fail('VALIDATION', `${field} 必须是非负整数毫秒`)
-  }
-  return value
 }

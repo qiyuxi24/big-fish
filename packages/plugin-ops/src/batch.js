@@ -99,6 +99,24 @@ function readMaxItems(value) {
   return value
 }
 
+/** 批次 id：只做归属标记，不参与幂等；格式与 core 的 assertBatchId 保持一致。 */
+const BATCH_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/
+
+function readBatchId(value) {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || !BATCH_ID_PATTERN.test(value)) {
+    throw invalid('batchId 必须是 1-64 位字母、数字或 . _ -')
+  }
+  return value
+}
+
+/** 未显式给 batchId 时生成一个：时间戳保证可排序，随机尾巴避免同一毫秒内两批撞号。 */
+export function generateBatchId(nowMs) {
+  const stamp = Math.trunc(nowMs).toString(36)
+  const tail = Math.random().toString(36).slice(2, 8).padEnd(6, '0')
+  return 'b-' + stamp + '-' + tail
+}
+
 function readMode(value) {
   if (value === undefined) return 'dry-run'
   if (typeof value !== 'string' || !BATCH_MODES.includes(value)) {
@@ -123,11 +141,12 @@ function readAccountId(value, mode) {
  * 因为这类错误重试整批与单条无关；单条草稿的错误留到 prepareBatch 里逐条标记。
  *
  * @param {Record<string, unknown>} args - 工具参数。
- * @returns {{mode: string, accountId: string | undefined, drafts: unknown[], draftPaths: string[], maxItems: number}}
+ * @returns {{mode: string, accountId: string | undefined, batchId: string | undefined, drafts: unknown[], draftPaths: string[], maxItems: number}}
  */
 export function normalizeBatchArgs(args) {
   if (!isRecord(args)) throw invalid('xy_publish_batch 的参数必须是对象')
   const mode = readMode(args.mode)
+  const batchId = readBatchId(args.batchId)
   const accountId = readAccountId(args.accountId, mode)
   if (args.drafts !== undefined && !Array.isArray(args.drafts)) {
     throw invalid('drafts 必须是数组（每个元素是一份草稿对象）')
@@ -137,7 +156,7 @@ export function normalizeBatchArgs(args) {
   if (drafts.length === 0 && draftPaths.length === 0) {
     throw invalid('drafts 与 draftPaths 至少要给一个非空数组：批量发布需要至少一条草稿')
   }
-  return { mode, accountId, drafts, draftPaths, maxItems: readMaxItems(args.maxItems) }
+  return { mode, accountId, batchId, drafts, draftPaths, maxItems: readMaxItems(args.maxItems) }
 }
 
 /** 内联草稿在前、文件路径在后，保持调用方给的顺序；label 用于逐条回显来源。 */
@@ -170,7 +189,7 @@ function attachEnqueueInput(item, draft, accountId) {
  *
  * @param {Record<string, unknown>} args - 工具参数。
  * @param {{readDraftFile?: Function}} [deps] - readDraftFile 仅测试注入。
- * @returns {Promise<{mode: string, accountId: string | undefined, items: object[], truncated: number}>}
+ * @returns {Promise<{mode: string, accountId: string | undefined, batchId: string | undefined, items: object[], truncated: number}>}
  */
 export async function prepareBatch(args, deps = {}) {
   const normalized = normalizeBatchArgs(args)
@@ -203,7 +222,19 @@ export async function prepareBatch(args, deps = {}) {
     }
     items.push(item)
   }
-  return { mode: normalized.mode, accountId: normalized.accountId, items, truncated }
+  return { mode: normalized.mode, accountId: normalized.accountId, batchId: normalized.batchId, items, truncated }
+}
+
+/** daemon 若返回 created 字段就以它为准；老版本 daemon 没有该字段，按「确实新建了」处理。 */
+function readCreated(task) {
+  if (task === null || typeof task !== 'object') return true
+  return /** @type {{created?: unknown}} */ (task).created !== false
+}
+
+function readAvailableAt(task) {
+  if (task === null || typeof task !== 'object') return undefined
+  const value = /** @type {{availableAt?: unknown}} */ (task).availableAt
+  return typeof value === 'number' && Number.isSafeInteger(value) ? value : undefined
 }
 
 /** 只取 task id 前 8 位做展示；结构不对不抛错，显示 ?。 */
@@ -224,7 +255,7 @@ function readTaskId(task) {
  *
  * @param {object[]} items - prepareBatch 产出的条目（原地改写 status/taskId/availableAt）。
  * @param {object} client - daemon 客户端。
- * @param {{now: () => number, minIntervalMs: number}} options - 注入时钟与最小间隔。
+ * @param {{now: () => number, minIntervalMs: number, batchId?: string}} options - 注入时钟、最小间隔与批次 id。
  */
 async function enqueueItems(items, client, options) {
   let abortedReason
@@ -242,10 +273,23 @@ async function enqueueItems(items, client, options) {
         throw new DaemonError('VALIDATION', '入队体缺少 accountId，无法做账号级发布 pacing')
       }
       const availableAt = nextPublishAvailableAt(lastByAccount.get(accountId), options.now(), options.minIntervalMs)
-      const task = await client.enqueue({ ...item.input, availableAt })
+      const body = options.batchId === undefined ? { ...item.input, availableAt } : { ...item.input, batchId: options.batchId, availableAt }
+      const task = await client.enqueue(body)
       // 只有入队成功才占用该账号的预约位：被 daemon 拒绝的条目没有真正排队，不该推迟下一条。
       lastByAccount.set(accountId, availableAt)
-      Object.assign(item, { status: 'queued', taskId: readTaskId(task), availableAt })
+      if (readCreated(task)) {
+        Object.assign(item, { status: 'queued', taskId: readTaskId(task), created: true, availableAt })
+      } else {
+        // dedupeKey 命中已有任务：daemon 什么都没新建。状态单列 'existing'，
+        // 否则「本批入队 4 条」会把跨批重复也算成新任务，用户会以为发了两遍。
+        Object.assign(item, {
+          status: 'existing',
+          taskId: readTaskId(task),
+          created: false,
+          availableAt: readAvailableAt(task) ?? availableAt,
+          reason: '幂等键命中已有任务（该任务已在队列，本次没有新建）',
+        })
+      }
     } catch (error) {
       if (!(error instanceof DaemonError)) throw error
       Object.assign(item, { status: 'failed', reason: '[' + error.code + '] ' + error.message })
@@ -275,13 +319,15 @@ function formatItemLine(item, mode) {
   const parts = [head, 'key=' + item.dedupeKey, '标题=' + formatTitle(item.draft), '价格=' + formatPrice(item.draft)]
   if (item.taskId !== undefined) parts.push('task=' + item.taskId)
   if (item.status === 'skipped-duplicate') parts.push('（' + item.reason + '）')
+  if (item.status === 'existing' && item.reason !== undefined) parts.push('（' + item.reason + '）')
   return parts.join(' ')
 }
 
 function countStatuses(items) {
-  const counts = { planned: 0, queued: 0, duplicate: 0, invalid: 0, failed: 0 }
+  const counts = { planned: 0, queued: 0, existing: 0, duplicate: 0, invalid: 0, failed: 0 }
   for (const item of items) {
     if (item.status === 'queued') counts.queued += 1
+    else if (item.status === 'existing') counts.existing += 1
     else if (item.status === 'skipped-duplicate') counts.duplicate += 1
     else if (item.status === 'invalid') counts.invalid += 1
     else if (item.status === 'failed') counts.failed += 1
@@ -293,8 +339,8 @@ function countStatuses(items) {
 function summaryLine(plan) {
   const counts = countStatuses(plan.items)
   if (plan.mode === 'enqueue') {
-    return '合计：入队 ' + String(counts.queued) + ' / 跳过重复 ' + String(counts.duplicate)
-      + ' / 非法 ' + String(counts.invalid) + ' / 失败 ' + String(counts.failed)
+    return '合计：新入队 ' + String(counts.queued) + ' / 已在队列 ' + String(counts.existing)
+      + ' / 批内重复 ' + String(counts.duplicate) + ' / 非法 ' + String(counts.invalid) + ' / 失败 ' + String(counts.failed)
   }
   return '合计：可入队 ' + String(counts.planned) + ' / 批内重复 ' + String(counts.duplicate)
     + ' / 非法 ' + String(counts.invalid)
@@ -313,17 +359,29 @@ function nextStepLines(plan) {
   ]
 }
 
+/** daemon 的批次视图：入队后回读一次，告诉调用方「服务端现在怎么记账」。 */
+function formatServerBatchView(plan) {
+  const stats = plan.batchStats
+  if (plan.mode !== 'enqueue' || stats === null || typeof stats !== 'object') return undefined
+  const counts = stats.counts ?? {}
+  const order = ['queued', 'leased', 'done', 'failed', 'needs_review']
+  const parts = order.map((state) => state + ' ' + String(counts[state] ?? 0))
+  return 'daemon 批次视图（' + String(stats.batchId ?? plan.batchId) + '）：共 ' + String(stats.total ?? 0) + ' 条 · ' + parts.join(' / ')
+}
+
 /** 把计划渲染成模型可读文本：逐条一行 + 汇总 + 下一步。 */
 export function formatBatchResult(plan) {
   const total = plan.items.length + plan.truncated
   const header = plan.mode === 'enqueue'
-    ? '批量发布：enqueue（逐条写 daemon 队列）'
+    ? '批量发布：enqueue（逐条写 daemon 队列' + (plan.batchId === undefined ? '' : '，批次 ' + plan.batchId) + '）'
     : '批量发布计划：dry-run（只出计划，不碰 daemon 写队列）'
   const truncated = plan.truncated > 0
     ? '（按 maxItems 截断 ' + String(plan.truncated) + ' 条，本批只处理前 ' + String(plan.items.length) + ' 条）'
     : ''
   const rows = plan.items.map((item) => formatItemLine(item, plan.mode))
-  return [header + '，共 ' + String(total) + ' 条' + truncated, ...rows, '', summaryLine(plan), ...nextStepLines(plan)].join('\n')
+  const serverView = formatServerBatchView(plan)
+  const viewError = plan.batchViewError === undefined ? [] : ['（批次视图读取失败：' + plan.batchViewError + '；逐条入队结果不受影响）']
+  return [header + '，共 ' + String(total) + ' 条' + truncated, ...rows, '', summaryLine(plan), ...(serverView === undefined ? [] : [serverView]), ...viewError, ...nextStepLines(plan)].join('\n')
 }
 
 /**
@@ -341,7 +399,19 @@ export async function runBatch(args, deps) {
       deps.minIntervalMs === undefined ? process.env.BF_PUBLISH_MIN_INTERVAL_MS : deps.minIntervalMs,
     )
     const now = typeof deps.now === 'function' ? deps.now : Date.now
-    await enqueueItems(plan.items, deps.client, { now, minIntervalMs })
+    // batchId 在本批真正入队时才生成：dry-run 计划不该无端造一个 id 写进输出。
+    const batchId = plan.batchId ?? generateBatchId(now())
+    plan.batchId = batchId
+    await enqueueItems(plan.items, deps.client, { now, minIntervalMs, batchId })
+    // 回读服务端视图：本批可能全部命中已有任务（新入队 0），逐条结果看不出的「服务端到底有没有这批」只能问 daemon。
+    // 读失败不影响入队结果本身，把错误降级成一句说明。
+    if (typeof deps.client.getBatch === 'function') {
+      try {
+        plan.batchStats = await deps.client.getBatch(batchId)
+      } catch (error) {
+        plan.batchViewError = error instanceof DaemonError ? '[' + error.code + '] ' + error.message : String(error)
+      }
+    }
   }
   return formatBatchResult(plan)
 }

@@ -3,7 +3,7 @@
  *
  * 定位：
  * - 本模块只做**确定性的数据组装**：风格表 → 校验输入 → 生成一份可交给 skill/agent 的请求与提示词。
- * - **不调模型、不联网、不写文件、不碰 daemon**。真正出文案的是 agent（按 skills/xianyu-listing-copy 执行），
+ * - **不调模型、不联网、不写文件、不碰 daemon**。真正出文案的是 agent（按 .agents/skills/xianyu-listing-copy 执行），
  *   将来换成别的 provider 也只替换执行者，请求契约不变——这就是「去耦合」的边界。
  * - 依赖方向：client（面板）只产出 `xy_copy_plan` 的参数 JSON；host 侧本模块把它变成提示词。
  *
@@ -15,7 +15,7 @@
  */
 import { DaemonError } from './client.js'
 
-/** 成色枚举，与 skills/xianyu-listing-copy/references/input-schema.json 对齐。 */
+/** 成色枚举，与 .agents/skills/xianyu-listing-copy/references/input-schema.json 对齐。 */
 export const CONDITIONS = ['new', 'like-new', 'light-wear', 'visible-wear', 'flawed']
 
 /** 成色中文名，只用于提示词里给人看。 */
@@ -86,7 +86,7 @@ export const COPY_STYLES = [
 export const COPY_STYLE_IDS = COPY_STYLES.map(style => style.id)
 
 /** 输出契约路径，写进提示词让执行者自己读。 */
-const SKILL_PATH = 'skills/xianyu-listing-copy'
+const SKILL_PATH = '.agents/skills/xianyu-listing-copy'
 const OUTPUT_SCHEMA = SKILL_PATH + '/references/output-schema.json'
 const INPUT_SCHEMA = SKILL_PATH + '/references/input-schema.json'
 
@@ -251,7 +251,7 @@ function readEnumCount(value) {
 
 /**
  * 把归一化结果渲染成可直接喂给 agent 的提示词。
- * 刻意不复述 38 条违禁词：红线由 skills/xianyu-listing-audit 统一持有，避免两处规则漂移。
+ * 刻意不复述 38 条违禁词：红线由 .agents/skills/xianyu-listing-audit 统一持有，避免两处规则漂移。
  *
  * @param {{style: object, facts: object, missing: string[]}} request - buildCopyRequest 的返回值。
  * @returns {string} 多行提示词。
@@ -277,7 +277,7 @@ export function renderCopyPrompt(request) {
     '',
     '【输入契约】' + INPUT_SCHEMA,
     '【输出契约】' + OUTPUT_SCHEMA + '：只输出纯 JSON，不加 markdown 围栏与解释。',
-    '【红线】按 skills/xianyu-listing-audit 自检；违规就换词，不删事实。',
+    '【红线】按 .agents/skills/xianyu-listing-audit 自检；违规就换词，不删事实。',
   )
   if (missing.length > 0) {
     lines.push('', '【待补】' + missing.join(' / ') + '：出稿前必须补齐（图片 1–9 张，本机绝对路径），否则不能进入 dry-run。')

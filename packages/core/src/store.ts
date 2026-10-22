@@ -69,12 +69,21 @@ CREATE TABLE events (
 );
 `
 
+/** v2：任务批次归属。旧行 batch_id 为 NULL——历史任务不属于任何批次，不能事后补。 */
+const V2_SQL = `
+ALTER TABLE tasks ADD COLUMN batch_id TEXT;
+CREATE INDEX idx_tasks_batch ON tasks(batch_id, created_at);
+`
+
 interface Migration {
   version: number
-  sql: string
+  apply(db: DatabaseSync): void
 }
 
-const MIGRATIONS: readonly Migration[] = [{ version: 1, sql: V1_SQL }]
+const MIGRATIONS: readonly Migration[] = [
+  { version: 1, apply: (db: DatabaseSync): void => db.exec(V1_SQL) },
+  { version: 2, apply: applyBatchMigration },
+]
 
 const CREATE_MIGRATIONS_SQL = `CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
@@ -232,10 +241,33 @@ function migrate(db: DatabaseSync, now: () => number): void {
   for (const migration of MIGRATIONS) {
     if (applied.has(migration.version)) continue
     withTransaction(db, () => {
-      db.exec(migration.sql)
+      migration.apply(db)
       db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(migration.version, now())
     })
   }
+}
+
+/**
+ * 迁移 2 单独写成函数，是为了能重入：ALTER TABLE ADD COLUMN 不是幂等的（列已存在会报
+ * duplicate column name），而版本表只保证「正常路径」不重跑。手工补过列却没记版本的库
+ * 一旦被迁移卡住，daemon 就再也起不来，所以这里先探测再 ALTER。
+ */
+function applyBatchMigration(db: DatabaseSync): void {
+  if (hasColumn(db, 'tasks', 'batch_id')) {
+    db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_batch ON tasks(batch_id, created_at)')
+    return
+  }
+  db.exec(V2_SQL)
+}
+
+/** 表名/列名只来自本文件内的常量，不接收外部输入。 */
+function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
+  const rows: unknown = db.prepare(`PRAGMA table_info(${table})`).all()
+  if (!Array.isArray(rows)) return false
+  for (const row of rows) {
+    if (asSqlRow(row)?.name === column) return true
+  }
+  return false
 }
 
 function readAppliedVersions(db: DatabaseSync): number[] {

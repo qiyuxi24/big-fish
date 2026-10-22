@@ -83,8 +83,10 @@ export function createFetchTransport(fetchImpl: typeof fetch = fetch): MtopTrans
 }
 
 export interface PublishPortOptions {
-  /** 必须显式为 true 才允许队列任务真提交；false/缺省一律 UNSUPPORTED。 */
+  /** 必须显式为 true 才允许队列任务真提交；false 且未开 dryRun 时一律 UNSUPPORTED。 */
   submit: boolean
+  /** 只填表、不点提交（队列链路真机校准用）；开它不要求 submit，也不产出 itemId。 */
+  dryRun?: boolean
   /** Chrome DevTools 端口，默认 channel-cdp 的 DEFAULT_PORT（9222）。 */
   chromePort?: number
   /** 每步截图目录；真机校准时必开，便于对着截图修选择器。 */
@@ -138,23 +140,26 @@ export function createOperationPort(options: OperationPortOptions = {}): Operati
 
     async publishItem(input: { session: Session; draft: PublishDraft; signal: AbortSignal }): Promise<{ itemId?: string }> {
       const publish = options.publish
-      if (publish === undefined || !publish.submit) {
+      const dryRun = publish?.dryRun === true
+      if (publish === undefined || (!publish.submit && !dryRun)) {
         fail(
           'UNSUPPORTED',
-          '发布通道未开启真提交：' + hint + '（先用 npm run daemon:publish -- --draft <草稿.json> 做 dry-run 校准；确认后设 BF_PUBLISH_SUBMIT=1 重启 daemon 才会真发布）',
+          '发布通道未开启：' + hint + '（校准队列链路设 BF_PUBLISH_DRYRUN=1 只填表；确认后设 BF_PUBLISH_SUBMIT=1 才会真发布）',
         )
       }
+      // dryRun 优先：即使同时给了 submit，也绝不点提交（真机校准阶段防误发）。
+      const submit = publish.submit && !dryRun
       const runner = publish.run ?? publishViaCdp
       const result = await runner({
         draft: input.draft,
         accountId: input.session.accountId,
-        submit: true,
+        submit,
         ...(publish.chromePort === undefined ? {} : { chromePort: publish.chromePort }),
         ...(publish.screenshotsDir === undefined ? {} : { screenshotsDir: publish.screenshotsDir }),
         signal: input.signal,
       })
-      if (result.itemId === undefined) fail('INTERNAL', 'CDP 发布返回成功但没有 itemId，按失败处理')
-      return { itemId: result.itemId }
+      if (submit && result.itemId === undefined) fail('INTERNAL', 'CDP 发布返回成功但没有 itemId，按失败处理')
+      return result.itemId === undefined ? {} : { itemId: result.itemId }
     },
 
     async deliverOrder(): Promise<{ delivered: boolean }> {

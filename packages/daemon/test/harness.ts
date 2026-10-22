@@ -16,6 +16,7 @@ import { DaemonClient } from '../src/client.ts'
 import { startDaemon } from '../src/server.ts'
 import type { Daemon } from '../src/server.ts'
 import type { ImportAccountHandler, LoginAccountHandler, ReferenceCollectHandler, RetryTaskHandler } from '../src/routes.ts'
+import type { SettingsStore } from '../src/settings.ts'
 import type { AccountSummary } from '../src/account-list.ts'
 import { FakeQueue } from './fake-queue.ts'
 
@@ -73,6 +74,8 @@ export interface HarnessOptions {
   retryTask?: RetryTaskHandler
   /** 参考采集能力（测试 POST /reference）；缺省时不注入，路由应返回 UNSUPPORTED。 */
   referenceCollect?: ReferenceCollectHandler
+  /** 设置存储（测试 GET/PUT /settings）；缺省时不注入，路由应返回 UNSUPPORTED。 */
+  settings?: SettingsStore
 }
 
 /** 建夹具；t.after 负责关服务与清理目录。 */
@@ -104,6 +107,7 @@ export async function createHarness(t: { after(fn: () => Promise<void>): void },
     // 需要断言注入是否被调用（例如唤醒 worker）时再用 options.retryTask 覆盖。
     retryTask: options.retryTask ?? ((id: string): TaskRecord => queue.requeue(id)),
     ...(options.referenceCollect === undefined ? {} : { referenceCollect: options.referenceCollect }),
+    ...(options.settings === undefined ? {} : { settings: options.settings }),
   })
   const client = new DaemonClient({ baseUrl: daemon.url, tokenPath: config.tokenPath })
   const baseUrl = daemon.url

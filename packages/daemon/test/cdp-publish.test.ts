@@ -203,7 +203,7 @@ describe('OperationPort.publishItem 门禁', () => {
     const port = createOperationPort({})
     const error = await catchAsync(async (): Promise<unknown> => port.publishItem({ session: SESSION, draft, signal }))
     assertCode(error, 'UNSUPPORTED')
-    assert.match(error.message, /dry-run/)
+    assert.match(error.message, /BF_PUBLISH_DRYRUN/)
     assert.match(error.message, /BF_PUBLISH_SUBMIT/)
   })
 

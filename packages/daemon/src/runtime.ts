@@ -24,6 +24,8 @@ import type {
   TaskQueueHandle,
 } from '@bigfish/core'
 
+import { dirname, join } from 'node:path'
+
 import { importAccountFromChrome } from './accounts.ts'
 import { listAccountSummaries } from './account-list.ts'
 import { loginAndSave } from './login.ts'
@@ -35,6 +37,7 @@ import { createFetchTransport, createOperationPort } from './operations.ts'
 import type { PublishPortOptions } from './operations.ts'
 import { startDaemon } from './server.ts'
 import type { Daemon } from './server.ts'
+import { createSettingsStore } from './settings.ts'
 import { startWorker } from './worker.ts'
 import type { WorkerHandle } from './worker.ts'
 import type { MtopTransport } from '@bigfish/channel-mtop'
@@ -93,6 +96,8 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
       path: config.circuitPath,
       ...(now === undefined ? {} : { now }),
     })
+    // 设置跟数据库放同一目录：一次备份/迁移就是搬整个数据目录，不用记两处路径。
+    const settings = createSettingsStore(join(dirname(config.dbPath), 'settings.json'))
 
     // ports：真实通道 + 测试覆盖；Partial 覆盖只替换指定方法。
     const basePorts = createOperationPort({
@@ -147,6 +152,7 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
         queue,
         items,
         circuits,
+        settings,
         accounts: () => accounts,
         // 账号面板的列表：只读摘要，cookie 值不出进程（见 account-list.ts）。
         accountSummaries: () =>

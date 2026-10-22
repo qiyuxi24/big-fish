@@ -19,23 +19,13 @@ pnpm install --offline --ignore-scripts
 ## 测试与类型检查
 
 ```sh
-node scripts/test-all.mjs                   # 全量：709 tests / 709 pass（27 suites / 73 个测试文件，约 12s）
+node scripts/test-all.mjs                   # 全量（27 suites，约 12s）
 node scripts/test-all.mjs packages/core     # 只跑某个包（按路径前缀过滤）
 node scripts/test-all.mjs integration       # 只跑跨层集成测试
 ```
 
-| 包 | 用例数 |
-| --- | --- |
-| core | 144 |
-| daemon | 177（含 5 条 runtime 全链路集成） |
-| channel-mtop | 95 |
-| channel-cdp | 100 |
-| channel-guanjia | 62 |
-| channel-im | 32 |
-| plugin-ops | 97 |
-| integration | 2 |
-
-- `ops-bundle` 只声明 bundle patch，无测试。口径以 `docs/STATUS.md` 为准。
+- **本文件不重复具体用例数**：数字随开发漂移（AGENTS §0 已裁过「同一个数字出现过 6 个版本」），以这次命令的实际输出为准；能力状态看 `docs/STATUS.md`。
+- `ops-bundle` 只声明 bundle patch，无测试。
 
 - 不用 `node --test`、不用 vitest：沙箱禁止 spawn，脚本在单进程里顺序 import 测试文件再由 `node:test` 汇总。
 - `scripts/typecheck.mjs` 在本沙箱会因 `spawnSync node.exe EPERM` 报错（不是类型错误）。**直跑 tsc**：
@@ -48,6 +38,22 @@ node 'C:/Users/34239/Documents/GitHub/deepseek-harness/node_modules/typescript/b
 
 把 `packages/daemon` 换成 core / channel-mtop / channel-cdp / channel-guanjia / channel-im 即可逐包检查（6 个 TS 包均 0 错误）；plugin-ops 与 ops-bundle 是纯 ESM JS、没有 tsconfig，**不在类型检查覆盖内**（靠 JSDoc + 单测）。
 
+## 项目级 skill（`.agents/skills/`）
+
+DSH 的 `skill-filesystem` 只扫**项目根**两个目录：`.dsh/skills/`（本机私有，不提交）与 `.agents/skills/`（仓库共享，随 git 提交）。每个根只看下一层 `<name>/SKILL.md`（或平铺 `<name>.md`），不递归；frontmatter 必须含 kebab-case `name` + `description`，缺失/非法只 warn 后忽略。
+
+本仓的 2 个文案 skill 已从 `skills/` **迁到 `.agents/skills/`**（`git mv`，2026-10-22）：
+
+```
+.agents/skills/
+  xianyu-listing-copy/   SKILL.md + references/{input-schema.json,output-schema.json,templates.md,red-lines.md}
+  xianyu-listing-audit/  SKILL.md + references/audit-codes.md
+```
+
+- 放在仓库里即被自动发现，**不需要** `customSkillDirs`，也不需要复制/软链到 `.dsh/`（迁移后当前会话的 skill 列表立刻出现两个 `xianyu-listing-*`，已实测）。
+- **`skills/` 不会被发现**——这就是迁移原因；不要再在仓库根建 `skills/`。
+- 目录名与 frontmatter `name` 保持一致，否则装载按 name 走会错位。
+- 插件侧提示词里的 `SKILL_PATH`（`packages/plugin-ops/src/copy.js`）要跟着改成 `.agents/skills/xianyu-listing-copy`，否则提示词指向不存在的路径。
 ## 起 daemon
 
 ```sh

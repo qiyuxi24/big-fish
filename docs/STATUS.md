@@ -34,7 +34,7 @@ P2 自动发货押后到发布这条线跑顺再切。
 | 批量上架调度 | ❌ 未做 | 缺「批次 → 串行 pacing → 批次汇总」的批次层；批量只是 N 条独立 publish 任务 |
 | `deliver` 自动发货 | ❌ `UNSUPPORTED` | 规则引擎已就绪，缺订单/消息源与执行接线 |
 | `reply` / IM 收发 | ❌ `UNSUPPORTED` | `channel-im` 已提交（帧解析/归一化/会话状态机，32 tests），**未接 daemon**；websocket 长连、发送、握手未实现 |
-| 文案 skill（改写 + 合规审核） | ✅ 2 个 skill | `skills/xianyu-listing-copy`、`xianyu-listing-audit`；**未被 DSH 自动发现**（无 `customSkillDirs`），未接进 agent 流程 |
+| 文案 skill（改写 + 合规审核） | ✅ 2 个 skill | `.agents/skills/xianyu-listing-copy`、`.agents/skills/xianyu-listing-audit`；**已被 DSH 自动发现**（provider 只扫 `.dsh/skills` / `.agents/skills`，2026-10-22 实测），可被 agent 直接调用 |
 | 文案风格注入（面板 + `xy_copy_plan`） | ✅ 真机（面板）/ 单测（工具） | 面板内「文案」分区（`PANEL_TABS` 六分区之一）：5 档语言风格（plain/warm/professional/urgent/story）、填商品名/价格/成色，组出 `xy_copy_plan` 参数 JSON；工具把风格约束渲染成提示词。**都只产出请求/提示词，不调模型** |
 | AI 生图 | 📝 方案 | 选型与管线见 [copywriting-and-imagegen-plan.md](copywriting-and-imagegen-plan.md)，未实现调用 |
 | 地址库 / 别名匹配 | ❌ 未做 | CDP 下地址搜索候选不回显，只能匹配「常用地址/附近地址」；匹配不到就失败回显候选 |

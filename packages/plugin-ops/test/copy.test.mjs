@@ -120,7 +120,7 @@ test('renderCopyPrompt：注入风格约束、事实、契约与下一步', () =
   const request = buildCopyRequest(baseInput({ styleId: 'professional' }))
   const text = renderCopyPrompt(request)
   for (const expected of [
-    'skills/xianyu-listing-copy',
+    '.agents/skills/xianyu-listing-copy',
     'professional',
     '参数党',
     '【风格约束】',

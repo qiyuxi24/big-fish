@@ -49,7 +49,7 @@ integration/   跨层端到端测试（真实 daemon + 插件 client，不依赖
 scripts/       test-all / typecheck / dsh-dump / dsh-dev / dsh-shot / dsh-install（lib/ 放零依赖 CDP 与 profile 工具）
 docs/          设计、状态、决策记录（入口见下）
   adr/         架构决策记录（0001 基于 DSH、0002 零依赖/无构建/插件用 JS、0003 发布自动化路径）
-skills/        文案改写与上架合规审核（DSH skill，尚未接进 agent 流程）
+.agents/skills/ 文案改写与上架合规审核（DSH 项目级 skill，自动发现）
 research/      调研证据（repos/ 为第三方材料，不入 git；删除前必须走 AGENTS §6 流程）
 .scratch/      临时产物（gitignore）
 ```

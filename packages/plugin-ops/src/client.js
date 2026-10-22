@@ -118,6 +118,11 @@ export function createDaemonClient(options) {
     enqueue: (input) => request('/tasks', { method: 'POST', body: input }),
     getTask: (id) => request(`/tasks/${encodeURIComponent(id)}`),
     taskAction: (id, action, body = {}) => request(`/tasks/${encodeURIComponent(id)}/${action}`, { method: 'POST', body }),
+    // 批次进度：一次批量发布的聚合视图（总量 + 五状态计数 + 明细）。
+    getBatch: (id) => request(`/batches/${encodeURIComponent(id)}`),
+    // 设置落在 daemon 的 settings.json；PUT 只接受补丁（缺省字段保持不变）。
+    getSettings: () => request('/settings'),
+    putSettings: (patch) => request('/settings', { method: 'PUT', body: patch }),
     listItems: () => request('/items'),
     // 只读摘要：账号 id / 更新时间 / 字段数 / 是否可用，不含任何 cookie 值。
     listAccounts: () => request('/accounts'),

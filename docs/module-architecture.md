@@ -106,10 +106,10 @@
 
 **边界**：把商品原始信息变成「可发布的文案/图片/参数」；不含直接发布。
 
-**现状**：`xy_copy_plan` 是纯函数，产出一段纯文本提示词（skill 路径与输入输出契约 + 5 档风格约束 + 事实 JSON + 合规红线 + 下一步），**不调模型、不写文件、不碰 daemon**。`skills/xianyu-listing-copy` 与 `skills/xianyu-listing-audit` 存在，但 **`plugin-ops/package.json` 与两个 `cordis.patch.yml` 都没有 `customSkillDirs`**，宿主不会自动发现，只能由人/agent 显式 read。
+**现状**：`xy_copy_plan` 是纯函数，产出一段纯文本提示词（skill 路径与输入输出契约 + 5 档风格约束 + 事实 JSON + 合规红线 + 下一步），**不调模型、不写文件、不碰 daemon**。`xianyu-listing-copy` 与 `xianyu-listing-audit` 位于 **`.agents/skills/`**（2026-10-22 从 `skills/` 迁入）：`skill-filesystem` 只扫项目根 `.dsh/skills` 与 `.agents/skills`，后者就是 DSH 项目级 skill 根，**启动即自动发现**，不需要 `customSkillDirs`。
 
 **到 A 还差（五环，缺一环都闭合不了）**：
-1. **skill 装载**（`customSkillDirs` 路径未验证，写文档时都标着「待验证」）。
+1. **skill 装载**（✅ 已解决：`.agents/skills/` 自动发现，2026-10-22 迁移后 skill 目录已可见）。
 2. **草稿落盘工具**——`xy_publish_draft` 只收 `draftPath`，`xy_copy_plan` 不写文件，现在是人工把文案贴成 JSON。
 3. **发布前合规校验**——policy 校验在 daemon 执行时才跑，违规文案会先入队再 failed；应该入队前拦。
 4. **dry-run 真执行**——工具 dry-run 只打印命令，agent 无法在对话内完成填表验证。

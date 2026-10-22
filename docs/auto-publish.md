@@ -8,7 +8,7 @@
 **自动发布 = 一批草稿 → 逐条校验 → 批量入队（幂等）→ daemon 单账号串行执行 CDP 发布 → 结果落库 / 失败进待审。**
 
 明确**不包含**（保持解耦，各做各的）：
-- 不包含文案生成与生图：文案走 `skills/xianyu-listing-copy` + `xy_copy_plan`，生图只有方案（[copywriting-and-imagegen-plan.md](copywriting-and-imagegen-plan.md)）。
+- 不包含文案生成与生图：文案走 `.agents/skills/xianyu-listing-copy` + `xy_copy_plan`，生图只有方案（[copywriting-and-imagegen-plan.md](copywriting-and-imagegen-plan.md)）。
 - 不包含 IM / 自动发货：那是 P2，`channel-im` 已提交但未接 daemon，`deliver`/`reply` 仍是 `UNSUPPORTED`。
 - 不包含 GUI 之外的执行：daemon 不调 LLM（AGENTS §1.1），面板不执行写操作，面板只产出「请求」。
 - 不做多账号并发：单账号写串行、QPS ≤ 1 是硬不变量；多账号是以后的事。

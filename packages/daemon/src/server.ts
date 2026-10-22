@@ -27,6 +27,7 @@ import type {
   WorkerCounts,
 } from './routes.ts'
 import type { AccountSummary } from './account-list.ts'
+import type { SettingsStore } from './settings.ts'
 
 /** 请求总超时：本机 IPC 不应该有慢请求。 */
 const REQUEST_TIMEOUT_MS = 30_000
@@ -55,6 +56,8 @@ export interface StartDaemonOptions {
   retryTask?: RetryTaskHandler
   /** 参考采集能力；缺省时 POST /reference 返回 UNSUPPORTED。 */
   referenceCollect?: ReferenceCollectHandler
+  /** 设置存储；缺省时 GET/PUT /settings 返回 UNSUPPORTED。 */
+  settings?: SettingsStore
   /** 可注入时钟（整数毫秒），测试用假时钟断言 uptime。 */
   now?: () => number
   version?: string
@@ -81,6 +84,7 @@ interface ServerContext {
   accountSummaries: (() => Promise<AccountSummary[]>) | undefined
   retryTask: RetryTaskHandler | undefined
   referenceCollect: ReferenceCollectHandler | undefined
+  settings: SettingsStore | undefined
   now: () => number
   startedAt: number
   version: string
@@ -111,6 +115,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
     accountSummaries: options.accountSummaries,
     retryTask: options.retryTask,
     referenceCollect: options.referenceCollect,
+    settings: options.settings,
     now,
     startedAt,
     version,
@@ -181,6 +186,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, context:
       accountSummaries: context.accountSummaries,
       retryTask: context.retryTask,
       referenceCollect: context.referenceCollect,
+      settings: context.settings,
       now: context.now,
       startedAt: context.startedAt,
       version: context.version,

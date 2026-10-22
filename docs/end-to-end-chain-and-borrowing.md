@@ -66,7 +66,7 @@
 | --- | --- | --- | --- |
 | 登录态 | XianYuApis 扫码七步；三仓 cookie 事实 | `packages/daemon/src/accounts.ts`（`saveImportedAccount`/`importAccountFromChrome`）+ `packages/channel-cdp/src/cookies.ts`（`Storage.getCookies`，仅方法不存在才降级 `Network.getAllCookies`） | **不自己补 tfstk 环境**：从真浏览器读 cookie（`et_f.js` 自己算）；凭据 AES-256-GCM 加密落盘（core `CredentialStore`），日志一律脱敏 |
 | 取数 | XianYuApis 详情/搜索接口；MediaCrawler 节奏 | `packages/channel-mtop`（签名/信封/cookie 归一/ret 分类）+ daemon `probe` 执行器 + `items` 落库 | 签名做成**纯函数无状态**包；probe 只读、走 `read` 桶；不把 UA/设备指纹写死 |
-| 文案 | 雾里 `人物设定.txt`（标题≤30 字、4 段式、5 话题标签、纯 JSON） | `skills/xianyu-listing-copy` + `skills/xianyu-listing-audit`（2026-10-21 已落地，实际 2 个 skill；尚未接进 DSH agent 流程） | 素材工程化模板进了 skill 层，生成仍留在插件/agent 侧，daemon 不调 LLM |
+| 文案 | 雾里 `人物设定.txt`（标题≤30 字、4 段式、5 话题标签、纯 JSON） | `.agents/skills/xianyu-listing-copy` + `.agents/skills/xianyu-listing-audit`（2026-10-21 已落地，实际 2 个 skill；2026-10-22 迁到 `.agents/skills`，DSH 项目级 skill 根自动发现） | 素材工程化模板进了 skill 层，生成仍留在插件/agent 侧，daemon 不调 LLM |
 | 发布 | XianYuApis 发布 body（学事实）+ A/B 的「真浏览器里干活」 | `packages/channel-cdp/src/publish.ts` 步骤机 + `daemon/src/cdp-publish.ts` 装配 + CLI `daemon:publish` | **确定性步骤机是唯一写路径，LLM 不进热路径**（ADR 0003）；默认 dry-run；`uniqueCode` 每次生成、绝不复用；提交后必须解析到 itemId 或「发布成功」否则按失败，且不自动重试 |
 | 订单/发货 | B-im 的 IM 协议；A 的规则表数据模型 | `packages/core/src/delivery.ts`（`matchDeliveryRule`，priority 排序、缺上下文 fail-closed、红线词硬拦 38 条）+ `packages/channel-im`（已提交 `7a01bbf`，32 tests；未接 daemon） | 规则引擎是**纯函数 + 手写窄化校验**，可脱网单测（21 例）；daemon `deliver/reply` 仍 `UNSUPPORTED`（宁可失败不留假成功） |
 | 官方通道 | xian-guanjia（MIT） | `packages/channel-guanjia`（签名 + 20 接口，**不含 placeOrder**） | 合规首选通道，需鱼小铺 + 订购 ERP；作为通道矩阵 A 位 |

@@ -64,7 +64,7 @@
 | 登录态（导入/扫码/刷新） | `CredentialStore` + CDP 导入 + 扫码登录 + `_m_h5_tk` 自动刷新 | ✅ 已覆盖 |
 | 单件发布（CDP 步骤机） | 真机跑通 3 次（itemId 1093817229436 / 1091938715735 / 1091940243200，均已下架） | ✅ 已覆盖（限类目矩阵） |
 | 批量入队（幂等 dedupeKey） | `xy_publish_batch` + daemon 串行 worker；批量真机未验 | 🟡 功能在、真机缺 |
-| 文案生成/改写 | `xy_copy_plan`（5 种风格 + 合规词表）、`skills/xianyu-listing-copy` | ✅ 覆盖（我们走 agent，不内置模板库） |
+| 文案生成/改写 | `xy_copy_plan`（5 种风格 + 合规词表）、`.agents/skills/xianyu-listing-copy` | ✅ 覆盖（我们走 agent，不内置模板库） |
 | **采集参考（列表+详情富字段）** | `parseItemReference` + daemon `POST /reference` + `xy_reference_collect` + 面板「采集」分区（§7） | ✅ R1 已落地（只读统计；真机单件 200），R2 搬家待拍板 |
 | 图片下载 / 处理 / 去重 | 无 | ❌ 未做（合规上只允许「自摄素材」的处理，见 §5） |
 | 改价公式 | 无（草稿里直接写 priceCents） | ❌ 未做（低优先，属配置项） |

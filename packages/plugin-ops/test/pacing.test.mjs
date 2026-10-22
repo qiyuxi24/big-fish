@@ -76,7 +76,7 @@ test('runBatch：同一账号 3 条按 180s 递增预约（now、now+180s、now+
   )
   assert.deepEqual(availableAtSeq(client), [FIXED, FIXED + 180_000, FIXED + 360_000])
   // 输出仍按原格式汇报三条已入队，pacing 不改变模型可见的摘要结构。
-  assert.match(text, /入队 3 \/ 跳过重复 0 \/ 非法 0 \/ 失败 0/)
+  assert.match(text, /新入队 3 \/ 已在队列 0 \/ 批内重复 0 \/ 非法 0 \/ 失败 0/)
 })
 
 test('runBatch：间隔可配置（30s / 60s 环境变量），非法值回退默认', async () => {
@@ -113,5 +113,5 @@ test('runBatch：入队失败不占用账号的预约位，下一条仍从当前
   assert.deepEqual(availableAtSeq(client), [FIXED, FIXED])
   // 失败那条如实标 failed（第 2 条不因它被延后），第二行才是 queued。
   assert.match(text, /失败/)
-  assert.match(text, /入队 1 \/ 跳过重复 0 \/ 非法 0 \/ 失败 1/)
+  assert.match(text, /新入队 1 \/ 已在队列 0 \/ 批内重复 0 \/ 非法 0 \/ 失败 1/)
 })

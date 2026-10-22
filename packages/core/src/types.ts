@@ -23,6 +23,27 @@ export interface EnqueueInput {
   /** 最早可执行时间；缺省立即。 */
   availableAt?: number
   maxAttempts?: number
+  /**
+   * 批次归属（一次批量发布共享同一 id）；缺省表示单件任务，不属于任何批次。
+   * 只做观察用的归属标记：不参与幂等判断，也不改变重试语义。
+   */
+  batchId?: string
+}
+
+/** enqueueWithReceipt 的返回：created=false 表示 dedupeKey 命中已有任务，没有新建、也没重置它。 */
+export interface EnqueueReceipt {
+  task: TaskRecord
+  created: boolean
+}
+
+/** 一批任务的聚合视图：counts 覆盖全部状态，items 只是前 200 条明细（total 可能更大）。 */
+export interface BatchStats {
+  batchId: string
+  /** 该批次的任务总数（真实计数，不受明细上限影响）。 */
+  total: number
+  counts: Record<TaskState, number>
+  /** 明细，按 created_at 升序；最多 200 条。 */
+  items: TaskRecord[]
 }
 
 /** 持久化后的任务记录。 */
@@ -41,6 +62,8 @@ export interface TaskRecord {
   /** 下次可尝试时间（失败退避）。 */
   availableAt: number
   lastError?: string
+  /** 批次归属；没有 batch_id 的历史任务/单件任务缺省。 */
+  batchId?: string
   createdAt: number
   updatedAt: number
 }

@@ -11,6 +11,7 @@
 import { createDaemonClient } from './src/client.js'
 import { normalizeConfig } from './src/config.js'
 import { registerWriteGate } from './src/gate.js'
+import { RPC_CHANNEL, createRpcBridge } from './src/rpc.js'
 import { buildTools } from './src/tools.js'
 
 /** Cordis 插件名，loader 诊断与 cordis.patch.yml 的 id 都靠它定位。 */
@@ -41,6 +42,9 @@ export function apply(ctx, config = {}) {
     ctx.tools.register(definition)
   }
   registerWriteGate(ctx, { enabled: resolved.writeGate })
+  // 面板实时数据/写动作走宿主 rpc 通道；通道不存在时工具照常可用，面板退回静态说明（不阻断加载）。
+  const rpcChannel = registerRpcChannel(ctx, createRpcBridge({ client }))
+  // 加载日志保持一条：面板 rpc 状态作为字段带出，便于按行 grep 且不打断 apply.test 的断言。
   console.log(JSON.stringify({
     level: 'info',
     plugin: name,
@@ -48,5 +52,77 @@ export function apply(ctx, config = {}) {
     tools: tools.map(tool => tool.name),
     daemonUrl: resolved.daemonUrl,
     writeGate: resolved.writeGate,
+    rpcChannel,
+  }))
+}
+
+/**
+ * 读取 connection 服务。Cordis 对未 inject 的服务读取会抛错，
+ * 所以优先用 ctx.get（反射读取不触发 inject 约束），再退回属性读取并兜异常。
+ *
+ * @param {object} ctx - Cordis 插件上下文或测试替身。
+ * @returns {{rpc?: {handle?: Function}} | undefined} connection 服务（未就绪时为 undefined）。
+ */
+function readConnection(ctx) {
+  if (ctx === undefined || ctx === null) return undefined
+  if (typeof ctx.get === 'function') {
+    const connection = ctx.get('connection')
+    if (connection !== undefined) return connection
+  }
+  try {
+    return ctx.connection
+  } catch {
+    // 没有 connection 的宿主（CLI/测试）会在访问时抛 inject 错误：视作「通道不可用」而不是加载失败。
+    return undefined
+  }
+}
+
+/**
+ * 挂载 /bigfish rpc 通道。返回 'registered' | 'deferred' | 'skipped' | 'failed'，只写进加载日志。
+ *
+ * @param {object} ctx - Cordis 插件上下文。
+ * @param {{handle: Function}} bridge - createRpcBridge 的返回值。
+ * @returns {string} 通道状态。
+ */
+function registerRpcChannel(ctx, bridge) {
+  const mount = (context) => {
+    const rpc = readConnection(context)?.rpc
+    if (rpc === undefined || typeof rpc.handle !== 'function') return 'skipped'
+    try {
+      // 用 effect 登记：插件卸载时随 effect 一起解绑（Cordis 的清理语义）。
+      if (typeof context.effect === 'function') {
+        context.effect(() => rpc.handle(RPC_CHANNEL, bridge.handle), 'bigfish: ' + RPC_CHANNEL + ' rpc 通道')
+      } else {
+        rpc.handle(RPC_CHANNEL, bridge.handle)
+      }
+      return 'registered'
+    } catch (error) {
+      logRpcFailure(error)
+      return 'failed'
+    }
+  }
+  // Cordis 的服务可能在插件 apply 时还没就绪：用 ctx.inject 等 connection 出现再挂。
+  if (typeof ctx.inject === 'function') {
+    let status = 'deferred'
+    try {
+      ctx.inject(['connection'], (injected) => {
+        status = mount(injected)
+      })
+    } catch (error) {
+      logRpcFailure(error)
+      return 'failed'
+    }
+    return status
+  }
+  return mount(ctx)
+}
+
+/** 通道注册失败只告警：面板降级，但工具/门禁必须照常可用。 */
+function logRpcFailure(error) {
+  console.log(JSON.stringify({
+    level: 'warn',
+    plugin: name,
+    msg: 'bigfish 面板 rpc 通道注册失败，面板实时数据暂不可用（工具不受影响）',
+    error: error instanceof Error ? error.message : String(error),
   }))
 }

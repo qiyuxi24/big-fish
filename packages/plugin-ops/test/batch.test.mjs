@@ -109,7 +109,7 @@ test('enqueue：逐条调 daemon 入队，payload 与幂等键按单条口径，
   assert.equal(secondInput.availableAt, firstInput.availableAt + DEFAULT_PUBLISH_MIN_INTERVAL_MS)
   assert.match(text, /#1 \[queued\] drafts\[0\].*task=abcdef01…/)
   assert.match(text, /#3 \[skipped-duplicate\]/)
-  assert.ok(text.includes('合计：入队 2 / 跳过重复 1 / 非法 0 / 失败 0'))
+  assert.ok(text.includes('合计：新入队 2 / 已在队列 0 / 批内重复 1 / 非法 0 / 失败 0'))
   assert.match(text, /下一步：xy_tasks_list/)
   assert.match(text, /BF_PUBLISH_SUBMIT=1/)
   assert.equal(client.calls.some((call) => call.method === 'health'), false)
@@ -152,7 +152,7 @@ test('enqueue：单条缺 title / 带 quantity 标 invalid，不影响其他条�
   const text = value.text
   assert.match(text, /#2 \[invalid\].*title 非空/)
   assert.match(text, /#3 \[invalid\].*quantity/)
-  assert.ok(text.includes('合计：入队 1 / 跳过重复 0 / 非法 2 / 失败 0'))
+  assert.ok(text.includes('合计：新入队 1 / 已在队列 0 / 批内重复 0 / 非法 2 / 失败 0'))
   assert.equal(client.calls.filter((call) => call.method === 'enqueue').length, 1)
 })
 
@@ -171,7 +171,7 @@ test('enqueue：单条 daemon 错误标 failed，其余条目继续入队', asyn
   assert.match(text, /#1 \[failed\].*\[STORAGE\] 本地队列写入失败/)
   assert.match(text, /#2 \[queued\]/)
   assert.match(text, /#3 \[queued\]/)
-  assert.ok(text.includes('合计：入队 2 / 跳过重复 0 / 非法 0 / 失败 1'))
+  assert.ok(text.includes('合计：新入队 2 / 已在队列 0 / 批内重复 0 / 非法 0 / 失败 1'))
 })
 
 test('enqueue：daemon 不可达时中止剩余条目，不把超时乘 N', async () => {
@@ -187,7 +187,7 @@ test('enqueue：daemon 不可达时中止剩余条目，不把超时乘 N', asyn
   assert.match(text, /#1 \[failed\].*\[NETWORK\]/)
   assert.match(text, /#2 \[failed\].*未尝试/)
   assert.match(text, /#3 \[failed\].*未尝试/)
-  assert.ok(text.includes('合计：入队 0 / 跳过重复 0 / 非法 0 / 失败 3'))
+  assert.ok(text.includes('合计：新入队 0 / 已在队列 0 / 批内重复 0 / 非法 0 / 失败 3'))
 })
 
 test('maxItems 截断：只处理前 N 条，并说明截断数量', async () => {

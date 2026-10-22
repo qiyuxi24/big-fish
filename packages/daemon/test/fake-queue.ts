@@ -7,7 +7,9 @@
  */
 import { fail } from '@bigfish/core'
 import type {
+  BatchStats,
   EnqueueInput,
+  EnqueueReceipt,
   FailTaskOptions,
   LeaseOptions,
   TaskFilter,
@@ -77,6 +79,7 @@ export class FakeQueue implements TaskQueue {
     const availableAt = input.availableAt ?? now
     if (!Number.isSafeInteger(availableAt)) fail('VALIDATION', 'availableAt 必须是整数毫秒')
     const record: TaskRecord = {
+      ...(input.batchId === undefined ? {} : { batchId: input.batchId }),
       id: 'task-' + String(this.nextId++),
       kind: input.kind,
       dedupeKey: input.dedupeKey,
@@ -91,6 +94,24 @@ export class FakeQueue implements TaskQueue {
     this.tasks.set(record.id, record)
     this.order.push(record.id)
     return clone(record)
+  }
+
+  /** 幂等入队：与真队列同语义——命中 dedupeKey 时返回既有记录且 created=false。 */
+  enqueueWithReceipt(input: EnqueueInput): EnqueueReceipt {
+    const existing = this.findByDedupeKey(String(input.dedupeKey ?? ''))
+    if (existing !== undefined) return { task: clone(existing), created: false }
+    return { task: this.enqueue(input), created: true }
+  }
+
+  /** 批次聚合：counts 覆盖全部状态（与 core 的 BatchStats 同契约）。 */
+  batchStats(batchId: string): BatchStats {
+    const items = this.order
+      .map((id) => this.tasks.get(id))
+      .filter((task): task is TaskRecord => task !== undefined && task.batchId === batchId)
+      .map(clone)
+    const counts: Record<TaskState, number> = { queued: 0, leased: 0, done: 0, failed: 0, needs_review: 0 }
+    for (const task of items) counts[task.state] += 1
+    return { batchId, total: items.length, counts, items }
   }
 
   lease(options: LeaseOptions): TaskRecord[] {

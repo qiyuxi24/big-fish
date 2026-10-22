@@ -5,7 +5,7 @@
 
 ## 0. 结论
 
-1. **文案**：2 个 skill 放 `skills/`（`xianyu-listing-copy` / `xianyu-listing-audit`），纯 JSON 进出。agent 产出发布草稿后调 `xy_publish_draft`（默认 dry-run），人工确认后才 `mode=enqueue` 入队。daemon 不感知文案从哪来。
+1. **文案**：2 个 skill 放 `.agents/skills/`（`xianyu-listing-copy` / `xianyu-listing-audit`），纯 JSON 进出。agent 产出发布草稿后调 `xy_publish_draft`（默认 dry-run），人工确认后才 `mode=enqueue` 入队。daemon 不感知文案从哪来。
 2. **生图**：首选火山方舟 **Seedream 5.0 Lite**（约 $0.035/张，中文商品图、多图参考、PNG、2K/4K）；备选阿里云百炼 **通义万相 wan2.7-image**（0.2 元/张，国内合规、异步任务）；再备 **Gemini 3 Pro Image**（约 $0.134/张，图内文字最准，但需外网）；Stability 只用于**去背景/局部重绘**；OpenAI 不作首选（价格与中文商品图无优势）；无 key 或无网时**不生成**，退回实拍——不用占位图、不用网图冒充。
 3. **合规**：主图必须实拍；AI 图只做场景/氛围/多角度示意，并在描述注明；不得使用他人商品图/买家秀；生成图不得复刻品牌 logo、IP 角色。发布前跑 `xianyu-listing-audit` + `checkListing`。
 
@@ -26,8 +26,8 @@
 ### 2.1 交付物
 
 ```
-skills/
-  README.md                          # 装载说明（customSkillDirs / .dsh/skills）
+.agents/skills/
+  README.md                          # 装载说明（项目级 skill 根，DSH 自动发现）
   xianyu-listing-copy/
     SKILL.md                         # 改写链主流程（输入→4 段→5 标签→JSON）
     references/
@@ -43,12 +43,9 @@ skills/
 
 ### 2.2 装载方式
 
-DSH 的 skill 发现只认**根下一层**的 `<name>/SKILL.md` 或 `<name>.md`，不递归 `**/SKILL.md`；frontmatter 必须有 kebab-case `name` 与 `description`，缺失/非法只 warn 后忽略（`skill-filesystem` 的 `parseSkillFile`）。因此仓库里的 `skills/` 不会自动被发现，二选一：
+DSH 的 skill 发现只认**根下一层**的 `<name>/SKILL.md` 或 `<name>.md`，不递归 `**/SKILL.md`；frontmatter 必须有 kebab-case `name` 与 `description`，缺失/非法只 warn 后忽略（`skill-filesystem` 的 `parseSkillFile`）。
 
-- **A（推荐给团队）**：在 DSH 配置里把 `customSkillDirs` 指向本仓 `skills/`（rank 300，只读仓库即可用）。字段的准确位置**待验证**（settings JSON 的嵌套 key 未在本机确认）。
-- **B（本机快速验证）**：把 `skills/xianyu-listing-copy` 复制或软链到 `.dsh/skills/xianyu-listing-copy`（rank 100，免配置）。`.dsh/` 属本机路径，不提交。
-
-切目录后先让 agent 列出可用 skill 确认 `name` 出现，再跑一次 `xianyu-listing-copy` 的 few-shot，避免"文件在但没装载"的假成功。
+**结论（2026-10-22 实测已闭）**：`skill-filesystem` 只扫**项目根**的 `.dsh/skills` 与 `.agents/skills` 两个根，所以本仓 skill 已从 `skills/` 迁移到 `.agents/skills/`（`git mv`），放在仓库里即被自动发现——**不需要** `customSkillDirs`，也不需要复制/软链到 `.dsh/`。迁移后当前会话的 skill 目录立刻出现 `xianyu-listing-audit` / `xianyu-listing-copy`，装载链路已验证。
 
 ### 2.3 改写链（6 步，输入 → 草稿）
 
@@ -258,7 +255,7 @@ DSH 的 skill 发现只认**根下一层**的 `<name>/SKILL.md` 或 `<name>.md`�
 
 | 任务 | 产出 | 验收 |
 | --- | --- | --- |
-| T1 文案 skill 骨架（本次） | `skills/` 2 个 bundle + 2 个 JSON Schema + 模板/红线 | frontmatter 合法、JSON Schema 可解析、3 个 few-shot 输出符合 schema |
+| T1 文案 skill 骨架（本次） | `.agents/skills/` 2 个 bundle + 2 个 JSON Schema + 模板/红线 | frontmatter 合法、JSON Schema 可解析、3 个 few-shot 输出符合 schema |
 | T2 `xy_imagegen` + 审批门禁 | `packages/plugin-ops/src/imagegen.js`、gate 白名单、单测（假 fetch） | 无 key 返回 `UNSUPPORTED`；不打印 key；写盘路径在 `.scratch/` |
 | T3 图片尺寸探测 | `packages/core` 纯函数 + fixture 单测 | PNG/JPEG/WebP 各 1 个 fixture，宽高与方形判定正确 |
 | T4 prompt 模板与评测 | `templates.md` 生图段 + 10 条样本（数码/服饰/家居） | 人评"像实物"≥7/10，文字与水印 0 次 |
@@ -274,7 +271,7 @@ DSH 的 skill 发现只认**根下一层**的 `<name>/SKILL.md` 或 `<name>.md`�
 | Gemini 3 Pro Image 单价 | 第三方 $0.134/$0.24 | Google AI 官方 pricing 页 |
 | 闲鱼单图大小/描述字数上限 | 未查到 | 真机试传 + 规则中心 |
 | 闲鱼 AI 图专门条款 | 未检索到 | 闲鱼规则中心/客服 |
-| DSH `customSkillDirs` 准确配置路径 | 未确认 | 本机 settings JSON 实测 |
+| DSH skill 装载方式 | ✅ 项目根 `.agents/skills` 自动发现（2026-10-22 实测） | 不需要 `customSkillDirs`；迁移后 skill 目录已可见 |
 
 ## 7. 来源
 
