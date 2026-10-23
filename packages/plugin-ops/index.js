@@ -16,9 +16,9 @@ import { createDaemonClient } from './src/client.js'
 import { normalizeConfig } from './src/config.js'
 import { createDaemonSupervisor } from './src/daemon-supervisor.js'
 import { withDaemonWatch } from './src/daemon-watch.js'
-import { registerWriteGate } from './src/gate.js'
 import { createPanelRoute } from './src/host-route.js'
 import { RPC_CHANNEL, createRpcBridge } from './src/rpc.js'
+import { createToolMiddleware } from './src/tool-middleware.js'
 import { buildTools } from './src/tools.js'
 
 /** Cordis 插件名，loader 诊断与 cordis.patch.yml 的 id 都靠它定位。 */
@@ -43,12 +43,10 @@ export const inject = ['tools']
 export function apply(ctx, config = {}) {
   const resolved = normalizeConfig(config, ctx)
   const client = createDaemonClient(resolved)
-  const tools = buildTools({ client, config: resolved, version })
-  for (const definition of tools) {
-    // register 的实现内部用 ctx 的 effect 登记，插件卸载时会自动解绑。
-    ctx.tools.register(definition)
-  }
-  registerWriteGate(ctx, { enabled: resolved.writeGate })
+  const specs = buildTools({ client, config: resolved, version })
+  // 注册 + 门禁走同一个中间件：规格是单一事实源，插件卸载时工具由宿主 effect 自动解绑。
+  const registry = createToolMiddleware({ gate: resolved.writeGate }).register(ctx, specs)
+  const tools = registry.names
   // 面板实时数据/写动作走宿主 rpc 通道；通道不存在时工具照常可用，面板退回静态说明（不阻断加载）。
   // 面板连不上 daemon（NETWORK）时由宿主自动拉起一个：用户不必先手动 pnpm daemon:start。
   const supervisor = createDaemonSupervisor({
@@ -71,7 +69,9 @@ export function apply(ctx, config = {}) {
     level: 'info',
     plugin: name,
     msg: 'bigfish-ops 已加载',
-    tools: tools.map(tool => tool.name),
+    tools,
+    readTools: registry.counts.read,
+    confirmTools: registry.counts.confirm,
     daemonUrl: resolved.daemonUrl,
     writeGate: resolved.writeGate,
     autoStartDaemon: resolved.autoStartDaemon,

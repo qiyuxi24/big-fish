@@ -8,6 +8,9 @@
  * 统一输出形状：canonical value 一律是 { text }，render 把它变成一段 text block。
  * 结构化数据以紧凑 JSON 内嵌在 text 里——P0 阶段这样最稳，不会踩输出 schema 的坑。
  *
+ * 每条工具同时声明访问级别（access）与审批理由（reason/writeWhen），这是门禁的
+ * 唯一事实源；注册与 tools/pre-execute 监听都由 ./tool-middleware.js 统一处理。
+ *
  * @module @bigfish/plugin-ops/tools
  */
 import { runBatch } from './batch.js'
@@ -32,15 +35,50 @@ const TASK_STATES = ['queued', 'leased', 'done', 'failed', 'needs_review']
 /** 空参数 schema（无参数工具用）。 */
 const NO_PARAMS = { type: 'object', properties: {}, additionalProperties: false }
 
+/** 入队时需要人工确认的种类：发布/发货/擦亮会写闲鱼；probe/reply 不写商品数据。 */
+const CONFIRM_TASK_KINDS = new Set(['publish', 'deliver', 'polish'])
+
+/** 非 null 的普通对象（门禁参数判定用；数组不算对象）。 */
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
 /**
- * 把一个"返回字符串"的处理函数包成 ToolDefinition。
+ * xy_task_enqueue 的门禁判定：只有 publish/deliver/polish 需要人工确认。
+ * 参数形态无法判断时按保守方向返回 true——先问人，再让工具自己报 VALIDATION。
  *
- * @param {object} spec - name/description/parameters/handler。
- * @returns {object} 原始 ToolDefinition。
+ * @param {unknown} args - 模型给的参数。
+ * @returns {boolean} true 表示需要人工确认。
+ */
+function taskEnqueueIsWrite(args) {
+  if (!isRecord(args)) return true
+  return CONFIRM_TASK_KINDS.has(args.kind)
+}
+
+/**
+ * 发布类工具（draft/batch）的门禁判定：默认 dry-run 只读放行，显式非 dry-run 才确认。
+ * 参数缺失时返回 true（保守方向）。
+ *
+ * @param {unknown} args - 模型给的参数。
+ * @returns {boolean} true 表示需要人工确认。
+ */
+function nonDryRunIsWrite(args) {
+  if (!isRecord(args)) return true
+  return args.mode !== undefined && args.mode !== 'dry-run'
+}
+
+/**
+ * 把一个"返回字符串"的处理函数包成一条工具规格。
+ *
+ * 规格里的 access/reason/writeWhen 是门禁的唯一事实源，由 tool-middleware 统一消费；
+ * 这里只负责把 handler 包成原始 ToolDefinition（不 import 宿主的 defineTool，保持零依赖）。
+ *
+ * @param {object} spec - name/description/parameters/handler/access/reason/writeWhen/timeoutMs。
+ * @returns {{definition: object, access: 'read'|'confirm', reason?: string, writeWhen?: Function}} 工具规格。
  */
 function textTool(spec) {
   const { name, description, parameters, handler } = spec
-  return {
+  const definition = {
     name,
     description,
     parameters,
@@ -63,6 +101,10 @@ function textTool(spec) {
       }
     },
   }
+  const toolSpec = { definition, access: spec.access ?? 'read' }
+  if (spec.reason !== undefined) toolSpec.reason = spec.reason
+  if (spec.writeWhen !== undefined) toolSpec.writeWhen = spec.writeWhen
+  return toolSpec
 }
 
 /** cents → 「¥129.90」；非整数分原样显示，不为展示抛错。 */
@@ -240,11 +282,11 @@ function formatTime(ms) {
 }
 
 /**
- * 构造全部工具定义。
+ * 构造全部工具规格（定义 + 访问级别 + 审批理由），交给 tool-middleware 统一注册与挂门禁。
  *
  * @param {{client: object, config: {daemonUrl: string, tokenPath: string}, version?: string, owner?: string, readDraftFile?: Function}} deps - 依赖注入，便于测试。
  *   readDraftFile 只在测试里注入假读取器，线上走 node:fs/promises.readFile。
- * @returns {object[]} 原始 ToolDefinition 数组。
+ * @returns {Array<{definition: object, access: 'read'|'confirm', reason?: string, writeWhen?: Function}>} 工具规格数组。
  */
 export function buildTools(deps) {
   const { client, config } = deps
@@ -253,6 +295,7 @@ export function buildTools(deps) {
   return [
     textTool({
       name: 'xy_ping',
+      access: 'read',
       description: '检查 BigFish 插件与本地 daemon 的连通性：插件版本、daemon 地址、token 路径、健康端点是否可达。排障第一步。',
       parameters: NO_PARAMS,
       async handler() {
@@ -275,6 +318,7 @@ export function buildTools(deps) {
     }),
     textTool({
       name: 'xy_daemon_health',
+      access: 'read',
       description: '只查 daemon 的健康端点（不需要 token）：版本、进程号、运行时长。',
       parameters: NO_PARAMS,
       async handler() {
@@ -284,6 +328,7 @@ export function buildTools(deps) {
     }),
     textTool({
       name: 'xy_status',
+      access: 'read',
       description: '读取 daemon 运行状态：队列各状态计数、已接入账号、熔断账号。回答"现在系统在干嘛/卡在哪"。',
       parameters: NO_PARAMS,
       async handler() {
@@ -292,6 +337,7 @@ export function buildTools(deps) {
     }),
     textTool({
       name: 'xy_accounts_list',
+      access: 'read',
       description: '列出 daemon 凭据库里的账号（只读摘要：账号 id、最后更新时间、登录态字段数、是否具备写操作所需的 unb+_m_h5_tk）。不含任何 cookie 明文。用于回答"现在有几个号、哪个号登录态过期了"。',
       parameters: NO_PARAMS,
       async handler() {
@@ -313,6 +359,7 @@ export function buildTools(deps) {
     }),
     textTool({
       name: 'xy_tasks_list',
+      access: 'read',
       description: '列出本地任务队列里的任务（可按状态/种类过滤）。用于查看发布/发货任务是否入队、失败、待在审。',
       parameters: {
         type: 'object',
@@ -331,6 +378,10 @@ export function buildTools(deps) {
     }),
     textTool({
       name: 'xy_task_enqueue',
+      access: 'confirm',
+      reason: '会入队写类任务（真机写闲鱼），需要人工确认。',
+      // 只读探针与 IM 回复不触碰商品数据，先不拦；publish/deliver/polish 要确认。
+      writeWhen: taskEnqueueIsWrite,
       description: '把一次运营动作排进本地队列（publish=发布、deliver=发货、polish=擦亮、reply=回复、probe=探针）。同一 dedupeKey 只会入队一次，可用于防重复发布。入队不等于已执行：真正的写闲鱼动作由 daemon 串行执行。',
       parameters: {
         type: 'object',
@@ -357,6 +408,8 @@ export function buildTools(deps) {
     }),
     textTool({
       name: 'xy_task_action',
+      access: 'read',
+      // ack/fail/release 只流转本地队列（2026-10-21 裁决），不触达闲鱼，不挂门禁。
       description: '人工处理一条任务：ack=标记完成、fail=记录失败（会按退避重试或转为待审）、release=立刻放回队列。用于任务卡死或人工确认后收尾。',
       parameters: {
         type: 'object',
@@ -394,6 +447,8 @@ export function buildTools(deps) {
     }),
     textTool({
       name: 'xy_task_retry',
+      access: 'confirm',
+      reason: '会把失败/待审任务重新排队并清零 attempts（daemon 以 BF_PUBLISH_SUBMIT=1 启动时会重放这次发布），需要人工确认。',
       description:
         '人工重新排队一条 failed / needs_review 的发布任务：attempts 归零（重获完整重试预算）、清空 lastError 与旧租约、保留 dedupeKey 与 payload。写操作，执行前会要人工确认；daemon 以 BF_PUBLISH_SUBMIT=1 启动时，下一轮会真的重放这次发布。',
       parameters: {
@@ -412,6 +467,7 @@ export function buildTools(deps) {
     }),
     textTool({
       name: 'xy_items_list',
+      access: 'read',
       description: '列出本地已知的商品（P0 阶段为空表；P1 由抓取/发布结果落库）。',
       parameters: NO_PARAMS,
       async handler() {
@@ -424,6 +480,8 @@ export function buildTools(deps) {
     }),
     textTool({
       name: 'xy_import_account',
+      access: 'confirm',
+      reason: '会从本机 Chrome 读取闲鱼登录态 cookie 并加密落盘（写凭据），需要人工确认。',
       description: '从本机已登录闲鱼的真 Chrome（需带 --remote-debugging-port 启动）读取登录态 cookie，加密写入 daemon 凭据库。写操作，执行前会要人工确认。导入后 /status 的账号列表会刷新；插件侧看不到 cookie 明文。',
       parameters: {
         type: 'object',
@@ -447,6 +505,7 @@ export function buildTools(deps) {
     }),
     textTool({
       name: 'xy_copy_plan',
+      access: 'read',
       description: '按选定的语言风格，把商品事实组装成「listing 文案生成请求」：产出注入好的提示词（skill + 风格约束 + 事实 + 输出契约 + 待补项）。只读、不调模型、不写文件——拿到提示词后由你按 .agents/skills/xianyu-listing-copy 出草稿 JSON，再走 xy_publish_draft。',
       parameters: {
         type: 'object',
@@ -475,6 +534,7 @@ export function buildTools(deps) {
     }),
     textTool({
       name: 'xy_reference_collect',
+      access: 'read',
       description: '采集「参考分析」只读统计：给定商品 id 或商家 id，读出价格带、标题长度、类目分布、高频卖点词、图片数量与商家量级。只读、不下载图片、不产出可发布草稿（不搬运他人商品）。用于给自己定价/写自己的文案时找参照。',
       parameters: {
         type: 'object',
@@ -497,6 +557,10 @@ export function buildTools(deps) {
     }),
     textTool({
       name: 'xy_publish_draft',
+      access: 'confirm',
+      reason: '会把发布任务排进 daemon 队列（daemon 以 BF_PUBLISH_SUBMIT=1 启动时会真发布），需要人工确认。',
+      // 默认 dry-run：只读草稿文件并打印校准命令，不碰 daemon 写队列，无需审批。
+      writeWhen: nonDryRunIsWrite,
       description: '校验本机发布草稿 JSON 并给出执行路径。默认 dry-run：只输出 daemon 发布命令（只填表、不点提交、不入队）；mode=enqueue 才把 publish 任务排进队列（写操作，需人工确认；daemon 只有以 BF_PUBLISH_SUBMIT=1 启动才会真提交）。',
       parameters: {
         type: 'object',
@@ -524,6 +588,10 @@ export function buildTools(deps) {
     }),
     textTool({
       name: 'xy_publish_batch',
+      access: 'confirm',
+      reason: '会把一批发布任务排进 daemon 队列（daemon 以 BF_PUBLISH_SUBMIT=1 启动时会逐条真发布），需要人工确认。',
+      // 与 xy_publish_draft 同一口径：默认 dry-run 只读草稿（文件）并出计划，不写队列。
+      writeWhen: nonDryRunIsWrite,
       description: '批量发布：一次性校验多条草稿并逐条入队（自动发布的批量入口）。默认 dry-run（与 xy_publish_draft 一致）：只输出逐条计划（幂等键/标题/价格/状态），不碰 daemon 写队列；mode=enqueue 才逐条写 daemon 队列（写操作，需人工确认；daemon 以 BF_PUBLISH_SUBMIT=1 启动才会逐条真提交）。同一批里内容相同的草稿只入队一次；单条非法不拖垮整批。',
       parameters: {
         type: 'object',

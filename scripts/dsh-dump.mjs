@@ -161,7 +161,7 @@ const boot = await runDsh(['--profile', PROFILE, '--port', '0', '--no-open'], {
 const combined = boot.stdout + boot.stderr
 const urlLine = combined.split(/\r?\n/).find((line) => line.startsWith('dsh web: '))
 if (loaded) {
-  console.log('✔ 真实启动：插件的 9 个工具已注册（register 校验通过），writeGate 已挂载')
+  console.log('✔ 真实启动：插件的 14 个工具已注册（9 read / 5 confirm，register 校验通过），writeGate 已挂载')
   if (urlLine) console.log('  ' + urlLine)
 } else {
   console.error('✖ 真实启动没有看到插件加载日志：\n' + combined.slice(0, 4000))

@@ -28,9 +28,9 @@ function keyOf(draft) {
 function makeTool(deps = {}) {
   const client = deps.client ?? createFakeClient({})
   const tools = buildTools({ client, config, ...deps })
-  const tool = tools.find((candidate) => candidate.name === 'xy_publish_batch')
-  assert.ok(tool, '缺少工具 xy_publish_batch')
-  return { client, tool }
+  const spec = tools.find((candidate) => candidate.definition.name === 'xy_publish_batch')
+  assert.ok(spec, '缺少工具 xy_publish_batch')
+  return { client, tool: spec.definition }
 }
 
 /** 假 enqueue：原样回显入队体，模拟 daemon 的 201 + TaskRecord。 */

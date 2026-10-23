@@ -6,20 +6,20 @@ import { DaemonError } from '../src/client.js'
 
 const config = { daemonUrl: 'http://127.0.0.1:47001', tokenPath: '/tmp/daemon.token' }
 
-function findTool(tools, name) {
-  const tool = tools.find((candidate) => candidate.name === name)
-  assert.ok(tool, `缺少工具 ${name}`)
-  return tool
+function findTool(specs, name) {
+  const spec = specs.find((candidate) => candidate.definition.name === name)
+  assert.ok(spec, `缺少工具 ${name}`)
+  return spec.definition
 }
 
 test('注册 14 个 xy_ 工具，schema 形态合法', () => {
   const tools = buildTools({ client: createFakeClient({}), config })
-  assert.deepEqual(tools.map((tool) => tool.name).sort(), [
+  assert.deepEqual(tools.map((spec) => spec.definition.name).sort(), [
     'xy_accounts_list', 'xy_copy_plan', 'xy_daemon_health', 'xy_import_account', 'xy_items_list', 'xy_ping',
     'xy_publish_batch', 'xy_publish_draft', 'xy_reference_collect', 'xy_status', 'xy_task_action',
     'xy_task_enqueue', 'xy_task_retry', 'xy_tasks_list',
   ])
-  for (const tool of tools) {
+  for (const { definition: tool } of tools) {
     assert.equal(tool.parameters.type, 'object')
     assert.equal(typeof tool.output.render, 'function')
     assert.equal(tool.output.schema.type, 'object')

@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url'
 import { createTaskQueue, loadDaemonConfig } from '../packages/core/src/index.ts'
 import { startDaemon } from '../packages/daemon/src/index.ts'
 import { createDaemonClient } from '../packages/plugin-ops/src/client.js'
-import { isWriteCall } from '../packages/plugin-ops/src/gate.js'
+import { buildWritePolicy } from '../packages/plugin-ops/src/tool-middleware.js'
 import { buildTools } from '../packages/plugin-ops/src/tools.js'
 
 /** 在 .scratch 下建一个用完即删的临时数据目录。 */
@@ -61,7 +61,8 @@ test('daemon ↔ 插件客户端：健康检查、入队幂等、敏感字段被
     config: { daemonUrl: daemon.url, tokenPath: config.tokenPath, timeoutMs: 5000, writeGate: true },
     version: 'test',
   })
-  const byName = new Map(tools.map((tool) => [tool.name, tool]))
+  const byName = new Map(tools.map((spec) => [spec.definition.name, spec.definition]))
+  const isWriteCall = buildWritePolicy(tools)
   const ping = await byName.get('xy_ping').execute({}, {})
   assert.match(ping.text, /health: OK/)
   assert.match(ping.text, /auth: OK/)
