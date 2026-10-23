@@ -1,18 +1,20 @@
 #!/usr/bin/env node
 /**
- * 用 headless Chrome + CDP 验证 DSH Web 里的 BigFish 侧边栏栏位（截图 + 断言）。
+ * 用 headless Chrome + CDP 验证 DSH Web 里的 BigFish 侧边栏面板（截图 + 断言）。
  *
  * 为什么不用 `chrome --screenshot`：这个 SPA 常驻 WebSocket/SSE，headless 的
  * 虚拟时间永远不收敛，进程会挂死。这里改用常驻 CDP 会话：navigate → 轮询
  * Runtime.evaluate → Page.captureScreenshot → Browser.close。
  *
  * 用例：
- *   node scripts/dsh-shot.mjs                     # 截图侧边栏栏位 + 面板内容
+ *   node scripts/dsh-shot.mjs                     # 截图并断言 6 个 tab 的关键元素
  *   node scripts/dsh-shot.mjs --hmr               # 再验一次 client.js 热更新（不刷新页面）
  *   node scripts/dsh-shot.mjs --url <tokenUrl>    # 指定别的实例
  *   node scripts/dsh-shot.mjs --out .scratch/shots/x.png --port 9333
  *
- * 退出码：0 = 栏位/面板/热更新都符合预期；1 = 有断言失败（打印页面文本与 bundle 比对）。
+ * 断言口径：只断言「结构 + 契约」（data-role 存在、tab 数、文案不变的部分）。
+ * daemon 在不在线都能跑：在线时账号表要出徽标，离线时只要求降级文案出现。
+ * 退出码：0 = 都符合预期；1 = 有断言失败（打印页面文本）。
  */
 import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -28,8 +30,10 @@ const valueOf = (flag, fallback) => {
 }
 const out = resolve(repoRoot, valueOf('--out', '.scratch/shots/bigfish-sidebar.png'))
 const chromePort = Number(valueOf('--port', '9333'))
-const PANEL_SUBTITLE = 'P1.3 · 文案生成 / 发布 dry-run / 登录态导入'
+const PANEL_SUBTITLE = '发布 / 账号 / 文案 / 采集 · 面板只组参数，执行交给 agent 与 daemon'
 const PANEL_LABEL = 'BigFish 闲鱼运营'
+const TAB_LABELS = ['自动发布', '账号', '文案', '采集', '概览', '诊断']
+const OFFLINE_TEXT = '未连接后台（daemon 未启动）'
 
 /** 从 dev 实例日志里取最后一次 token URL。 */
 function tokenUrlFromDevLog() {
@@ -82,11 +86,24 @@ async function clickTab(cdp, label) {
     return true
   })()`)
   if (clicked !== true) throw new Error('面板 tab 里找不到「' + label + '」')
-  await delay(400)
+  await delay(500)
+}
+
+/** 读某个 data-role 元素的文本（没有则 null）。 */
+async function roleText(cdp, role) {
+  return cdp.evaluate(`(() => {
+    const hit = document.querySelector('[data-role="${role}"]')
+    return hit === null ? null : (hit.innerText ?? '').trim()
+  })()`)
+}
+
+/** 读某类 data-role 元素的文本数组。 */
+async function roleTexts(cdp, role) {
+  return cdp.evaluate(`(() => [...document.querySelectorAll('[data-role="${role}"]')].map((node) => (node.innerText ?? '').trim()))()`)
 }
 
 /** 热更新用例：改 client.js → 不刷新页面 → 新文案应出现；再还原并等恢复。 */
-async function checkHotUpdate(cdp, codeRef) {
+async function checkHotUpdate(cdp) {
   const clientPath = join(repoRoot, 'packages/plugin-ops/client.js')
   const original = readFileSync(clientPath, 'utf8')
   const marker = '热更新实测 ' + String(Date.now() % 100000)
@@ -108,7 +125,6 @@ async function checkHotUpdate(cdp, codeRef) {
   } finally {
     writeFileSync(clientPath, original)
   }
-  // 还原也要热更新回去；还原后主区域同样会回落，重新点开确认原文案。
   await delay(2500)
   if (!(await panelRendered(cdp))) await selectPanel(cdp)
   await waitFor(cdp, `document.body.innerText.includes(${JSON.stringify(PANEL_SUBTITLE)}) ? true : null`, {
@@ -121,6 +137,7 @@ const url = valueOf('--url', undefined) ?? tokenUrlFromDevLog()
 const browser = await launchChrome({ userDataDir: join(repoRoot, '.scratch/chrome-profile'), port: chromePort })
 const browserCdp = await Cdp.connect(browser.browserWs)
 let code = 0
+const problems = []
 
 try {
   const { cdp } = await openPage({ port: chromePort, url, settleMs: 2500 })
@@ -134,33 +151,77 @@ try {
 
   // 2) 点开栏位 → main 插槽换成我们的面板。
   await selectPanel(cdp)
-  const panelText = await waitFor(cdp, `(() => {
-    const text = document.body.innerText
-    return text.includes(${JSON.stringify(PANEL_SUBTITLE)}) ? text : null
-  })()`, { label: 'BigFish 面板内容', timeoutMs: 20_000 })
-  // 默认 tab = 文案生成（skill 入口），先断言这一页的核心元素。
-  const cards = ['文案风格（skill 注入）', '生成文案请求', '商品名', '价格（元）', '成色']
-    .filter((needle) => panelText.includes(needle))
+  await waitFor(cdp, `document.body.innerText.includes(${JSON.stringify(PANEL_SUBTITLE)}) ? true : null`, {
+    label: 'BigFish 面板内容', timeoutMs: 20_000,
+  })
 
-  // 3) 面板内 tab 切换：概览页出现状态卡与 daemon 地址，再切回文案页。
+  // 3) tab 条：6 个、默认「自动发布」。
   const tabs = await cdp.evaluate(`(() => {
     const nodes = [...document.querySelectorAll('button[data-role="panel-tab"]')]
-    if (nodes.length === 0) return null
     return {
       labels: nodes.map((node) => (node.textContent ?? '').trim()),
       selected: nodes.map((node) => node.getAttribute('aria-selected')),
     }
   })()`)
-  await clickTab(cdp, '概览')
-  await waitFor(cdp, `document.body.innerText.includes('127.0.0.1:47001') ? true : null`, {
-    label: '概览 tab 内容', timeoutMs: 8_000, intervalMs: 200,
-  })
-  await clickTab(cdp, '文案生成')
-  await waitFor(cdp, `document.body.innerText.includes('文案风格（skill 注入）') ? true : null`, {
-    label: '切回文案 tab', timeoutMs: 8_000, intervalMs: 200,
-  })
+  if (tabs.labels.join('|') !== TAB_LABELS.join('|')) problems.push('tab 条与预期不同：' + JSON.stringify(tabs.labels))
+  if (tabs.selected[0] !== 'true') problems.push('默认 tab 不是「自动发布」：' + JSON.stringify(tabs.selected))
 
-  // 4) 文案风格入口：点第二个风格芯片，断言 aria-pressed 转移（真实 React 交互，不是静态文案）。
+  // 4) 自动发布（默认 tab）：daemon 状态块 + 工作流树 + 流水线 + 草稿集。
+  const daemonState = await roleText(cdp, 'daemon-state')
+  if (daemonState === null) problems.push('自动发布页没有 data-role=daemon-state')
+  const workflowTree = await roleText(cdp, 'workflow-tree')
+  if (workflowTree === null) problems.push('自动发布页没有 data-role=workflow-tree（工作流区）')
+  const publishText = await cdp.evaluate('document.body.innerText')
+  for (const needle of ['进程管理', '流水线', '草稿集', '发布前校验']) {
+    if (!publishText.includes(needle)) problems.push('自动发布页缺少「' + needle + '」')
+  }
+  const manage = await cdp.evaluate(`(() => [...document.querySelectorAll('[data-role="daemon-start"],[data-role="daemon-stop"]')].map((node) => node.getAttribute('data-role')))()`)
+  if (!manage.includes('daemon-start') || !manage.includes('daemon-stop')) problems.push('进程管理按钮缺失：' + JSON.stringify(manage))
+  const daemonOnline = daemonState !== null && daemonState.includes('在线')
+  if (!daemonOnline && daemonState !== null && !daemonState.includes(OFFLINE_TEXT)) {
+    problems.push('daemon 状态块既不是在线也不是离线降级：' + daemonState.slice(0, 120))
+  }
+  await screenshot(cdp, out)
+
+  // 5) 账号 tab：daemon 在线时应有账号表与徽标；离线时只要求降级提示。
+  await clickTab(cdp, '账号')
+  await delay(1500)
+  const accountTable = await roleText(cdp, 'account-table')
+  const accountOffline = await roleText(cdp, 'account-offline')
+  const rows = await roleTexts(cdp, 'account-row')
+  const badges = await roleTexts(cdp, 'account-status')
+  let badge = null
+  if (accountOffline === null) {
+    if (accountTable === null) problems.push('账号 tab 没有 data-role=account-table，也没有 offline 降级')
+    if (rows.length === 0) problems.push('账号 tab 没有账号行（daemon 在线时至少应有 1 个已导入账号）')
+    const verifyButton = await cdp.evaluate(`document.querySelector('[data-role="account-verify"]') !== null`)
+    if (!verifyButton) problems.push('账号行没有「检测」按钮（data-role=account-verify）')
+    // 进 tab 会自动 verify：等徽标从「检测中」落定（最多 30s，真实 mtop 调用）。
+    const settled = await waitFor(cdp, `(() => {
+      const node = document.querySelector('[data-role="account-status"]')
+      if (node === null) return null
+      const text = (node.innerText ?? '').trim()
+      return text === '' || text === '检测中' ? null : text
+    })()`, { label: '账号徽标落定', timeoutMs: 30_000, intervalMs: 500 }).catch(() => null)
+    badge = settled ?? (badges.length > 0 ? badges[0] : null)
+    if (badge === null || !/在线|已过期|无法确认|未检测/.test(String(badge))) problems.push('账号徽标未落定或文案异常：' + JSON.stringify(badge))
+    if (badge !== null && badge !== '在线' && !String(badge).includes('已过期') && !String(badge).includes('无法确认')) {
+      problems.push('账号徽标不是已知文案：' + String(badge))
+    }
+  }
+  const checkedAt = await roleText(cdp, 'account-checked')
+  const updatedAt = await roleText(cdp, 'account-updated')
+  await screenshot(cdp, out.replace(/\.png$/, '-account.png'))
+
+  // 6) 概览：导入登录态入口与 daemon 地址。
+  await clickTab(cdp, '概览')
+  const overviewText = await cdp.evaluate('document.body.innerText')
+  for (const needle of ['xy_import_account', '127.0.0.1:47001']) {
+    if (!overviewText.includes(needle)) problems.push('概览页缺少「' + needle + '」')
+  }
+
+  // 7) 文案：5 个风格芯片，点第二个断 aria-pressed 转移（真实 React 交互）。
+  await clickTab(cdp, '文案')
   const styleBefore = await cdp.evaluate(`(() => {
     const chips = [...document.querySelectorAll('button[data-role="copy-style"]')]
     if (chips.length === 0) return null
@@ -171,30 +232,43 @@ try {
     target.click()
     return { count: chips.length, before }
   })()`)
-  if (styleBefore !== null) {
+  if (styleBefore === null || styleBefore.count !== 5) problems.push('文案风格芯片异常（期望 5 个）：' + JSON.stringify(styleBefore))
+  else {
     await waitFor(cdp, `(() => {
       const chips = [...document.querySelectorAll('button[data-role="copy-style"]')]
       return chips.length > 1 && chips[1].getAttribute('aria-pressed') === 'true' ? true : null
     })()`, { label: '文案风格切换', timeoutMs: 8_000, intervalMs: 200 })
   }
-  await screenshot(cdp, out)
 
-  // 3) 热更新（可选）。
-  if (args.includes('--hmr')) await checkHotUpdate(cdp, code)
+  // 8) 采集 + 诊断：只断契约文案（不联网）。
+  await clickTab(cdp, '采集')
+  const referenceText = await cdp.evaluate('document.body.innerText')
+  if (!referenceText.includes('xy_reference_collect')) problems.push('采集页缺少 xy_reference_collect')
+  await clickTab(cdp, '诊断')
+  const diagnoseText = await cdp.evaluate('document.body.innerText')
+  for (const needle of ['xy_status', 'xy_ping']) {
+    if (!diagnoseText.includes(needle)) problems.push('诊断页缺少「' + needle + '」')
+  }
+  if (await roleText(cdp, 'daemon-state') === null) problems.push('诊断页没有 daemon 状态块')
 
-  const summary = { sidebar, panel: { subtitle: PANEL_SUBTITLE, cards }, tabs, style: styleBefore, screenshot: out }
+  // 9) 热更新（可选）。
+  if (args.includes('--hmr')) await checkHotUpdate(cdp)
+
+  const summary = {
+    sidebar,
+    tabs,
+    daemon: { online: daemonOnline, state: (daemonState ?? '').split('\n').slice(0, 3).join(' | ') },
+    account: { rows: rows.length, badge, checkedAt, updatedAt, offline: accountOffline },
+    publishText: publishText.slice(0, 120),
+    screenshots: [out, out.replace(/\.png$/, '-account.png')],
+    problems,
+  }
   console.log(JSON.stringify(summary, null, 2))
-  if (cards.length < 4) {
-    console.error('✖ 面板内容不完整；页面文本：\n' + panelText.slice(0, 1200))
+  if (problems.length > 0) {
+    console.error('✖ 断言失败：\n- ' + problems.join('\n- '))
     code = 1
-  }
-  if (tabs === null || tabs.labels.length !== 4 || tabs.selected[0] !== 'true') {
-    console.error('✖ 面板 tab 异常（期望 5 个、默认「自动发布」）：' + JSON.stringify(tabs))
-    code = 1
-  }
-  if (styleBefore === null || styleBefore.count !== 5) {
-    console.error('✖ 文案风格入口异常（期望 5 个芯片）：' + JSON.stringify(styleBefore))
-    code = 1
+  } else {
+    console.log('✔ 面板 6 个 tab 的结构与契约都符合预期' + (daemonOnline ? '（daemon 在线，账号徽标：' + String(badge) + '）' : '（daemon 离线，走降级分支）'))
   }
 } catch (error) {
   console.error('✖ ' + error.message)
