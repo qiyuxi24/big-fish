@@ -10,22 +10,11 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const h = React.createElement
     const ICON_STYLE = { display: 'block', lineHeight: '1' }
-    /** 面板上的按钮都只能看：要执行请让模型调对应工具或复制下面的命令。 */
-    const BUTTONS = [{ label: '导入登录态', tool: 'xy_import_account' }, { label: '发布 dry-run', tool: 'xy_publish_draft' }]
     /** 面板内模块 tab：全部在侧边栏面板里切换（不注册 conversation.view）。 */
     const PANEL_TABS = [
       { id: 'publish-batch', label: '自动发布' }, { id: 'account', label: '账号' }, { id: 'copy', label: '文案' },
       { id: 'reference', label: '采集' }, { id: 'overview', label: '概览' }, { id: 'diagnose', label: '诊断' },
     ]
-    /** 可复制命令：按钮不可点时，人能在终端直接执行的入口（按 tab 分组）。 */
-    const COMMANDS = {
-      account: [{ label: '导入登录态（CLI）', command: 'npm run daemon:import-account' }],
-      publish: [
-        { label: '发布 dry-run（CLI）', command: 'npm run daemon:publish -- --draft <草稿.json>' },
-        { label: '入队发布（需审批）', command: '让模型调用 xy_publish_draft（mode=enqueue）' },
-      ],
-      diagnose: [{ label: '起 daemon', command: 'npm run daemon' }, { label: '隔离 dev 实例', command: 'npm run dsh:dev -- --fresh' }],
-    }
     const PUBLISH_MODES = [['dry-run', 'dry-run（只填表）', '只填表、不点提交'], ['enqueue', 'enqueue（入队，走审批）', '入队后由 daemon 执行，需要审批门禁']]
     /** 语言风格展示副本；权威定义在 src/copy.js 的 COPY_STYLES，漂移由单测守护。 */
     const COPY_STYLE_OPTIONS = [
@@ -40,16 +29,7 @@ window.__ModuleLoader__.load({
       { id: 'new', label: '全新' }, { id: 'like-new', label: '几乎全新' }, { id: 'light-wear', label: '轻微使用痕迹' },
       { id: 'visible-wear', label: '明显使用痕迹' }, { id: 'flawed', label: '有瑕疵' },
     ]
-    /** 发布流水线四步：面板只展示契约，真正执行在 daemon。 */
-    const PIPELINE_STEPS = [
-      { title: '1 草稿集', value: '标题 / 文案 / 图片 / 价格 / 成色' },
-      { title: '2 文案与图片', value: 'agent 调 xy_copy_plan 出文案；图片用本地目录' },
-      { title: '3 批量入队', value: '幂等 dedupeKey，重复草稿自动跳过' },
-      { title: '4 daemon 发布', value: '单账号串行 CDP；每步截图，失败进待审' },
-    ]
     const CATEGORY_MATRIX = '✅ 电子资料 / 学习笔记 / 课业本；❌ 教材教辅 / 语言与兴趣培训 / 学习资料定制 / 文学 / 考研咨询（网页端不支持发布）'
-    /** 内联草稿示例（price 单位是分）。 */
-    const DRAFT_EXAMPLE = '{"title":"课程笔记 PDF","price":990,"condition":"like-new","images":["D:/pics/note-1.jpg"]}'
     /** 逐行解析草稿集（内联 JSON 对象或 .json 路径）：路径条目交给 host 侧读取，这里只认形状。 */
     function parseDraftLines(text) {
       return text.split('\n').map(line => line.trim()).filter(line => line !== '').map((line, index) => {
@@ -84,6 +64,24 @@ window.__ModuleLoader__.load({
       if (price !== '') args.priceYuan = price
       return { tool: 'xy_copy_plan', arguments: args }
     }
+    /** 内联草稿 → publish 任务（面板的 price 是分）；daemon 执行时 title/desc/priceCents/images 必填，缺了在这里拦下。 */
+    function buildPublishItems(results, accountId) {
+      const items = [], problems = []
+      for (const result of results) {
+        const draft = result.draft ?? {}, priceCents = Number(draft.price), desc = typeof draft.desc === 'string' ? draft.desc.trim() : ''
+        const invalid = typeof draft.title !== 'string' || draft.title.trim() === '' || desc === '' || !Number.isSafeInteger(priceCents) || priceCents <= 0 || !Array.isArray(draft.images) || draft.images.length === 0
+        if (invalid) { problems.push('第 ' + String(result.index + 1) + ' 行缺 title / desc / price / images'); continue }
+        const payload = { accountId, title: draft.title.trim(), desc, priceCents, images: draft.images }
+        if (typeof draft.category === 'string' && draft.category.trim() !== '') payload.category = draft.category.trim()
+        items.push({ kind: 'publish', dedupeKey: 'publish:' + JSON.stringify([payload.title, payload.desc, priceCents, draft.images, payload.category ?? null]), payload })
+      }
+      return { items, problems }
+    }
+    /** settings 对象 → 表单初值（发布间隔按秒展示）。 */
+    function settingsForm(settings) { return { interval: String(Math.round(Number(settings.publishMinIntervalMs ?? 0) / 1000)), category: String(settings.defaultCategory ?? ''), style: String(settings.copyStyle ?? COPY_STYLE_OPTIONS[0].id) } }
+    const resultLine = (result, role) => result === null ? null : h('div', { style: result.kind === 'bad' ? S.badText : result.kind === 'ok' ? S.goodText : S.small, 'data-role': role }, result.text)
+    function gridRow(columns, head) { return { display: 'grid', gridTemplateColumns: columns, gap: '8px', alignItems: 'center', padding: '7px 0', borderBottom: '1px solid var(--dsw-alias-border-l2)', fontSize: head ? '12px' : '13px', color: head ? 'var(--dsw-alias-label-secondary)' : 'var(--dsw-alias-label-primary)' } }
+    const TASK_GRID = 'minmax(110px, 1.2fr) 70px 84px 64px 92px 78px'
 
     // —— 实时状态：client → host rpc（只读端点）——
     const RPC_CHANNEL = '/bigfish'
@@ -91,6 +89,9 @@ window.__ModuleLoader__.load({
     const OFFLINE_TEXT = '未连接后台（daemon 未启动）'
     /** 队列状态的展示顺序与中文名；与 src/rpc.js 的 TASK_STATES 一致。 */
     const TASK_STATE_LABELS = [['queued', '排队'], ['leased', '执行中'], ['done', '完成'], ['failed', '失败'], ['needs_review', '待审']]
+    function taskStateLabel(value) { const hit = TASK_STATE_LABELS.find(([state]) => state === value); return hit === undefined ? (typeof value === 'string' && value !== '' ? value : '未知') : hit[1] }
+    /** tasks.list 的回复 → 任务表状态（rpc 失败只降级成 offline，不把错误当空列表渲染）。 */
+    const tasksState = reply => ({ phase: reply.ok ? 'ok' : 'offline', items: reply.ok && Array.isArray(reply.value) ? reply.value : [] })
     /** 读连接服务：宿主没给 connection / 没有 rpc.call 时返回 null，让面板降级而不是抛错。 */
     function readConnection(ctx) {
       try {
@@ -120,7 +121,7 @@ window.__ModuleLoader__.load({
       if (connection === null || connection === undefined) return { ok: false, message: '宿主没有连接服务，无法操作 daemon；请在 DSH 桌面端打开面板' }
       try {
         const reply = await connection.rpc.call(RPC_CHANNEL, endpoint, payload ?? {})
-        if (reply !== null && typeof reply === 'object' && reply.ok === true) return { ok: true, message: '' }
+        if (reply !== null && typeof reply === 'object' && reply.ok === true) return { ok: true, message: '', value: reply.value }
         const error = reply !== null && typeof reply === 'object' ? reply.error : undefined
         const message = error !== null && typeof error === 'object' && typeof error.message === 'string' && error.message !== ''
           ? error.message
@@ -150,6 +151,20 @@ window.__ModuleLoader__.load({
       }
       const cancelStop = () => { setState(previous => ({ ...previous, stopArmed: false, notice: null })) }
       return { state, start, stop, cancelStop }
+    }
+    /** 写类动作点两次：第一次只上膛并给提示，第二次带 confirm:true 才发（host 门禁要求）。 */
+    function useWrite(connection) {
+      const [state, setState] = React.useState({ armed: '', busy: false, result: null })
+      const run = (key, endpoint, payload, texts) => {
+        if (state.busy) return
+        if (state.armed !== key) return setState({ armed: key, busy: false, result: { kind: 'hint', text: texts.hint } })
+        setState({ armed: '', busy: true, result: { kind: 'hint', text: texts.busy } })
+        void callAction(connection, endpoint, { ...payload, confirm: true }).then(reply => {
+          if (reply.ok && texts.after !== undefined) void texts.after(reply.value)
+          setState({ armed: '', busy: false, result: reply.ok ? { kind: 'ok', text: texts.done(reply.value), value: reply.value } : { kind: 'bad', text: truncateText(reply.message) } })
+        })
+      }
+      return { state, run }
     }
     /** 从 tasks.list 找最新一条带 batchId 的任务：daemon 没有「批次列表」读端点，只能反查。 */
     function newestBatchId(tasks) {
@@ -278,16 +293,6 @@ window.__ModuleLoader__.load({
       const parts = TASK_STATE_LABELS.filter(([state]) => counts[state] > 0).map(([state, label]) => label + ' ' + String(counts[state]))
       return batch.batchId + ' · 共 ' + String(batch.total) + (parts.length === 0 ? '' : ' · ' + parts.join(' · '))
     }
-    /** 设置摘要：只列三个对发布节奏有影响的字段。 */
-    function describeSettings(settings) {
-      const styleId = String(settings.copyStyle ?? '默认')
-      const style = COPY_STYLE_OPTIONS.find(option => option.id === styleId)
-      const interval = Number(settings.publishMinIntervalMs)
-      const seconds = Number.isFinite(interval) ? String(Math.round(interval / 1000)) + ' 秒' : '?'
-      const category = typeof settings.defaultCategory === 'string' && settings.defaultCategory.trim() !== '' ? settings.defaultCategory : '未设置'
-      return '文案风格 ' + (style === undefined ? styleId : styleId + '（' + style.label + '）')
-        + ' · 默认类目 ' + category + ' · 发布间隔 ' + seconds
-    }
 
     /** 侧边栏栏位图标。 */
     function BigFishIcon({ size, active }) {
@@ -295,32 +300,6 @@ window.__ModuleLoader__.load({
         style: { ...ICON_STYLE, fontSize: String(Math.max(12, size)) + 'px', opacity: active ? 1 : 0.72 },
         'aria-hidden': 'true',
       }, '🐟')
-    }
-    function Card({ title, value, hint }) {
-      return h('div', { style: S.card },
-        h('div', { style: S.cardTitle }, title),
-        h('div', { style: S.cardValue }, value),
-        hint === undefined ? null : h('div', { style: S.cardHint }, hint))
-    }
-    /** 按钮区：disabled + title 说明原因。 */
-    function ActionButtons() {
-      return h('div', { style: S.section },
-        h('div', { style: S.sectionTitle }, '操作入口'),
-        h('div', { style: S.buttonRow }, ...BUTTONS.map(button => h('button', {
-          key: button.tool, type: 'button', disabled: true, style: S.button,
-          title: '暂不可点：请在对话里让模型调用 ' + button.tool + '，或复制下面的命令。',
-        }, button.label))))
-    }
-    function CommandList({ items, title }) {
-      return h('div', { style: S.section },
-        h('div', { style: S.sectionTitle }, title ?? '可复制命令'),
-        ...items.map(item => h('div', { key: item.label, style: S.cmdRow },
-          h('span', { style: S.cmdLabel }, item.label),
-          h('code', { style: S.cmdCode }, item.command))))
-    }
-    /** 一行「工具名 + 用途」，诊断页用。 */
-    function ToolRow({ name, desc }) {
-      return h('div', { style: S.cmdRow }, h('span', { style: S.cmdLabel }, desc), h('code', { style: S.cmdCode }, name))
     }
     /** 风格选择：一行芯片，选中态用 aria-pressed 与高亮同时表达。 */
     function StylePicker({ styleId, onStyle }) {
@@ -353,7 +332,6 @@ window.__ModuleLoader__.load({
     function CopyPlanPreview({ request }) {
       return h('div', { style: S.preview },
         h('div', { style: S.sectionTitle }, '生成请求已就绪'),
-        h('div', { style: S.sectionHint }, '面板不联网、不调模型：这里只选风格与组参数。把下面这段交给模型，它会调 xy_copy_plan 拿到注入好的提示词，再按 skill 出草稿 JSON → xy_publish_draft 做 dry-run。'),
         h('pre', { style: S.pre }, JSON.stringify(request, null, 2)))
     }
     /** 文案风格区：选风格 → 填事实 → 生成请求。 */
@@ -376,65 +354,67 @@ window.__ModuleLoader__.load({
         }, tab.label)))
     }
 
-    /** 采集参考的只读口径：给什么、不给什么、下一步缺什么。 */
-    const REFERENCE_CARDS = [
-      { title: '输入', value: '商品 id（≤20）或商家 id', hint: '商家 id 先取主页与在售列表，再逐件读详情统计' },
-      { title: '产出', value: '价格带 / 标题长度 / 类目 / 卖点词', hint: '全部是统计量；不给图片直链、不产出可发布草稿' },
-      { title: '数据来源', value: 'mtop 只读接口', hint: '账号登录态由 daemon 解密后使用；_m_h5_tk 过期自动刷新回写' },
-    ]
+    /** 采集口径与红线（只读统计；面板不联网，采集由 agent 调工具）。 */
     const REFERENCE_NOTES = [
       '只做统计参考：图片数量、价格、标题长度、类目、卖点词；任何一条都不构成「拿来就能发」的素材。',
       '红线：不下载他人图片、不照抄文案、不跨账号复制他人商品。要发的是自己的货（AGENTS §1.6）。',
       '单件失败不影响整批：失败条目进 skipped 列表，AUTH_EXPIRED / RISK_CONTROL / UNAUTHORIZED 会中止整批。',
     ]
-
-    /** 「采集」模块：只读统计给定价 / 文案找参照；面板不联网，采集由 agent 调工具。 */
+    /** 「采集」模块：只读统计给定价 / 文案找参照。 */
     function ReferenceView() {
-      const tools = [['xy_reference_collect', '按商品 id / 商家 id 采集只读统计（最坏 20 件串行）'], ['xy_items_list', '本地商品快照（自己已上架的，不是参考）']]
       return h('div', null,
-        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '能拿到什么'),
-          h('div', { style: S.grid }, ...REFERENCE_CARDS.map(card => h(Card, { key: card.title, ...card })))),
-        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '怎么调（让模型执行）'),
-          ...tools.map(([name, desc]) => h(ToolRow, { key: name, name, desc })),
-          h('div', { style: S.sectionHint }, '示例参数：{"accountId":"2206569289277","itemIds":["1091933071728"]} 或 {"accountId":"…","sellerId":"…"}')),
-        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '已知边界'),
+        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, 'xy_reference_collect'),
+          h('div', { style: S.sectionHint }, '输入：商品 id（≤20）或商家 id（先取主页与在售列表，再逐件读详情统计）。产出：价格带 / 标题长度 / 类目 / 卖点词；不给图片直链、不产出可发布草稿。')),
+        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '红线'),
           ...REFERENCE_NOTES.map((note, index) => h('div', { key: String(index), style: S.sectionHint }, '· ' + note))))
     }
 
-    /** daemon 实时状态 + 进程管理：health / 账号就绪 / 队列计数 / 最近批次 / 设置摘要 + 启停按钮。 */
-    function DaemonView({ connection }) {
-      const snapshot = useDaemonSnapshot(connection)
-      // hooks 必须在早退之前调用（React 规则），所以动作状态在 loading 分支也建好。
+    /** 设置：发布间隔（秒）/ 默认类目 / 文案风格；保存是写类，点两次才发 settings.put，成功后重新拉 settings.get。 */
+    function SettingsForm({ connection, settings }) {
+      const save = useWrite(connection)
+      const [form, setForm] = React.useState(settingsForm(settings))
+      const seconds = Number(form.interval)
+      const valid = Number.isFinite(seconds) && seconds >= 30 && seconds <= 3600 && form.category.trim() !== ''
+      const patch = { publishMinIntervalMs: Math.round(seconds * 1000), defaultCategory: form.category.trim(), copyStyle: form.style }
+      const refresh = () => { void callRead(connection, 'settings.get').then(reply => { if (reply.ok && reply.value !== null && typeof reply.value === 'object') setForm(settingsForm(reply.value)) }) }
+      const change = key => event => setForm({ ...form, [key]: event.target.value })
+      return h('div', { 'data-role': 'settings-form', style: S.fieldRow },
+        h(Field, { label: '发布间隔（秒）', control: h('input', { type: 'number', min: 30, max: 3600, value: form.interval, onChange: change('interval'), style: S.input }) }),
+        h(Field, { label: '默认类目', control: h('input', { type: 'text', value: form.category, maxLength: 200, onChange: change('category'), style: S.input }) }),
+        h(Field, { label: '文案风格', control: h('select', { value: form.style, onChange: change('style'), style: S.input }, ...COPY_STYLE_OPTIONS.map(option => h('option', { key: option.id, value: option.id }, option.label))) }),
+        h('div', { style: S.buttonRow },
+          h('button', { type: 'button', 'data-role': 'settings-save', disabled: !valid || save.state.busy, title: valid ? '写盘并重新读取 settings' : '间隔 30–3600 秒，类目不能为空', onClick: () => save.run('settings', 'settings.put', { patch }, { hint: '再点一次「确认保存」写入设置', busy: '正在保存…', done: () => '设置已保存', after: refresh }), style: valid && !save.state.busy ? S.primary : S.button }, save.state.armed === 'settings' ? '确认保存' : save.state.busy ? '保存中…' : '保存设置')),
+        resultLine(save.state.result, 'settings-result'))
+    }
+    /** daemon 实时状态 + 进程管理；发布页把设置摘要换成可保存的输入。 */
+    function DaemonStatus({ connection, snapshot, editable }) {
       const actions = useDaemonAction(connection)
       const online = snapshot.phase === 'ok' && snapshot.data !== null
       const action = actions.state
       const manage = h('div', { style: S.section, 'data-role': 'daemon-manage' },
-        h('div', { style: S.sectionTitle }, '进程管理（daemon 是常驻后台监听进程）'),
-        h('div', { style: S.sectionHint }, 'daemon 常驻后台：worker 按固定间隔轮询本地队列，执行发布 / 擦亮 / 探针等任务；面板只是看板，停止后队列暂停，下次打开面板宿主会自动拉起。'),
+        h('div', { style: S.sectionTitle }, '进程管理'),
         h('div', { style: S.buttonRow },
           h('button', { type: 'button', 'data-role': 'daemon-start', disabled: online || action.busy !== '', title: online ? 'daemon 已在线' : '让宿主拉起本地 daemon（跳过 30 秒冷却）', onClick: actions.start, style: !online && action.busy === '' ? S.primary : S.button }, action.busy === 'daemon.start' ? '正在启动…' : '启动 daemon'),
           h('button', { type: 'button', 'data-role': 'daemon-stop', disabled: !online || action.busy !== '', title: online ? '停止常驻 daemon（会中断在飞任务）' : 'daemon 未运行', onClick: actions.stop, style: online && action.busy === '' ? S.primary : S.button }, action.stopArmed ? '确认停止 daemon' : action.busy === 'daemon.stop' ? '正在停止…' : '停止 daemon')),
         action.notice === null ? null : h('div', { style: action.notice.kind === 'bad' ? S.badText : S.okText, 'data-role': 'daemon-manage-notice' }, action.notice.text))
       if (snapshot.phase === 'loading') return h('div', { style: S.sectionHint, 'data-role': 'daemon-state' }, '正在连接 daemon…')
       const data = snapshot.data
-      // 降级时给一句可执行的下一步：宿主会自己拉起 daemon，失败后 30 秒冷却，仍不行再看日志。
-      if (snapshot.phase !== 'ok' || data === null) return h('div', { 'data-role': 'daemon-state' },
-        h('div', { style: S.badText }, OFFLINE_TEXT),
-        h('div', { style: S.sectionHint, 'data-role': 'daemon-hint' }, '宿主已尝试自动拉起 daemon（失败后 30 秒冷却；日志在数据目录的 plugin.log / daemon.log）。仍连不上就手动执行 pnpm daemon:start。'),
-        manage)
+      if (snapshot.phase !== 'ok' || data === null) return h('div', { 'data-role': 'daemon-state' }, h('div', { style: S.badText }, OFFLINE_TEXT), manage)
       const health = data.health ?? {}
       const accounts = Array.isArray(data.accounts) ? data.accounts : []
       const readyCount = accounts.filter(account => account !== null && typeof account === 'object' && account.ready === true).length
       const line = (role, label, value) => h('div', { style: S.cmdRow, 'data-role': role }, h('span', { style: S.cmdLabel }, label), h('span', null, value))
       return h('div', { style: S.section, 'data-role': 'daemon-state' },
-        h('div', { style: S.sectionTitle }, 'daemon 实时状态（每 3 秒轮询）'),
+        h('div', { style: S.sectionTitle }, 'daemon 状态'),
         line('daemon-health', 'daemon', '在线 · v' + String(health.version ?? '?') + ' · 已运行 ' + formatUptime(health.uptimeMs)),
         line('daemon-accounts', '账号就绪', String(accounts.length) + ' 个账号 · ' + String(readyCount) + ' 个可写' + (accounts.length === 0 ? '（先导入登录态）' : '')),
         line('daemon-queue', '队列', describeQueue(data.status?.queue ?? {})),
         line('daemon-batch', '最近批次', describeBatch(data.batch)),
-        line('daemon-settings', '设置摘要', describeSettings(data.settings ?? {})),
+        editable ? h(SettingsForm, { connection, settings: data.settings ?? {} }) : null,
         manage)
     }
+    /** 诊断页的 daemon 状态：自己拉快照，设置只读。 */
+    function DaemonView({ connection }) { return h(DaemonStatus, { connection, snapshot: useDaemonSnapshot(connection), editable: false }) }
 
     /** 工作流树：把 /events 的增量事件渲染成「任务 → 步骤」，只显示最近 6 个任务 × 最近 6 步。 */
     function WorkflowTree({ connection }) {
@@ -442,30 +422,29 @@ window.__ModuleLoader__.load({
       const tasks = groupEventsByTask(stream.events).slice(-6).reverse()
       // UNSUPPORTED 只可能来自「宿主加载的是重启前的旧插件」：该重启 DSH 桌面应用，不是重启 daemon。
       const hint = stream.phase === 'loading' ? '正在读取步骤事件…'
-        : stream.phase === 'offline' ? (stream.code === 'UNSUPPORTED' ? '这一版面板需要宿主里加载新版插件，但现在跑的是重启前的旧代码（没有 events.list 这个 rpc）：重启 DSH 桌面应用后自动恢复；上面的 daemon 状态不受影响' : '事件流拉取失败（daemon 离线，或旧 daemon 没有 /events）；启动 daemon 后自动恢复')
-          : tasks.length === 0 ? '还没有步骤事件：daemon 执行任务时才会写（发布 / 擦亮 / 探针都会产生）' : '最近 ' + String(tasks.length) + ' 个任务，事件每 3 秒增量追加'
-      const stateLabel = value => { const hit = TASK_STATE_LABELS.find(([state]) => state === value); return hit === undefined ? (value === '' ? '状态未知' : value) : hit[1] }
+        : stream.phase === 'offline' ? (stream.code === 'UNSUPPORTED' ? '这一版面板需要宿主里加载新版插件，但现在跑的是重启前的旧代码（没有 events.list 这个 rpc）：重启 DSH 桌面应用后自动恢复' : '事件流拉取失败（daemon 离线，或旧 daemon 没有 /events）')
+          : tasks.length === 0 ? '还没有步骤事件：daemon 执行任务时才会写' : '最近 ' + String(tasks.length) + ' 个任务，每 3 秒增量追加'
       const stepLine = (task, step, index) => {
         const state = typeof step.state === 'string' ? step.state : ''
         const hit = STEP_STATE_LABELS.find(([value]) => value === state)
-        const text = String(step.step ?? '?') + ' · ' + (hit === undefined ? stateLabel(state) : hit[1]) + (typeof step.message === 'string' && step.message !== '' ? ' · ' + step.message : '')
+        const text = String(step.step ?? '?') + ' · ' + (hit === undefined ? taskStateLabel(state) : hit[1]) + (typeof step.message === 'string' && step.message !== '' ? ' · ' + step.message : '')
         return h('div', { key: task.taskId + '-step-' + String(index), style: S.cmdRow, 'data-role': 'workflow-step', 'data-step-state': state }, h('span', { style: S.cmdLabel }, '步骤'), h('span', { style: state === 'failed' ? S.badText : S.okText }, text))
       }
       return h('div', { style: S.section, 'data-role': 'workflow-tree' },
         h('div', { style: S.sectionTitle }, '工作流（现在在干嘛）'),
         h('div', { style: S.sectionHint }, hint),
         ...tasks.map(task => h('div', { key: task.taskId, 'data-role': 'workflow-task', 'data-task-id': task.taskId },
-          h('div', { style: S.cmdRow }, h('span', { style: S.cmdLabel }, '任务 ' + task.taskId.slice(0, 12) + (task.batchId === null ? '' : ' · 批次 ' + task.batchId)), h('span', { style: S.okText }, '状态 ' + stateLabel(task.state))),
+          h('div', { style: S.cmdRow }, h('span', { style: S.cmdLabel }, '任务 ' + task.taskId.slice(0, 12) + (task.batchId === null ? '' : ' · 批次 ' + task.batchId)), h('span', { style: S.okText }, '状态 ' + taskStateLabel(task.state))),
           ...task.steps.slice(-6).map((step, index) => stepLine(task, step, index)))))
     }
 
     /** 诊断页：daemon 实时状态 + 只读工具与进程命令。 */
     function DiagnoseTab({ connection }) {
-      const tools = [['xy_status', '队列/账号/熔断/worker'], ['xy_tasks_list', '任务列表（可按状态/种类过滤）'], ['xy_items_list', '本地商品快照'], ['xy_ping', '插件 ↔ daemon ↔ 鉴权自检']]
       return h('div', null,
         h(DaemonView, { connection }),
-        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '读状态（让模型调）'), ...tools.map(([name, desc]) => h(ToolRow, { key: name, name, desc }))),
-        h(CommandList, { items: COMMANDS.diagnose, title: '进程' }))
+        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '工具与命令'),
+          h('div', { style: S.cmdRow }, ...['xy_status', 'xy_tasks_list', 'xy_items_list', 'xy_ping'].map(name => h('code', { key: name, style: S.cmdCode }, name))),
+          h('div', { style: S.cmdRow }, h('code', { style: S.cmdCode }, 'npm run daemon'), h('code', { style: S.cmdCode }, 'npm run dsh:dev -- --fresh'))))
     }
 
     /** 当前 tab 的内容区；copy 页的状态留在 Panel 里（切走再切回不丢输入）。 */
@@ -475,9 +454,9 @@ window.__ModuleLoader__.load({
       if (tab === 'copy') return h(CopyStudio, copyProps)
       if (tab === 'reference') return h(ReferenceView)
       if (tab === 'diagnose') return h(DiagnoseTab, { connection })
-      return h('div', null,
-        h('div', { style: S.sectionHint }, '登录态导入：xy_import_account（从本机 Chrome 读 cookie 后加密落盘）；daemon：127.0.0.1:47001 · 前台进程，实时状态见「诊断」页。'),
-        h(ActionButtons), h(CommandList, { items: COMMANDS.account, title: '账号' }))
+      return h('div', { style: S.section },
+        h('div', { style: S.sectionHint }, '登录态导入：xy_import_account（本机 Chrome → 加密凭据）；daemon：127.0.0.1:47001（前台进程）。'),
+        h('div', { style: S.cmdRow }, h('code', { style: S.cmdCode }, 'npm run daemon:import-account'), h('code', { style: S.cmdCode }, 'npm run daemon')))
     }
 
     /** 面板骨架：顶部 tab + 内容区 + 门禁说明。connection 由 apply 注入（模块级单实例）。 */
@@ -507,37 +486,75 @@ window.__ModuleLoader__.load({
         h(PanelBody, { tab, copyProps, connection: panelConnection }))
     }
 
-    /** 「自动发布」模块：daemon 实时状态 + 草稿集 → 校验 → 组 xy_publish_batch 参数。 */
+    /** 任务区：最近 20 条；failed / needs_review 可重试（两次确认），执行中与完成不给按钮。 */
+    function TasksTable({ connection, board, onChanged }) {
+      const retry = useWrite(connection)
+      const rowOf = task => {
+        const id = String(task.id ?? ''), canRetry = task.state === 'failed' || task.state === 'needs_review'
+        return h('div', { key: id, style: gridRow(TASK_GRID, false), 'data-role': 'task-row', 'data-task-id': id },
+          h('span', null, id.slice(0, 16)), h('span', { style: S.small }, String(task.kind ?? '?')),
+          h('span', { style: task.state === 'failed' ? S.badText : S.small }, taskStateLabel(task.state)),
+          h('span', { style: S.small }, String(task.attempts ?? 0) + '/' + String(task.maxAttempts ?? '?')),
+          h('span', { style: S.small }, formatAgo(task.updatedAt)),
+          canRetry ? h('button', { type: 'button', 'data-role': 'task-retry', disabled: retry.state.busy, onClick: () => retry.run('retry:' + id, 'tasks.retry', { id }, { hint: '再点一次重试 ' + id + '：会把它放回队列', busy: '正在重试…', done: () => '已重试 ' + id, after: onChanged }), style: retry.state.armed === 'retry:' + id ? { ...S.chip, ...S.chipActive } : S.chip }, retry.state.armed === 'retry:' + id ? '确认重试' : '重试') : null)
+      }
+      return h('div', { style: S.section },
+        h('div', { style: S.sectionTitle }, '任务（最近 20 条）'),
+        resultLine(retry.state.result, 'task-result'),
+        h('div', { 'data-role': 'tasks-table' },
+          h('div', { style: gridRow(TASK_GRID, true) }, ...['任务', '种类', '状态', '重试', '更新', ''].map(label => h('span', { key: label }, label))),
+          ...board.items.map(rowOf),
+          board.items.length === 0 ? h('div', { style: S.small, 'data-role': 'tasks-empty' }, board.phase === 'loading' ? '正在读取任务…' : '队列里还没有任务') : null))
+    }
+    /** 「自动发布」模块：daemon 状态与设置 + 工作流 + 任务 + 草稿集校验入队 + 组参数。 */
     function PublishBatchView({ connection }) {
+      const snapshot = useDaemonSnapshot(connection)
       const [draftText, setDraftText] = React.useState('')
       const [mode, setMode] = React.useState('dry-run')
       const [accountId, setAccountId] = React.useState('')
       const [generated, setGenerated] = React.useState(null)
-      const results = parseDraftLines(draftText)
-      const valid = results.filter(result => result.ok)
-      const invalid = results.filter(result => !result.ok)
+      const [tasks, setTasks] = React.useState({ phase: 'loading', items: [] })
+      const enqueue = useWrite(connection)
+      const loadTasks = () => callRead(connection, 'tasks.list', { limit: 20 }).then(reply => setTasks(tasksState(reply)))
+      // 任务状态是 daemon 侧异步推进的（排队 → 执行中 → 完成/失败），只拉一次会永远停在入队瞬间，所以按 3 秒轮询。
+      React.useEffect(() => { void loadTasks(); const timer = setInterval(() => { void loadTasks() }, 3000); return () => clearInterval(timer) }, [connection])
+      const results = parseDraftLines(draftText), valid = results.filter(result => result.ok), invalid = results.filter(result => !result.ok)
       const ready = valid.length >= 2 && invalid.length === 0
       const blocked = results.length === 0 ? '先粘贴至少 2 条合法草稿' : invalid.length > 0 ? '有 ' + String(invalid.length) + ' 行校验不通过，先修好再生成' : '至少 2 条合法草稿才能生成（现在 ' + String(valid.length) + ' 条）'
       const request = buildPublishBatchArguments(mode, results, accountId)
       const update = setter => value => { setter(value); setGenerated(null) }
+      const accounts = snapshot.phase === 'ok' && snapshot.data !== null && Array.isArray(snapshot.data.accounts) ? snapshot.data.accounts : []
+      const accountIds = accounts.map(account => String(account !== null && typeof account === 'object' ? account.accountId ?? '' : '')).filter(id => id !== '')
+      const targetAccount = accountId.trim() !== '' ? accountId.trim() : accountIds.length === 1 ? accountIds[0] : ''
+      const inline = valid.filter(result => result.kind === 'inline'), plan = buildPublishItems(inline, targetAccount)
+      const enqueueBlocked = targetAccount === '' ? '先填账号 id（daemon 里有 0 个或多个账号）' : plan.problems.length > 0 ? plan.problems.join('；') : invalid.length > 0 ? '先修好校验不通过的行' : inline.length === 0 ? '至少 1 条内联草稿才能入队' : ''
+      const canEnqueue = enqueueBlocked === ''
+      const submitEnqueue = () => enqueue.run('batch', 'batch.enqueue', { batchId: 'b-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8), items: plan.items }, { hint: '再点一次「确认入队」：写操作，会进 daemon 队列', busy: '正在入队…', done: value => '已入队 ' + String(value?.batchId ?? '') + ' · ' + String(plan.items.length) + ' 条', after: loadTasks })
+      const batch = enqueue.state.result
       const modeButtons = PUBLISH_MODES.map(([value, label, hint]) => h('button', { key: value, type: 'button', 'data-role': 'publish-mode', 'aria-pressed': value === mode, title: hint, onClick: () => update(setMode)(value), style: value === mode ? { ...S.chip, ...S.chipActive } : S.chip }, label))
       return h('div', null,
-        h(DaemonView, { connection }),
+        h(DaemonStatus, { connection, snapshot, editable: true }),
         h(WorkflowTree, { connection }),
-        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '流水线'), h('div', { style: S.grid }, ...PIPELINE_STEPS.map(step => h(Card, { key: step.title, title: step.title, value: step.value })))),
+        h(TasksTable, { connection, board: tasks, onChanged: loadTasks }),
+        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '流水线'),
+          h('div', { style: S.sectionHint }, '草稿 → 校验 → 入队（幂等 dedupeKey）→ daemon 串行发布，每步截图、失败进待审。类目矩阵：' + CATEGORY_MATRIX)),
         h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '草稿集'),
-          h('div', { style: S.sectionHint }, '每行一条：内联 JSON 对象或 .json 路径（host 侧读取）；price 单位是分。示例：' + DRAFT_EXAMPLE),
-          h('textarea', { value: draftText, rows: 6, 'data-role': 'draft-input', placeholder: '每行一条草稿：{"title":"...","price":990,"images":["D:/pics/1.jpg"]} 或 D:/drafts/note.json', onChange: event => update(setDraftText)(event.target.value), style: { ...S.input, ...S.textarea } })),
+          h('div', { style: S.sectionHint }, '每行一条：内联 JSON（title / desc / price（分）/ images）或 .json 路径（host 侧读取）；入队只收内联草稿。'),
+          h('textarea', { value: draftText, rows: 6, 'data-role': 'draft-input', placeholder: '{"title":"...","desc":"...","price":990,"images":["D:/pics/1.jpg"]}', onChange: event => update(setDraftText)(event.target.value), style: { ...S.input, ...S.textarea } })),
         h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '发布前校验'),
-          h('div', { style: S.sectionHint }, '类目矩阵：' + CATEGORY_MATRIX),
           ...results.map(result => h('div', { key: String(result.index), style: S.cmdRow, 'data-role': 'draft-check', 'data-ok': result.ok }, h('span', { style: S.cmdLabel }, '第 ' + String(result.index + 1) + ' 行'), h('span', { style: result.ok ? S.okText : S.badText }, result.message))),
           h('div', { style: S.sectionHint }, '已通过 ' + String(valid.length) + ' 条 / 未通过 ' + String(invalid.length) + ' 条；至少 2 条合法草稿才能生成。')),
         h('div', { style: S.section },
           h('div', { style: S.fieldRow }, h('div', { style: S.field }, h('span', { style: S.fieldLabel }, '模式'), h('div', { style: S.chipRow }, ...modeButtons))),
           h(Field, { label: '账号（可选）', control: h('input', { type: 'text', value: accountId, placeholder: 'daemon 账号 id，默认唯一账号', onChange: event => update(setAccountId)(event.target.value), style: S.input }) }),
-          h('div', { style: S.buttonRow }, h('button', { type: 'button', 'data-role': 'publish-batch-submit', disabled: !ready, title: ready ? '组装 xy_publish_batch 参数 JSON' : blocked, onClick: () => setGenerated(request), style: ready ? S.primary : S.button }, '生成批量发布请求'))),
+          h('div', { style: S.buttonRow },
+            h('button', { type: 'button', 'data-role': 'publish-batch-submit', disabled: !ready, title: ready ? '组装 xy_publish_batch 参数 JSON' : blocked, onClick: () => setGenerated(request), style: ready ? S.primary : S.button }, '生成批量发布请求'),
+            h('button', { type: 'button', 'data-role': 'batch-enqueue', disabled: !canEnqueue || enqueue.state.busy, title: canEnqueue ? '把内联草稿写进 daemon 队列（写操作，点两次）' : enqueueBlocked, onClick: submitEnqueue, style: canEnqueue && !enqueue.state.busy ? S.primary : S.button }, enqueue.state.armed === 'batch' ? '确认入队' : enqueue.state.busy ? '入队中…' : '校验并入队')),
+          resultLine(batch, 'batch-result'),
+          ...(batch !== null && batch.value !== undefined && Array.isArray(batch.value.tasks) ? batch.value.tasks.map((task, index) => h('div', { key: String(index), style: S.small, 'data-role': 'batch-item' }, '第 ' + String(index + 1) + ' 条 · ' + taskStateLabel(task.state) + (Array.isArray(batch.value.created) && batch.value.created[index] === false ? '（已存在，跳过）' : ''))) : [])),
         generated === null ? null : h('div', { style: S.preview }, h('div', { style: S.sectionTitle }, 'xy_publish_batch 参数已就绪'), h('pre', { style: S.pre, 'data-role': 'publish-request' }, JSON.stringify(generated, null, 2))),
-        h(CommandList, { items: COMMANDS.publish, title: '发布命令' }))
+        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '命令'),
+          h('div', { style: S.cmdRow }, h('code', { style: S.cmdCode }, 'pnpm daemon:publish -- --draft <草稿.json>'), h('code', { style: S.cmdCode }, 'xy_publish_batch（入队/审批走模型）'))))
     }
     /** 行内样式表：跟随 DSH 主题变量，不引入样式文件。 */
     const S = {

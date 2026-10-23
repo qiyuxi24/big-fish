@@ -556,7 +556,7 @@ test('面板内 tab：6 个分区，默认「自动发布」，点击切换内�
   tree = openTab('诊断')
   assert.match(toText(tree), /xy_status/)
   assert.match(toText(tree), /xy_tasks_list/)
-  assert.match(toText(tree), /npm run daemon\b/)
+  assert.match(toText(tree), /npm run dsh:dev -- --fresh/)
 })
 
 test('面板标题与副标题在任意 tab 都在（tab 栏顶部固定）', () => {
@@ -571,19 +571,11 @@ test('面板标题与副标题在任意 tab 都在（tab 栏顶部固定）', ()
   assert.ok(account.includes('自动发布'))
 })
 
-test('操作入口按钮存在但 disabled，并用 title 指向对应工具', () => {
+test('概览页只留导入入口与 daemon 命令，不再有 disabled 假按钮', () => {
   const { openTab } = mountPanel()
-  // 入口按钮在「概览」页，先切过去。
   const tree = openTab('概览')
-  const entryButtons = collectByType(tree, 'button')
-    .filter((node) => node.props['data-role'] === undefined)
-
-  assert.equal(entryButtons.length, 2)
-  assert.equal(entryButtons[0].props.disabled, true)
-  assert.equal(entryButtons[1].props.disabled, true)
-  assert.match(entryButtons[0].props.title, /xy_import_account/)
-  assert.match(entryButtons[1].props.title, /xy_publish_draft/)
-  assert.match(entryButtons[0].props.title, /暂不可点/)
+  assert.match(toText(tree), /npm run daemon:import-account/)
+  assert.equal(collectByType(tree, 'button').filter((node) => node.props.disabled === true).length, 0)
 })
 
 test('文案风格区：5 个风格可选，默认闲鱼口语，切换后选中态转移', () => {
@@ -625,7 +617,6 @@ test('填完商品名与价格后才能生成；生成的是 xy_copy_plan 参数
   assert.match(text, /"tool": "xy_copy_plan"/)
   assert.match(text, /"productName": "索尼 WH-1000XM4"/)
   assert.match(text, /"priceYuan": "650"/)
-  assert.match(text, /面板不联网、不调模型/)
 
   // 改任一输入都撤销「已就绪」，避免用旧参数生成。
   collectByType(tree, 'input')[1].props.onChange({ target: { value: '651' } })
@@ -653,13 +644,6 @@ test('「自动发布」模块（默认 tab）：流水线四步、草稿集与�
   for (const expected of [
     '自动发布',
     '流水线',
-    '1 草稿集',
-    '标题 / 文案 / 图片 / 价格 / 成色',
-    '2 文案与图片',
-    '3 批量入队',
-    '幂等 dedupeKey，重复草稿自动跳过',
-    '4 daemon 发布',
-    '单账号串行 CDP；每步截图，失败进待审',
     '草稿集',
     '发布前校验',
     '✅ 电子资料 / 学习笔记 / 课业本；❌ 教材教辅 / 语言与兴趣培训 / 学习资料定制 / 文学 / 考研咨询（网页端不支持发布）',
@@ -668,7 +652,7 @@ test('「自动发布」模块（默认 tab）：流水线四步、草稿集与�
   }
   const textarea = collectByType(tree, 'textarea')[0]
   assert.equal(textarea.props['data-role'], 'draft-input')
-  assert.match(toText(tree), /price 单位是分/)
+  assert.match(toText(tree), /price（分）/)
 })
 
 test('草稿集逐行解析：非法 JSON、缺字段、非 .json 路径都报出来', () => {
@@ -781,21 +765,30 @@ test('rpc 在线：health / 账号就绪 / 队列计数 / 最近批次 / 设置�
   const mounted = mountPanel({ connection })
   const text = await snapshotText(mounted)
 
-  assert.match(text, /daemon 实时状态（每 3 秒轮询）/)
+  assert.match(text, /daemon 状态/)
   assert.match(text, /在线 · v0\.3\.0 · 已运行 2 分钟/)
   assert.match(text, /1 个账号 · 1 个可写/)
   assert.match(text, /排队 2 · 执行中 1 · 完成 5 · 失败 0 · 待审 1/)
   assert.match(text, /batch-new · 共 4 · 排队 1 · 完成 3/)
-  assert.match(text, /文案风格 warm（亲切安利） · 默认类目 电子资料 · 发布间隔 180 秒/)
   assert.equal(text.includes('未连接后台（daemon 未启动）'), false)
+  // 设置摘要换成三个可保存的输入：间隔按秒、类目与风格来自 settings.get。
+  const tree = mounted.render()
+  assert.equal(roleNodes(tree, 'settings-form').length, 1)
+  const inputs = collectByType(tree, 'input')
+  assert.ok(inputs.some((node) => node.props.type === 'number' && node.props.value === '180'))
+  assert.ok(inputs.some((node) => node.props.value === '电子资料'))
+  assert.equal(collectByType(tree, 'select')[0].props.value, 'warm')
 
-  // 发布页有两个消费者：daemon 快照（6 个端点）与步骤事件流（events.list，每轮 1 次）。
-  assert.deepEqual(calls.map((call) => call.endpoint), ['health', 'status', 'accounts', 'settings.get', 'tasks.list', 'events.list', 'batches.get'])
-  assert.deepEqual(calls.map((call) => call.channel), ['/bigfish', '/bigfish', '/bigfish', '/bigfish', '/bigfish', '/bigfish', '/bigfish'])
-  // 注意：payload 是在 vm 沙箱里造的，跨 realm 对象不能 deepStrictEqual，按字段断言。
-  assert.equal(calls[4].payload.limit, 50)
-  assert.equal(calls[5].payload.since, 0)
-  assert.equal(calls[6].payload.id, 'batch-new')
+  // 发布页有三个消费者：任务表（limit 20）、daemon 快照（6 个端点）、步骤事件流与批次明细。
+  // 乱序断言：effect 的 flush 顺序由假 React 的注册顺序决定，这里只认「都发了、payload 对」。
+  assert.deepEqual(calls.filter((call) => call.endpoint === 'tasks.list').map((call) => call.payload.limit).sort(), [20, 50])
+  assert.deepEqual(
+    calls.map((call) => call.endpoint).filter((endpoint) => endpoint !== 'tasks.list'),
+    ['health', 'status', 'accounts', 'settings.get', 'events.list', 'batches.get'],
+  )
+  assert.equal(calls.every((call) => call.channel === '/bigfish'), true)
+  assert.equal(calls.filter((call) => call.endpoint === 'events.list')[0].payload.since, 0)
+  assert.equal(calls.filter((call) => call.endpoint === 'batches.get')[0].payload.id, 'batch-new')
 })
 
 test('rpc 返回 error 信封：整块降级成一行，不发批次查询', async () => {
@@ -836,13 +829,16 @@ test('轮询周期 3 秒；卸载时清定时器，之后不再发起 rpc', asyn
   const mounted = mountPanel({ connection })
   await snapshotText(mounted)
 
-  // 两个定时器：daemon 快照 + 工作流事件流，周期都是 3 秒。
-  assert.equal(mounted.loaded.clock.size, 2)
+  // 三个定时器：daemon 快照 + 工作流事件流 + 任务表，周期都是 3 秒。
+  assert.equal(mounted.loaded.clock.size, 3)
   assert.equal(mounted.loaded.clock.period, 3000)
   const firstRound = calls.length
+  const firstTasks = calls.filter((call) => call.endpoint === 'tasks.list').length
   mounted.loaded.clock.advance()
   await settle()
   assert.ok(calls.length > firstRound)
+  // 任务状态由 daemon 异步推进，任务表必须跟着轮询而不是只拉一次。
+  assert.ok(calls.filter((call) => call.endpoint === 'tasks.list').length > firstTasks)
 
   mounted.unmount()
   assert.equal(mounted.loaded.clock.size, 0)
@@ -931,12 +927,11 @@ test('「诊断」页也显示 daemon 实时状态，与发布页共用同一份
   const tree = mounted.openTab('诊断')
   const text = await snapshotText(mounted, tree)
 
-  assert.match(text, /daemon 实时状态/)
+  assert.match(text, /daemon 状态/)
   assert.match(text, /在线 · v0\.3\.0/)
   assert.match(text, /排队 2/)
-  // 切 tab 不重复起轮询：诊断页复用 DaemonView 的同一个 effect（假 React 不卸载未渲染的
-  // 发布页，所以这里仍是 2 个定时器：daemon 快照 + 工作流事件流），不会再多出第三个。
-  assert.equal(mounted.loaded.clock.size, 2)
+  // 假 React 不卸载未渲染的发布页：发布页的快照 + 事件流 + 任务表，加上诊断页自己的快照 = 4 个定时器。
+  assert.equal(mounted.loaded.clock.size, 4)
   assert.equal(mounted.loaded.clock.period, 3000)
   assert.ok(calls.length >= 5)
 })
@@ -949,6 +944,149 @@ test('bundle 不写死 daemon 地址以外的环境值，也不访问 document/l
   assert.ok(source.includes("RPC_CHANNEL = '/bigfish'"))
   assert.ok(source.includes('connection.rpc.call'))
 })
+/** 发布页填两条合法内联草稿（desc 是 daemon 入队必填）。 */
+function typeDrafts(mounted, value) {
+  collectByType(mounted.render(), 'textarea')[0].props.onChange({ target: { value } })
+}
+
+const TWO_DRAFTS = [
+  '{"title":"笔记 A","desc":"九成新，无划线","price":990,"images":["D:/a.jpg"]}',
+  '{"title":"笔记 B","desc":"全新未拆","price":1200,"images":["D:/b.jpg"]}',
+].join('\n')
+
+test('校验并入队：两次确认，第二次带 confirm:true 发 batch.enqueue，显示批次与每条初始状态', async () => {
+  const replies = daemonReplies()
+  replies['batch.enqueue'] = (payload) => ({
+    ok: true,
+    value: { batchId: payload.batchId, tasks: [{ id: 'q1', state: 'queued' }, { id: 'q2', state: 'queued' }], created: [true, false] },
+  })
+  const { connection, calls } = createFakeConnection(replies)
+  const mounted = mountPanel({ connection })
+  await snapshotText(mounted)
+  typeDrafts(mounted, TWO_DRAFTS)
+
+  let tree = mounted.render()
+  assert.equal(roleElements(tree, 'batch-enqueue')[0].props.disabled, false)
+  roleElements(tree, 'batch-enqueue')[0].props.onClick()
+  tree = mounted.render()
+  assert.match(toText(tree), /确认入队/)
+  assert.equal(calls.some((call) => call.endpoint === 'batch.enqueue'), false)
+
+  roleElements(tree, 'batch-enqueue')[0].props.onClick()
+  await settle()
+  const enqueues = calls.filter((call) => call.endpoint === 'batch.enqueue')
+  assert.equal(enqueues.length, 1)
+  assert.equal(enqueues[0].channel, '/bigfish')
+  assert.equal(enqueues[0].payload.confirm, true)
+  assert.match(enqueues[0].payload.batchId, /^b-/)
+  assert.equal(enqueues[0].payload.items.length, 2)
+  assert.equal(enqueues[0].payload.items[0].kind, 'publish')
+  assert.equal(enqueues[0].payload.items[0].payload.accountId, '2206569289277')
+  assert.equal(enqueues[0].payload.items[0].payload.title, '笔记 A')
+  assert.equal(enqueues[0].payload.items[0].payload.desc, '九成新，无划线')
+  assert.equal(enqueues[0].payload.items[0].payload.priceCents, 990)
+  assert.deepEqual(Array.from(enqueues[0].payload.items[0].payload.images), ['D:/a.jpg'])
+  assert.match(String(enqueues[0].payload.items[0].dedupeKey), /^publish:/)
+
+  const text = toText(mounted.render())
+  assert.match(text, /已入队 b-/)
+  const items = roleNodes(mounted.render(), 'batch-item').map((node) => toText(node))
+  assert.equal(items.length, 2)
+  assert.match(items[0], /排队/)
+  assert.match(items[1], /已存在，跳过/)
+})
+
+test('校验并入队失败：batch-result 显示 host 错误，任务表与整页不降级', async () => {
+  const replies = daemonReplies()
+  replies['batch.enqueue'] = { ok: false, error: { code: 'VALIDATION', message: 'items 必须是非空数组' } }
+  const { connection } = createFakeConnection(replies)
+  const mounted = mountPanel({ connection })
+  await snapshotText(mounted)
+  typeDrafts(mounted, TWO_DRAFTS)
+
+  roleElements(mounted.render(), 'batch-enqueue')[0].props.onClick()
+  await settle()
+  roleElements(mounted.render(), 'batch-enqueue')[0].props.onClick()
+  await settle()
+  const text = toText(mounted.render())
+  assert.match(text, /items 必须是非空数组/)
+  assert.equal(roleNodes(mounted.render(), 'batch-result').length, 1)
+  assert.equal(roleNodes(mounted.render(), 'tasks-table').length, 1)
+  assert.equal(text.includes('未连接后台（daemon 未启动）'), false)
+})
+
+test('任务区：tasks.list(limit 20)；failed 行有重试、queued 行没有；重试也要点两次带 confirm', async () => {
+  const replies = daemonReplies()
+  const now = Date.now()
+  replies['tasks.list'] = {
+    ok: true,
+    value: [
+      { id: 't-failed', kind: 'publish', dedupeKey: 'k1', payload: {}, state: 'failed', attempts: 2, maxAttempts: 3, availableAt: 0, createdAt: now - 120000, updatedAt: now - 60000 },
+      { id: 't-queued', kind: 'publish', dedupeKey: 'k2', payload: {}, state: 'queued', attempts: 0, maxAttempts: 3, availableAt: 0, createdAt: now - 30000, updatedAt: now - 30000 },
+    ],
+  }
+  replies['tasks.retry'] = { ok: true, value: { id: 't-failed', state: 'queued' } }
+  const { connection, calls } = createFakeConnection(replies)
+  const mounted = mountPanel({ connection })
+  await snapshotText(mounted)
+
+  const tree = mounted.render()
+  assert.equal(roleNodes(tree, 'tasks-table').length, 1)
+  assert.equal(roleNodes(tree, 'task-row').length, 2)
+  assert.equal(roleElements(tree, 'task-retry').length, 1)
+  assert.equal(calls.filter((call) => call.endpoint === 'tasks.list').some((call) => call.payload.limit === 20), true)
+
+  roleElements(tree, 'task-retry')[0].props.onClick()
+  assert.equal(calls.some((call) => call.endpoint === 'tasks.retry'), false)
+  assert.match(toText(mounted.render()), /确认重试/)
+  roleElements(mounted.render(), 'task-retry')[0].props.onClick()
+  await settle()
+
+  const retries = calls.filter((call) => call.endpoint === 'tasks.retry')
+  assert.equal(retries.length, 1)
+  assert.equal(retries[0].payload.confirm, true)
+  assert.equal(retries[0].payload.id, 't-failed')
+  assert.match(toText(mounted.render()), /已重试 t-failed/)
+})
+
+test('设置保存：点两次才带 confirm 发 settings.put，保存后重新拉 settings.get', async () => {
+  let stored = { copyStyle: 'warm', defaultCategory: '电子资料', publishMinIntervalMs: 180000 }
+  const replies = daemonReplies()
+  replies['settings.get'] = () => ({ ok: true, value: stored })
+  replies['settings.put'] = (payload) => {
+    stored = { ...stored, ...payload.patch }
+    return { ok: true, value: stored }
+  }
+  const { connection, calls } = createFakeConnection(replies)
+  const mounted = mountPanel({ connection })
+  await snapshotText(mounted)
+
+  let tree = mounted.render()
+  assert.equal(roleNodes(tree, 'settings-form').length, 1)
+  collectByType(tree, 'input').find((node) => node.props.type === 'number').props.onChange({ target: { value: '300' } })
+  tree = mounted.render()
+  const gets = () => calls.filter((call) => call.endpoint === 'settings.get').length
+  const before = gets()
+
+  roleElements(tree, 'settings-save')[0].props.onClick()
+  assert.match(toText(mounted.render()), /确认保存/)
+  assert.equal(calls.some((call) => call.endpoint === 'settings.put'), false)
+
+  roleElements(mounted.render(), 'settings-save')[0].props.onClick()
+  await settle()
+  const puts = calls.filter((call) => call.endpoint === 'settings.put')
+  assert.equal(puts.length, 1)
+  assert.equal(puts[0].channel, '/bigfish')
+  assert.equal(puts[0].payload.confirm, true)
+  assert.equal(puts[0].payload.patch.publishMinIntervalMs, 300000)
+  assert.equal(puts[0].payload.patch.defaultCategory, '电子资料')
+  assert.equal(puts[0].payload.patch.copyStyle, 'warm')
+  assert.ok(gets() > before, '保存成功后应重新拉 settings.get')
+  assert.match(toText(mounted.render()), /设置已保存/)
+  const interval = collectByType(mounted.render(), 'input').find((node) => node.props.type === 'number')
+  assert.equal(interval.props.value, '300')
+})
+
 /** 离线回放：status 报错 → 面板整块降级；启停端点仍可按。 */
 function offlineManageReplies() {
   const replies = manageReplies()
@@ -969,10 +1107,7 @@ test('进程管理：离线时「启动」可用、「停止」禁用，并讲�
   const text = await snapshotText(mounted)
 
   assert.match(text, /未连接后台（daemon 未启动）/)
-  assert.match(text, /进程管理（daemon 是常驻后台监听进程）/)
-  assert.match(text, /worker 按固定间隔轮询本地队列，执行发布 \/ 擦亮 \/ 探针等任务/)
-  assert.match(text, /面板只是看板/)
-  assert.match(text, /下次打开面板宿主会自动拉起/)
+  assert.match(text, /进程管理/)
   const tree = mounted.render()
   assert.equal(roleElements(tree, 'daemon-start').length, 1)
   assert.equal(roleElements(tree, 'daemon-start')[0].props.disabled, false)
