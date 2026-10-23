@@ -108,8 +108,11 @@ ctx.connection.rpc.call('/bigfish', '<endpoint>', payload) // → { ok: true, va
   面板首次轮询（3s 内）就会触发，所以「打开面板 → 自动出现在线」是预期行为；测试不触发（注入假 bridge）。
 - 轮询：`POLL_MS = 3000`，`useEffect` 里 `setInterval`，cleanup 里 `alive = false` + `clearInterval`；
   依赖只有 `connection`（宿主句柄稳定，切 tab 不重复起定时器）。
-- 写类端点（`tasks.retry` / `accounts.import` / `accounts.login` / `batch.enqueue` / `settings.put`）**本轮不消费**：
-  它们要求 `confirm: true` 且需要二次确认 UI，按钮留到下一轮。
+- 写类端点全部走同一套 `useWrite` 两段式（第一次点只上膛改文案，第二次才带 `confirm:true`）：`accounts.import` / `accounts.login`（账号表）、
+  `batch.enqueue`「校验并入队」（草稿集下方）、`tasks.retry`「重试」（任务表 failed/needs_review 行）、`settings.put`「保存设置」（设置表单）、`daemon.stop`（进程管理）。
+  写成功后回读：入队/重试后重拉 `tasks.list`，保存设置后重拉 `settings.get` 回填。
+- 任务表 `TasksTable` 的数据由 `PublishBatchView` 持有，按 `POLL_MS = 3000` 轮询（与 daemon 快照同一个周期）：
+  daemon 侧状态是异步推进的（排队 → 执行中 → 完成/失败），只拉一次会永远停在入队瞬间。
 - **面板内启停 daemon（2026-10-22）**：`DaemonView` 在线/离线两个分支都渲染「进程管理（daemon 是常驻后台监听进程）」区：
   说明 daemon 在后台常驻、worker 轮询队列执行发布/擦亮/探针、面板只是看板；`daemon-start`（在线时禁用）与 `daemon-stop`（离线时禁用）两个按钮。
   停止是**两段式**：第一次点只上膛并提示「再点一次「确认停止」才会停 daemon：在飞任务会被中断（任务保持 queued，下次启动后继续）」，
@@ -270,23 +273,23 @@ stub `window.__ModuleLoader__.load` 捕获注册、假 `react`（`useState` **�
   宿主没有 `connection` 服务 → 都只出现一行 `未连接后台（daemon 未启动）`，渲染不抛错；
 - **工作流树 4 条**：事件聚合成「任务 → 步骤」并断言 `data-role` / `data-step-state`、游标按 `nextSince` 推进不重拉、
   `events.list` 缺失时只降级工作流区（daemon 状态块仍在线）、空流给「执行任务时才会写」的解释；
-- **轮询生命周期**：`clock.period === 3000`、发布页两个定时器（daemon 快照 + 工作流事件流）；`__unmount()` 后 `clock.size === 0`，
-  推进时钟不再新增 rpc 调用；
+- **轮询生命周期**：`clock.period === 3000`、发布页三个定时器（daemon 快照 + 工作流事件流 + 任务表）；
+  推进时钟时 `tasks.list` 必须再次发起（只拉一次会把任务永远停在入队瞬间）；`__unmount()` 后 `clock.size === 0`，推进时钟不再新增 rpc 调用；
 - 「诊断」页同样显示实时状态，切 tab 不重复起轮询；
 - bundle 里没有 `localStorage`、`document.`、`fetch(`，且确实出现 `RPC_CHANNEL = '/bigfish'` 与 `connection.rpc.call`
   （client 只能通过 ctx 拿能力，不直接摸 DOM/网络）。
 
 ## 5. 未做（P1 再评估）
 
-- 写类端点只接了一部分：`accounts.import` / `accounts.login` 已接「点两次才发 `confirm:true`」（2026-10-23）；
-  `tasks.retry` / `batch.enqueue` / `settings.put` 仍没接 UI，写完参数只能交给 agent 调工具（都要求 `confirm:true`，host 门禁不放行裸调用）。
+- 写类端点已全部接 UI（`accounts.import` / `accounts.login` / `tasks.retry` / `batch.enqueue` / `settings.put` / `daemon.stop`，都是「点两次才发 `confirm:true`」，2026-10-23）；
+  还缺的是**批次进度可视化**（`batches.get` 已能读，任务表只显示单条任务）、多账号入队（面板只认 daemon 里的唯一账号）。
 - 文案风格区只到「可交互组请求」：选风格 → 填商品名/价格/成色 → 产出 `xy_copy_plan` 参数 JSON；**真正的文案生成在 agent 侧**（面板不联网、不调模型），谁执行与面板解耦。
 - 没有服务端推送（SSE/WebSocket）到 client：P1 要展示队列进度时需要一条 daemon → 插件 → client 的通道。
 - 没有 `settings` 卡片（daemonUrl / tokenPath 现在只能写 `cordis.patch.yml`）。
 - 「账号」模块的自动检测会真调一次 mtop `head`（`accounts.verify`）：60s 缓存 + 手动刷新，但**多账号同时进 tab 会挨个串行打**；
   还没有定时保活（只在打开面板/点检测时探测），也没有「凭据更新后自动重检测」的钩子。
-- 「自动发布」模块 = 实时 daemon 状态（只读轮询）+「生成 `xy_publish_batch` 参数 JSON」；批量入队/发布由 agent 调工具或 CLI 执行，
-  面板发起写操作留到下一轮（执行与 UI 解耦）。
+- 「自动发布」模块 = 实时 daemon 状态（只读轮询）+ 草稿集校验 + **「校验并入队」把内联草稿写进 daemon 队列**（两次确认）+ 任务表（`failed`/`needs_review` 可重试）+ 设置表单保存；
+  真正的发布由 daemon worker 执行，面板只组参数与发起入队（执行与 UI 解耦）。
 - 「采集」模块只到「生成 `xy_reference_collect` 参数 JSON」：真正采集由 agent 调工具（daemon `POST /reference`），
   面板不联网；真机只跑过单件 itemIds 路径，sellerId / 多件 / 面板点击调工具都没验证。
 - `scripts/dsh-shot.mjs` 现在覆盖 6 个 tab（自动发布 / 账号 / 文案 / 采集 / 概览 / 诊断）：
