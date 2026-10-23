@@ -7,6 +7,7 @@ import { XianyuError } from '../src/errors.ts'
 import {
   COPY_STYLES,
   DEFAULT_SETTINGS,
+  KEEPALIVE_INTERVAL_RANGE,
   MAX_BATCH_ITEMS_RANGE,
   PUBLISH_MIN_INTERVAL_RANGE,
   mergeSettings,
@@ -54,11 +55,15 @@ test('DEFAULT_SETTINGS 是文档化的默认值，且未被冻结以外的共享
     shipping: 'free',
     publishMinIntervalMs: 180_000,
     maxBatchItems: 20,
+    activeAccountId: '',
+    keepAliveEnabled: false,
+    keepAliveIntervalMs: 300_000,
     imageProvider: { endpointUrl: '', model: '', enabled: false },
   })
   assert.deepEqual(COPY_STYLES, ['plain', 'warm', 'professional', 'urgent', 'story'])
   assert.deepEqual(PUBLISH_MIN_INTERVAL_RANGE, { min: 30_000, max: 3_600_000 })
   assert.deepEqual(MAX_BATCH_ITEMS_RANGE, { min: 1, max: 20 })
+  assert.deepEqual(KEEPALIVE_INTERVAL_RANGE, { min: 60_000, max: 3_600_000 })
 })
 
 test('parseSettingsPatch 窄化合法字段，未知字段与 undefined 被忽略', () => {
@@ -70,6 +75,9 @@ test('parseSettingsPatch 窄化合法字段，未知字段与 undefined 被忽�
     publishMinIntervalMs: 90_000,
     maxBatchItems: 5,
     imageProvider: { endpointUrl: 'https://img.local/v1', model: 'flux', enabled: true },
+    activeAccountId: '  2206569289277  ',
+    keepAliveEnabled: true,
+    keepAliveIntervalMs: 600_000,
     legacyField: 'ignored',
     anotherLegacy: 42,
     copyStyleUndefined: undefined,
@@ -82,6 +90,9 @@ test('parseSettingsPatch 窄化合法字段，未知字段与 undefined 被忽�
     defaultAddress: '西安市',
     publishMinIntervalMs: 90_000,
     maxBatchItems: 5,
+    activeAccountId: '2206569289277',
+    keepAliveEnabled: true,
+    keepAliveIntervalMs: 600_000,
     imageProvider: { endpointUrl: 'https://img.local/v1', model: 'flux', enabled: true },
   })
   // 输入对象不被改写
@@ -109,18 +120,32 @@ test('parseSettingsPatch 类型错一律 VALIDATION', () => {
     { imageProvider: { endpointUrl: 1 } },
     { imageProvider: { model: false } },
     { imageProvider: { enabled: 'yes' } },
+    { activeAccountId: 42 },
+    { activeAccountId: 'bad id' },
+    { activeAccountId: '../escape' },
+    { keepAliveEnabled: 'yes' },
+    { keepAliveIntervalMs: 60_000.5 },
   ]) {
     assert.throws(() => parseSettingsPatch(bad), validationError)
   }
 })
 
 test('数值字段夹取到允许范围（不报错）', () => {
-  const low = parseSettingsPatch({ publishMinIntervalMs: 1, maxBatchItems: 0 })
+  const low = parseSettingsPatch({ publishMinIntervalMs: 1, maxBatchItems: 0, keepAliveIntervalMs: 1 })
   assert.equal(low.publishMinIntervalMs, 30_000)
   assert.equal(low.maxBatchItems, 1)
-  const high = parseSettingsPatch({ publishMinIntervalMs: 99_999_999, maxBatchItems: 99 })
+  assert.equal(low.keepAliveIntervalMs, 60_000)
+  const high = parseSettingsPatch({ publishMinIntervalMs: 99_999_999, maxBatchItems: 99, keepAliveIntervalMs: 99_999_999 })
   assert.equal(high.publishMinIntervalMs, 3_600_000)
   assert.equal(high.maxBatchItems, 20)
+  assert.equal(high.keepAliveIntervalMs, 3_600_000)
+})
+
+test('activeAccountId 允许空串（未选中），非空必须是账号 id 白名单', () => {
+  assert.equal(parseSettingsPatch({ activeAccountId: '' }).activeAccountId, '')
+  assert.equal(parseSettingsPatch({ activeAccountId: '2206569289277' }).activeAccountId, '2206569289277')
+  assert.throws(() => parseSettingsPatch({ activeAccountId: 'a b' }), validationError)
+  assert.throws(() => parseSettingsPatch({ activeAccountId: '..' }), validationError)
 })
 
 test('mergeSettings 深合并 imageProvider，且不修改 base', () => {
@@ -161,6 +186,9 @@ test('readSettingsFile：文件不存在返回默认值副本', async () => {
     shipping: 'free',
     publishMinIntervalMs: 180_000,
     maxBatchItems: 20,
+    activeAccountId: '',
+    keepAliveEnabled: false,
+    keepAliveIntervalMs: 300_000,
     imageProvider: { endpointUrl: '', model: '', enabled: false },
   })
 })
@@ -205,6 +233,9 @@ test('writeSettingsFile 写入后再读回一致，父目录自动创建，且�
     shipping: 'none',
     publishMinIntervalMs: 120_000,
     maxBatchItems: 8,
+    activeAccountId: '2206569289277',
+    keepAliveEnabled: true,
+    keepAliveIntervalMs: 120_000,
     imageProvider: { endpointUrl: 'https://img.local/v1', model: 'flux-1', enabled: true },
   }
   await writeSettingsFile(path, settings)

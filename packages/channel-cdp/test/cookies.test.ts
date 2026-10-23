@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { XianyuError } from '@bigfish/core'
-import { assertLoginCookies, CdpCookieSource, selectGoofishCookies } from '../src/cookies.ts'
+import { assertLoginCookies, CdpCookieSource, selectGoofishCookieExpiries, selectGoofishCookies } from '../src/cookies.ts'
 import type { BrowserCookie, CdpRequestConnection } from '../src/cookies.ts'
 import { FakeConnection } from './harness.ts'
 
@@ -82,6 +82,27 @@ test('selectGoofishCookies 空名 cookie 计入 others 且不进程', () => {
   const jar = selectGoofishCookies([cookie({ name: '', value: 'x' })])
   assert.deepEqual(jar.goofish, {})
   assert.equal(jar.others, 1)
+})
+
+test('selectGoofishCookieExpiries 秒级 expires 转毫秒，会话 cookie 不出现', () => {
+  const expiries = selectGoofishCookieExpiries([
+    cookie({ name: '_m_h5_tk', value: 'tk', expires: 1_790_000_000 }),
+    cookie({ name: 'unb', value: '2200' }),
+    cookie({ name: 'cna', value: 'c', expires: 1_790_000_000.7 }),
+    cookie({ name: 'x', value: 'v', domain: '.example.com', expires: 1_790_000_000 }),
+  ])
+  assert.deepEqual(expiries, { _m_h5_tk: 1_790_000_000_000, cna: 1_790_000_000_700 })
+})
+
+test('selectGoofishCookieExpiries 与 selectGoofishCookies 用同一套同名挑选规则', () => {
+  const cookies = [
+    cookie({ name: '_m_h5_tk', value: 'short', path: '/', expires: 1_700_000_000 }),
+    cookie({ name: '_m_h5_tk', value: 'long', path: '/h5', expires: 1_800_000_000 }),
+  ]
+  const jar = selectGoofishCookies(cookies)
+  const expiries = selectGoofishCookieExpiries(cookies)
+  assert.equal(jar.goofish['_m_h5_tk'], 'long')
+  assert.equal(expiries['_m_h5_tk'], 1_800_000_000_000)
 })
 
 test('assertLoginCookies 两个登录 cookie 齐全时不抛', () => {

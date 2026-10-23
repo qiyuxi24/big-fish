@@ -35,6 +35,15 @@ export interface Settings {
   publishMinIntervalMs: number
   /** 单批最多草稿数，夹在 [1, 20]。 */
   maxBatchItems: number
+  /**
+   * 当前选中的账号 id（面板「切换」写这里）；'' 表示还没选。
+   * 只有导入/登录成功后才会自动选中：设置面板保存其它字段时不能把这个值冲掉。
+   */
+  activeAccountId: string
+  /** 定时巡检（保活）：启用后 daemon 按 keepAliveIntervalMs 对当前账号做登录态校验。 */
+  keepAliveEnabled: boolean
+  /** 巡检间隔（毫秒），夹在 [60000, 3600000]；低于 1 分钟等于持续打平台。 */
+  keepAliveIntervalMs: number
   imageProvider: ImageProviderSettings
 }
 
@@ -58,6 +67,12 @@ export const PUBLISH_MIN_INTERVAL_RANGE = { min: 30_000, max: 3_600_000 } as con
 /** 单批上限允许范围；20 是网页端批量填表的实操上限（界面一次只排一页）。 */
 export const MAX_BATCH_ITEMS_RANGE = { min: 1, max: 20 } as const
 
+/** 巡检间隔允许范围（毫秒）：1 分钟到 1 小时。 */
+export const KEEPALIVE_INTERVAL_RANGE = { min: 60_000, max: 3_600_000 } as const
+
+/** 账号 id 白名单，与 core/CredentialStore 的 ACCOUNT_ID_RE 同规则（那边未导出，各自守卫）。 */
+const ACCOUNT_ID_RE = /^[A-Za-z0-9._-]{1,64}$/
+
 /** 未配置时的默认值：朴素文案、不指定类目/地址、包邮、3 分钟间隔、每批 20 条、不启用生图。 */
 export const DEFAULT_SETTINGS: Settings = {
   copyStyle: 'plain',
@@ -66,6 +81,10 @@ export const DEFAULT_SETTINGS: Settings = {
   shipping: 'free',
   publishMinIntervalMs: 180_000,
   maxBatchItems: 20,
+  activeAccountId: '',
+  // 保活默认关：它会周期性真调 mtop，开不开必须是用户显式选择。
+  keepAliveEnabled: false,
+  keepAliveIntervalMs: 300_000,
   imageProvider: { endpointUrl: '', model: '', enabled: false },
 }
 
@@ -87,6 +106,12 @@ export function parseSettingsPatch(value: unknown): SettingsPatch {
       patch.publishMinIntervalMs = clampInteger('settings.publishMinIntervalMs', raw, PUBLISH_MIN_INTERVAL_RANGE)
     } else if (key === 'maxBatchItems') {
       patch.maxBatchItems = clampInteger('settings.maxBatchItems', raw, MAX_BATCH_ITEMS_RANGE)
+    } else if (key === 'activeAccountId') {
+      patch.activeAccountId = parseActiveAccountId(raw)
+    } else if (key === 'keepAliveEnabled') {
+      patch.keepAliveEnabled = parseBoolean('settings.keepAliveEnabled', raw)
+    } else if (key === 'keepAliveIntervalMs') {
+      patch.keepAliveIntervalMs = clampInteger('settings.keepAliveIntervalMs', raw, KEEPALIVE_INTERVAL_RANGE)
     } else if (key === 'imageProvider') patch.imageProvider = parseImageProvider(raw)
   }
   return patch
@@ -101,6 +126,9 @@ export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
     shipping: patch.shipping ?? base.shipping,
     publishMinIntervalMs: patch.publishMinIntervalMs ?? base.publishMinIntervalMs,
     maxBatchItems: patch.maxBatchItems ?? base.maxBatchItems,
+    activeAccountId: patch.activeAccountId ?? base.activeAccountId,
+    keepAliveEnabled: patch.keepAliveEnabled ?? base.keepAliveEnabled,
+    keepAliveIntervalMs: patch.keepAliveIntervalMs ?? base.keepAliveIntervalMs,
     imageProvider: { ...base.imageProvider, ...(patch.imageProvider ?? {}) },
   }
 }
@@ -168,6 +196,22 @@ function parseImageProvider(raw: unknown): Partial<ImageProviderSettings> {
     }
   }
   return patch
+}
+
+/** 账号 id：空串表示「没选」，非空必须是白名单字符（与凭据文件名规则一致）。 */
+function parseActiveAccountId(raw: unknown): string {
+  const value = parseText('settings.activeAccountId', raw)
+  if (value === '') return ''
+  // 与 CredentialStore 的 assertAccountId 同规则：`.` / `..` 虽是白名单字符，但会被当成路径。
+  if (!ACCOUNT_ID_RE.test(value) || value === '.' || value === '..') {
+    fail('VALIDATION', 'settings.activeAccountId 格式非法：' + value.slice(0, 80))
+  }
+  return value
+}
+
+function parseBoolean(label: string, raw: unknown): boolean {
+  if (typeof raw !== 'boolean') fail('VALIDATION', label + ' 必须是布尔值')
+  return raw
 }
 
 function parseText(label: string, raw: unknown): string {

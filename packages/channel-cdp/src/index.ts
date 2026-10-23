@@ -32,7 +32,12 @@ export type {
 } from './launch.ts'
 export { attachChrome, attachChromePage, DEFAULT_PORT, launchChrome, resolveChromePath } from './launch.ts'
 export type { BrowserCookie, CdpRequestConnection, CookieJar } from './cookies.ts'
-export { assertLoginCookies, CdpCookieSource, selectGoofishCookies } from './cookies.ts'
+export {
+  assertLoginCookies,
+  CdpCookieSource,
+  selectGoofishCookieExpiries,
+  selectGoofishCookies,
+} from './cookies.ts'
 export type {
   PublishContext,
   PublishRunResult,

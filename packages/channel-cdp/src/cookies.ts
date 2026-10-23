@@ -51,29 +51,56 @@ function isLoginDomain(domain: string): boolean {
   return false
 }
 
+/** 一次挑选的结果：选中的 cookie 本身（值 + 到期时间）+ 其它域条数。 */
+interface PickedCookies {
+  /** 按同名规则挑出的 cookie；保留原对象是因为调用方还要读 expires。 */
+  picked: Map<string, BrowserCookie>
+  others: number
+}
+
 /**
- * 挑出闲鱼/淘宝域的 cookie。
- *
  * 同名冲突时取 path 更长者（浏览器发请求时也是长 path 优先，例如
  * `/` 与 `.goofish.com` 各有一份同名 cookie）；path 等长时后出现者覆盖（CDP 大致按写入时间给出）。
  * 无名 cookie 无法参与签名，计入 others 以便诊断。
+ * 值与到期时间必须出自同一条 cookie，所以两个导出函数共用这里。
  */
-export function selectGoofishCookies(cookies: readonly BrowserCookie[]): CookieJar {
-  const goofish: Record<string, string> = {}
-  const pathLengths = new Map<string, number>()
+function pickLoginCookies(cookies: readonly BrowserCookie[]): PickedCookies {
+  const picked = new Map<string, BrowserCookie>()
   let others = 0
   for (const cookie of cookies) {
     if (!isLoginDomain(cookie.domain) || cookie.name === '') {
       others += 1
       continue
     }
-    const pathLength = cookie.path.length
-    const previous = pathLengths.get(cookie.name)
-    if (previous !== undefined && pathLength < previous) continue
-    pathLengths.set(cookie.name, pathLength)
-    goofish[cookie.name] = cookie.value
+    const previous = picked.get(cookie.name)
+    if (previous !== undefined && cookie.path.length < previous.path.length) continue
+    picked.set(cookie.name, cookie)
   }
+  return { picked, others }
+}
+
+/** 挑出闲鱼/淘宝域的 cookie（名→值），喂给 mtop 签名。 */
+export function selectGoofishCookies(cookies: readonly BrowserCookie[]): CookieJar {
+  const { picked, others } = pickLoginCookies(cookies)
+  const goofish: Record<string, string> = {}
+  for (const [name, cookie] of picked) goofish[name] = cookie.value
   return { goofish, others }
+}
+
+/**
+ * 挑出闲鱼/淘宝域 cookie 的到期时间（毫秒级 Unix 时间，字段名→时间戳）。
+ *
+ * 用于面板展示「登录态还剩多久」：CDP 的 `expires` 是秒级，这里统一转成毫秒，避免和其它时间字段混用。
+ * 会话 cookie（无 expires / -1）不出现——那类 cookie 关掉浏览器就没了，不是可展示的生命周期。
+ */
+export function selectGoofishCookieExpiries(cookies: readonly BrowserCookie[]): Record<string, number> {
+  const { picked } = pickLoginCookies(cookies)
+  const expiries: Record<string, number> = {}
+  for (const [name, cookie] of picked) {
+    if (cookie.expires === undefined) continue
+    expiries[name] = Math.round(cookie.expires * 1000)
+  }
+  return expiries
 }
 
 /**
