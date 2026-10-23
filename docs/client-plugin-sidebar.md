@@ -177,7 +177,7 @@ daemon 在 T1 加了 `GET /events`（`task_events` 表的增量视图），面�
 node scripts/dsh-dev.mjs --fresh   # 造隔离 DSH_HOME(.scratch/.dshdev)，起 web 到 127.0.0.1:47080
                                   # 注意：本沙箱禁止 junction，隔离实例只能在沙箱外起（见 §3 坑 10）
 node scripts/dsh-shot.mjs          # headless Chrome 通过 CDP 打开、点栏位、断言面板、截图
-                                  # （注意：脚本里的文案/ tab 断言落后于当前 6 tab 版本，见 §1.1；沙箱内 spawn 浏览器会 EPERM）
+                                  # （断言 6 个 tab + 自动发布页结构 + 账号表徽标落定；离线时走降级断言）
 node scripts/dsh-shot.mjs --hmr    # 改 client.js → 断言不刷新页面就换文案 → 自动还原
 node scripts/dsh-dev.mjs --stop    # 停实例
 ```
@@ -289,9 +289,10 @@ stub `window.__ModuleLoader__.load` 捕获注册、假 `react`（`useState` **�
   面板发起写操作留到下一轮（执行与 UI 解耦）。
 - 「采集」模块只到「生成 `xy_reference_collect` 参数 JSON」：真正采集由 agent 调工具（daemon `POST /reference`），
   面板不联网；真机只跑过单件 itemIds 路径，sellerId / 多件 / 面板点击调工具都没验证。
-- `scripts/dsh-shot.mjs` 还没有「点开自动发布 tab → 断言面板文案」的用例：本沙箱起不了浏览器
-  （§3 坑 9），写了也验不了；真实验收这次是借热更新自动点击 + GDI 截图做的（§3 坑 9 末段），
-  正式用例留给有浏览器 / danger-full-access 的环境按同一套 `clickTab` 思路补。
+- `scripts/dsh-shot.mjs` 现在覆盖 6 个 tab（自动发布 / 账号 / 文案 / 采集 / 概览 / 诊断）：
+  断言 tab 条与默认选中、自动发布页的 daemon 状态块与流水线、账号表徽标落定（在线/已过期/无法确认）、
+  文案风格芯片切换、概览与诊断的契约文案，daemon 离线时走降级断言。2026-10-23 13:05 在 danger-full-access
+  下用 headless Chrome 实跑 exit 0（截图 `.scratch/shots/bigfish-sidebar{,-account}.png`）。
 ## 6. 热调试：在真实 DSH 里看到自己改的效果
 
 两条路，按需选。

@@ -107,7 +107,7 @@ node scripts/test-all.mjs     # 956 tests / 956 pass / 40 suites / 88 个测试�
 
 **没做**：①定时保活/巡检（现在只有打开面板或手点才校验）；②多账号进 tab 会串行打 mtop，没有并发与限速；③账号绑定发布任务、凭据备份恢复；④`tasks.retry` / `batch.enqueue` / `settings.put` 仍无 UI。
 
-**验收**：全量 956 全绿 ✅（plugin-ops 226 / daemon 235）；`GET /accounts` 真机 ✅；`POST /accounts/:id/verify` 真机 ✅（含 `refreshed:true`）；面板账号表格由 client-bundle 9 条用例覆盖，**桌面 GUI 目视要重启 DSH + 重启 daemon 后再看一次**。
+**验收**：全量 956 全绿 ✅（plugin-ops 226 / daemon 235）；`GET /accounts` 真机 ✅；`POST /accounts/:id/verify` 对**真实凭据目录**的 daemon（pid 4808）真机 ✅：`200 {online:true, refreshed:true}`，`does-not-exist` → `400 VALIDATION`；**面板真机（真实浏览器）** ✅ 2026-10-23 13:0x 用 `scripts/dsh-dev.mjs` 起隔离 DSH（47080，加载当前插件代码）+ headless Chrome 走 CDP：展开侧边栏「BigFish 闲鱼运营」→ 账号 tab 渲染出表格行 `2206569289277 / 在线 / 最近检测 13:02:28 / 1 分钟前 · 字段齐备 / 23 字段 / [检测][重新导入][扫码登录]`，`data-role` 全套命中（截图 `.scratch/panel-account.png`、`.scratch/panel-after-click.png`）。这条路径已固化成一条命令：`pnpm dsh:shot`（6 个 tab 的断言 + 截图 `.scratch/shots/bigfish-sidebar{,-account}.png`，2026-10-23 13:05 实跑 exit 0）。**用户自己的桌面应用仍需重启一次**才能加载同一套代码（当前进程加载的是 12:38 前的旧插件）。
 
 ### 4.1.3 采集参考模块（第三个做，R1 只读统计已落地）
 
@@ -144,7 +144,7 @@ node scripts/test-all.mjs     # 956 tests / 956 pass / 40 suites / 88 个测试�
 6. **批量真提交用哪个账号**：现有凭据只有 `2206569289277`（你的大号，2026-10-21 已用它真发过 3 次并全部下架）。批量真提交第 1 条要你点头：用大号发 1 条「自动发布测试」并立刻下架，还是等你导入一个测试小号再跑？（AGENTS §5：真人验证优先测试小号）
 7. （已拍板，存档）首发主打：**自动发布**——用户 2026-10-21 决定「先做自动发布，其他功能一个一个来」。
 8. （已拍板，存档）**一个插件 + 四个模块**，模块 tab 在侧边栏面板内切换，插件入口只在侧边栏——用户 2026-10-21 定。
-9. **（需要你动手三件）** ①**重启 daemon**（`pnpm daemon:restart`，或面板「停止 daemon」再「启动 daemon」）——47001 上跑的是 12:29 起的旧进程，没有 `POST /accounts/:id/verify` 这条路由，不重启面板的「检测」会一直是「后台错误」。②**重启 DSH 桌面应用**（关掉再开，会话不丢）让面板新插件代码（账号表格 + `accounts.verify` rpc + 工具注册中间件）生效：重启后侧边栏「自动发布 → 账号」应看到表格而不是三张静态卡。③在**普通终端**（不是 DSH 沙箱）跑一次 `pnpm accept:publish` 补「同批混不支持类目」的真机证据；它自己起 dry-run daemon、跑完即停，**不会真发**。
+9. **（需要你动手两件）** ①**重启 DSH 桌面应用**（关掉再开，会话不丢）让面板新插件代码（账号表格 + `accounts.verify` rpc + 工具注册中间件）生效：重启后侧边栏「自动发布 → 账号」应看到表格而不是三张静态卡。daemon **已经由我这轮重启**（pid 4808，含 verify 路由，不必再动）。②在**普通终端**（不是 DSH 沙箱）跑一次 `pnpm accept:publish` 补「同批混不支持类目」的真机证据；它自己起 dry-run daemon、跑完即停，**不会真发**。
 10. **（仍未答）批量真提交授权**：见第 6 条——等你点头才能动真格。
 11. **账号定时保活要不要做**：现在只有打开面板/手点「检测」才校验一次登录态；要做成 daemon 每 N 分钟巡检 + 失效时面板标红/推 notice，需要你先点头（会周期性真调 `user.page.head`，频率建议 30–60s 或 10min 一档）。
 
@@ -187,7 +187,7 @@ node scripts/test-all.mjs     # 956 tests / 956 pass / 40 suites / 88 个测试�
 - **pacing 未真机校准**：默认 180s 是推导值（同账号 15s 连发被真机风控拦过一次），单条 enqueue 与直接 `POST /tasks` 绕过它，只剩 daemon 写桶 1 次/60s 兜底。
 - **账号风控**：策略是「遇到 x5sec/滑块不硬刚，停队列 + 截图 + 人工过」；识别代码有了但未真机验证，真人验证只用用户自己的账号，且默认 dry-run（AGENTS §5 账号纪律）。
 - **账号在线状态是「按需校验」，不是「持续在线」**：`POST /accounts/:id/verify` 只在打开面板/手点检测时打一次，`ready:true` 只说明本地凭据字段齐备（过期 token 也算 ready）。没有定时保活/巡检，也没有失效推送（§4.3 第 11 条）；verify 本身**不占限流桶、不触发熔断**，连点会直接打 `user.page.head`。
-- **面板账号表格未在桌面 GUI 目视过**：client-bundle 9 条用例覆盖了徽标/缓存/两次确认，但真实桌面要重启 DSH + 重启 daemon 后才能看到（旧 daemon 没有 verify 路由，面板会显示「无法确认 · 后台错误」）。
+- **面板只用隔离 dev host + headless Chrome 验过，用户桌面应用尚未重启**：2026-10-23 13:0x 用 `scripts/dsh-dev.mjs`（47080）+ headless Chrome（CDP，1680×1050）真实渲染了「自动发布」与「账号」两个 tab，daemon 状态行与账号表格都对（截图在 `.scratch/panel-account.png` / `.scratch/panel-after-click.png`）。用户桌面应用（64113）里加载的是 12:38 前的旧插件，重启后才会一致。
 - **分类只能选 AI 推荐的那 10 个左右**：候选由图片+文案决定、不可搜索，推荐接口偶发「目标不在候选里」→ fail-closed。批量时若某条文案把类目推荐带偏，那条会失败待审（不拖垮整批），但**覆盖面取决于文案质量**，这是产品级天花板，不是 bug 修补能绕过的。
 - **第三方材料删除流程**：`research/repos/` 仍在，删之前必须走 AGENTS §6（列清单 → 标靶点 → 等确认），不要「facts 已吸收」就删。
 

@@ -137,7 +137,7 @@ node scripts/dsh-dump.mjs --keep    # 保留 .scratch/.dshcheck 便于排查
 
 ```sh
 node scripts/dsh-dev.mjs --fresh   # 隔离 DSH_HOME(.scratch/.dshdev)，起 web 到 127.0.0.1:47080
-node scripts/dsh-shot.mjs          # CDP 打开页面、点栏位、断言面板文案、截图 .scratch/shots/
+node scripts/dsh-shot.mjs          # CDP 打开页面、点栏位、断言 6 个 tab 的结构（含账号表徽标）、截图 .scratch/shots/
 node scripts/dsh-shot.mjs --hmr    # 改 client.js 后不刷新页面断言新文案，然后自动还原
 node scripts/dsh-dev.mjs --stop    # 停实例
 ```
