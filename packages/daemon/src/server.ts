@@ -13,7 +13,7 @@ import type { AddressInfo } from 'node:net'
 import { dirname } from 'node:path'
 
 import { XianyuError, fail, toXianyuError } from '@bigfish/core'
-import type { CircuitBreaker, DaemonStatus, ItemRepository, TaskEventSink, TaskQueue } from '@bigfish/core'
+import type { CircuitBreaker, DaemonStatus, ItemRepository, SellerRepository, TaskEventSink, TaskQueue } from '@bigfish/core'
 import { isLoopbackHost } from './config.ts'
 import type { DaemonConfig } from './config.ts'
 import { extractBearer, loadRedact, sendError, sendMappedError, tokenMatches } from './http.ts'
@@ -31,10 +31,15 @@ import type {
   WorkerCounts,
 } from './routes.ts'
 import type { AccountSummary } from './account-list.ts'
+import type { SellerCollectHandler } from './seller-routes.ts'
 import type { SettingsStore } from './settings.ts'
 
-/** 请求总超时：本机 IPC 不应该有慢请求。 */
-const REQUEST_TIMEOUT_MS = 30_000
+/**
+ * 请求总超时：普通 IPC 都是毫秒级，但三条长请求要留够时间——
+ * 扫码登录（等用户扫码，最长 180s）、参考采集（20 件串行）、商家采集（最多 60 件串行 + 翻页）。
+ * 调小会先于业务超时把连接掐断（历史上 scanning 请求就被 30s 掐过）。
+ */
+const REQUEST_TIMEOUT_MS = 180_000
 /** 头部超时：防止半开连接占满连接数。 */
 const HEADERS_TIMEOUT_MS = 10_000
 
@@ -66,6 +71,10 @@ export interface StartDaemonOptions {
   retryTask?: RetryTaskHandler
   /** 参考采集能力；缺省时 POST /reference 返回 UNSUPPORTED。 */
   referenceCollect?: ReferenceCollectHandler
+  /** 商家商品采集（会写本地库）；缺省时 POST /sellers/collect 返回 UNSUPPORTED。 */
+  sellerCollect?: SellerCollectHandler
+  /** 采集结果仓储；缺省时 GET /sellers 与 /sellers/:id/items 返回空。 */
+  sellerItems?: SellerRepository
   /** 优雅关停能力；缺省时 POST /shutdown 返回 UNSUPPORTED。 */
   requestShutdown?: RequestShutdown
   /** 设置存储；缺省时 GET/PUT /settings 返回 UNSUPPORTED。 */
@@ -101,6 +110,8 @@ interface ServerContext {
   accountSummaries: (() => Promise<AccountSummary[]>) | undefined
   retryTask: RetryTaskHandler | undefined
   referenceCollect: ReferenceCollectHandler | undefined
+  sellerCollect: SellerCollectHandler | undefined
+  sellerItems: SellerRepository | undefined
   requestShutdown: RequestShutdown | undefined
   settings: SettingsStore | undefined
   events: TaskEventSink | undefined
@@ -137,6 +148,8 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
     accountSummaries: options.accountSummaries,
     retryTask: options.retryTask,
     referenceCollect: options.referenceCollect,
+    sellerCollect: options.sellerCollect,
+    sellerItems: options.sellerItems,
     requestShutdown: options.requestShutdown,
     settings: options.settings,
     events: options.events,
@@ -213,6 +226,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, context:
       accountSummaries: context.accountSummaries,
       retryTask: context.retryTask,
       referenceCollect: context.referenceCollect,
+      sellerCollect: context.sellerCollect,
+      sellerItems: context.sellerItems,
       requestShutdown: context.requestShutdown,
       settings: context.settings,
       events: context.events,

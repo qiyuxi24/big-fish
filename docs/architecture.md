@@ -128,6 +128,10 @@ openStore({path: config.dbPath})
 | POST | `/tasks/:id/release` | 立即退回队列 |
 | POST | `/tasks/:id/retry` | 人工重新排队：只允许 `failed` / `needs_review`；`queue.requeue` 把 attempts 归零、清空 lastError 与旧租约、保留 dedupeKey 与 payload；未注入能力时 `UNSUPPORTED` |
 | POST | `/reference` | 参考分析（只读）：`{accountId, itemIds?, sellerId?}` → 价格带/标题长度/类目分布/高频卖点词/图片数/商家量级；单件失败进 `skipped`，`AUTH_EXPIRED`/`RISK_CONTROL`/`UNAUTHORIZED` 中止整批；未注入能力时 `UNSUPPORTED` |
+| POST | `/resolve` | 链接解析（纯函数、不联网不写库）：`{link}` → `{kind:'seller',sellerId}` \| `{kind:'item',itemId,categoryId?}`；支持整段分享文案；短链 `m.tb.cn` → `UNSUPPORTED`，纯数字 → `VALIDATION`（分不清商品/商家） |
+| POST | `/sellers/collect` | 商家商品采集**并落库**（写）：`{accountId, sellerId, maxItems?(1..60), acknowledgeOther?}` → `{seller, items, stored, skipped, truncated, self, summary}`；先 `user.page.head` 再 `xyh.item.list` 翻页（≤3 页）再逐件详情；单件失败进 `skipped`，`AUTH_EXPIRED`/`RISK_CONTROL`/`UNAUTHORIZED` 中止整批；sellerId 不是当前账号时必须 `acknowledgeOther:true`（否则 `UNAUTHORIZED`）；未注入能力时 `UNSUPPORTED` |
+| GET | `/sellers?limit` | 已采集商家：`[{sellerId,nick,city,itemCount,registeredYear,soldCount,isSelf,collectedAt,storedCount}]`；未注入仓储时 `[]` |
+| GET | `/sellers/:id/items?limit` | 某商家已入库快照：`{sellerId,total,items:[{itemId,title,priceCents,categoryId,imageCount,browseCount,wantCount,collectCount,soldCount,publishedAt,collectedAt}]}`；limit 缺省 200、上限 500 |
 | GET | `/items?state&accountId&limit` | 本地商品快照；`state ∈ online/offline/unknown` |
 | POST | `/circuits/reset` | `{accountId}` → `{accountId, reset:boolean}`（未注入熔断器时 `reset:false`） |
 | POST | `/shutdown` | 优雅关停：先回 202 `{stopping:true,pid}`，再停止 worker（释放租约）→ 关 HTTP → 关 SQLite；未注入能力时 `UNSUPPORTED` |

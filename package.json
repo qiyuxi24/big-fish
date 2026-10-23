@@ -9,6 +9,8 @@
   },
   "scripts": {
     "test": "node scripts/test-all.mjs",
+    "client:build": "node scripts/build-client.mjs",
+    "client:check": "node scripts/build-client.mjs --check",
     "typecheck": "node scripts/typecheck.mjs",
     "daemon": "node packages/daemon/src/cli.ts",
     "daemon:import-account": "node packages/daemon/src/cli.ts import-account",

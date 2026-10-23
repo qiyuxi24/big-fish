@@ -37,6 +37,10 @@ DSH 宿主给插件的客户端能力只有两类入口：
 | `tasks.retry` | 写 | `client.retryTask(id)`，缺失时 `POST /tasks/:id/retry` | `id` |
 | `batches.get` | 读 | `client.getBatch(id)`，缺失时 `GET /batches/:id` | `id` |
 | `reference.collect` | 读（会写抓取结果） | `client.collectReferences(input)` | `accountId` 必填；`itemIds`(≤20, 去重) 或 `sellerId` 至少一个 |
+| `reference.parseLink` | 读 | `client.resolveLink(link)` → `POST /resolve` | `link` 必填（≤2048 字符）；格式由 daemon 的 `parseXianyuLink` 判 |
+| `seller.collect` | **写**（落库 `seller_items`/`sellers`） | `client.collectSeller(input)` → `POST /sellers/collect` | `accountId`/`sellerId` 必填；`maxItems`(1..60)/`acknowledgeOther`；必须 `confirm:true` |
+| `sellers.list` | 读 | `client.listSellers()` → `GET /sellers` | 无 |
+| `seller.items` | 读 | `client.listSellerItems(sellerId, limit?)` → `GET /sellers/:id/items` | `sellerId` 纯数字必填；`limit`(1..500) |
 | `settings.get` | 读 | `settingsStore.read()`，缺失时 `GET /settings` | 无 |
 | `settings.put` | 写 | `settingsStore.write(patch)`，缺失时 `PUT /settings` | 白名单字段：`copyStyle`/`defaultCategory`/`defaultAddress`/`shipping`/`publishMinIntervalMs`(30000..3600000)/`maxBatchItems`(1..20)/`imageProvider{endpointUrl?,model?,enabled}` |
 | `accounts.verify` | 读（真调一次 mtop，可能触发 `_m_h5_tk` 刷新并回写凭据） | `client.verifyAccount(accountId)`，缺失时 `POST /accounts/:id/verify` | `accountId` 必填；返回 `{accountId, online, checkedAt, refreshed, code?, message?}` |
@@ -46,7 +50,7 @@ DSH 宿主给插件的客户端能力只有两类入口：
 | `daemon.start` | 写（拉起本地进程） | `supervisor.ensure('panel', {force:true})`（`plugin-ops/src/daemon-control.js`） | 无（空对象） |
 | `daemon.stop` | 写（关停本地进程） | `POST /shutdown` → 250ms 轮询 `/health` 到不可达（同文件 `stopDaemon`） | 无（必须 `confirm:true`） |
 
-3. **写端点必须显式确认**：`tasks.retry`、`accounts.import`、`accounts.login`、`batch.enqueue`、`settings.put`、`daemon.stop` 要求 `payload.confirm === true`，否则直接返回 `{ ok:false, error:{ code:'VALIDATION', message:'需要 confirm:true' } }`，且**不触达 daemon**。
+3. **写端点必须显式确认**：`tasks.retry`、`accounts.import`、`accounts.login`、`batch.enqueue`、`settings.put`、`seller.collect`、`daemon.stop` 要求 `payload.confirm === true`，否则直接返回 `{ ok:false, error:{ code:'VALIDATION', message:'需要 confirm:true' } }`，且**不触达 daemon**。
 4. **未知端点一律 `UNSUPPORTED`**；payload 先窄化再转发，未知字段**永不**透传（防模型幻觉把 `cookie`/`token` 之类字段塞进 daemon 请求）。
 5. **`handle` 永不向宿主抛错**：任何异常都收敛成 `{ ok:false, error:{ code, message, details? } }`，`code` 只用仓库稳定枚举，未知异常收敛为 `INTERNAL` 且不带栈。
 6. **面板侧是轮询，不是订阅**：client 按需调用端点并设自己的刷新间隔；写操作成功后触发一次重取。宿主的 RPC 通道没有推送语义，伪造推送等于自建一层易漂移的总线。

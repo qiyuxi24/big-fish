@@ -44,15 +44,19 @@
 
 **仍然不占限流桶、不触发熔断**（与 v1 一致，已知缺口）：verify 是只读探测，进写桶会误伤发布预算；真要进熔断得先定「读桶」口径，另开一题。
 
-### 6. 保活默认关、间隔由 settings 控制
+### 6. 保活默认关、间隔由 settings 控制（2026-10-23 用户拍板开启）
 
-`account-keepalive.ts`：`setInterval().unref()`、上轮未完跳过、`stop()` 幂等；picker 优先 `activeAccountId`，否则第一个 `ready` 账号。runtime 包装 settings store，`keepAliveEnabled` / `keepAliveIntervalMs` 变更后 reconcile；默认 **false**、间隔 300s（夹 60s..3600s）。
+`account-keepalive.ts`：`setInterval().unref()`、上轮未完跳过、`stop()` 幂等；picker 优先 `activeAccountId`，否则第一个 `ready` 账号。runtime 包装 settings store，`keepAliveEnabled` / `keepAliveIntervalMs` 变更后 reconcile；**代码默认 false**、间隔 300s（夹 60s..3600s）。
 
 理由：默认开会让「装好就默默打接口」，与账号风控纪律冲突；默认关、用户显式开启更安全。
 
+**2026-10-23 19:10 更新**：用户明确要求开启保活 → 真实 daemon 已置 `{keepAliveEnabled:true, keepAliveIntervalMs:300000}`（5 分钟一档），并用临时 60s 档观察一轮，`account-state.json` 的 `source` 从 `manual` 变为 `keepalive`、`lastCheckedAt` 前进了约 52s，确认定时器在真打 `user.page.head`。面板对应改成**一个开关按钮**，间隔输入下限从 600s 放宽到 60s（与 core 一致；否则默认 300s 会被判非法、按钮禁用）。注意 `PUT /settings` 的 body 就是 patch 本体，`{confirm,patch}` 信封只在插件 rpc 层拆开。
+
+**仍保留的边界**：保活只保证「登录态被定期校验/续期」，不做失效推送（面板标红 + notice 未做），也没有进程外拉起（daemon 挂了保活就停）。
+
 ### 7. 面板列与 `data-role` 契约
 
-7 列：当前 / 账号 / 登录状态 / 登录态剩余 / 最近检测 / 凭据更新 / 操作；25 个 `data-role`（`account-*` / `keepalive-*`）见 [client-plugin-sidebar.md](../client-plugin-sidebar.md) §1。切换（本地设置）一次点击；其余写操作两次确认。
+7 列：当前 / 账号 / 登录状态 / 登录态剩余 / 最近检测 / 凭据更新 / 操作；26 个 `data-role`（`account-*` / `keepalive-*`，含保活状态行 `keepalive-state`）见 [client-plugin-sidebar.md](../client-plugin-sidebar.md) §1。切换（本地设置）一次点击；其余写操作两次确认。
 
 ## 后果
 

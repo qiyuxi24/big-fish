@@ -613,9 +613,9 @@ test('添加账户：输入账号 id 与 Chrome 端口，点两次才带 confirm
   assert.match(toText(tree()), /端口必须是 1..65535 的整数/)
 })
 
-test('登录保活：settings.get 回填，保存点两次、秒换算毫秒并带 confirm:true，保存后重新拉设置', async () => {
+test('登录保活：一个按钮开关（点两次带 confirm:true），settings.get 回填，间隔保存换算毫秒', async () => {
   const replies = daemonReplies()
-  let settings = { copyStyle: 'warm', defaultCategory: '电子资料', publishMinIntervalMs: 180000, keepAliveEnabled: true, keepAliveIntervalMs: 600000 }
+  let settings = { copyStyle: 'warm', defaultCategory: '电子资料', publishMinIntervalMs: 180000, keepAliveEnabled: true, keepAliveIntervalMs: 300000 }
   replies['settings.get'] = () => ({ ok: true, value: settings })
   replies['accounts.verify'] = { ok: true, value: { online: true, checkedAt: Date.now() } }
   replies['settings.put'] = (payload) => { settings = { ...settings, ...payload.patch }; return { ok: true, value: settings } }
@@ -624,22 +624,47 @@ test('登录保活：settings.get 回填，保存点两次、秒换算毫秒并�
   const settingsReads = () => calls.filter((call) => call.endpoint === 'settings.get').length
   const before = settingsReads()
 
-  assert.equal(roleNodes(tree(), 'keepalive-toggle')[0].props.checked, true)
-  assert.equal(roleNodes(tree(), 'keepalive-interval')[0].props.value, '600')
+  // 回填：开着 → 按钮是「关闭保活」，状态行写明间隔；daemon 默认 300 秒必须算合法（否则按钮被禁用、开关都点不了）。
+  assert.match(toText(roleElements(tree(), 'keepalive-toggle')[0]), /关闭保活/)
+  assert.equal(roleElements(tree(), 'keepalive-toggle')[0].props.disabled, false)
+  assert.match(toText(roleNodes(tree(), 'keepalive-state')[0]), /已开启：每 300 秒/)
+  assert.equal(roleNodes(tree(), 'keepalive-interval')[0].props.value, '300')
+
+  // 关闭：点两次才发，patch 带 keepAliveEnabled:false + 当前间隔。
+  roleElements(tree(), 'keepalive-toggle')[0].props.onClick()
+  assert.equal(saves().length, 0)
+  assert.match(toText(tree()), /确认关闭/)
+  roleElements(tree(), 'keepalive-toggle')[0].props.onClick()
+  await settle()
+  assert.equal(saves().length, 1)
+  assert.equal(saves()[0].payload.confirm, true)
+  assert.equal(saves()[0].payload.patch.keepAliveEnabled, false)
+  assert.equal(saves()[0].payload.patch.keepAliveIntervalMs, 300000)
+  assert.match(toText(tree()), /保活已关闭/)
+  assert.match(toText(roleElements(tree(), 'keepalive-toggle')[0]), /开启保活/)
+  assert.equal(settingsReads(), before + 1)
+
+  // 再开启：同样两次确认，间隔随按钮一起提交。
+  roleElements(tree(), 'keepalive-toggle')[0].props.onClick()
+  roleElements(tree(), 'keepalive-toggle')[0].props.onClick()
+  await settle()
+  assert.equal(saves().length, 2)
+  assert.equal(saves()[1].payload.patch.keepAliveEnabled, true)
+  assert.match(toText(tree()), /保活已开启/)
+
+  // 改间隔：保存两次、秒换算毫秒、成功后重新拉 settings.get 回填。
+  const readsBeforeInterval = settingsReads()
   roleNodes(tree(), 'keepalive-interval')[0].props.onChange({ target: { value: '900' } })
   roleElements(tree(), 'keepalive-save')[0].props.onClick()
-  assert.equal(saves().length, 0)
+  assert.equal(saves().length, 2)
   assert.match(toText(tree()), /确认保存/)
   roleElements(tree(), 'keepalive-save')[0].props.onClick()
   await settle()
-
-  assert.equal(saves().length, 1)
-  assert.equal(saves()[0].payload.confirm, true)
-  assert.equal(saves()[0].payload.patch.keepAliveEnabled, true)
-  assert.equal(saves()[0].payload.patch.keepAliveIntervalMs, 900000)
-  assert.match(toText(tree()), /保活设置已保存/)
-  // 保存成功后必须重新拉一次 settings.get 回填，而不是复用旧值。
-  assert.equal(settingsReads(), before + 1)
+  assert.equal(saves().length, 3)
+  assert.equal(saves()[2].payload.patch.keepAliveIntervalMs, 900000)
+  assert.equal(saves()[2].payload.patch.keepAliveEnabled, true)
+  assert.match(toText(tree()), /保活间隔已保存/)
+  assert.equal(settingsReads(), readsBeforeInterval + 1)
 })
 
 test('侧边栏图标渲染 🐟，选中态与未选中态透明度不同', () => {
@@ -962,22 +987,138 @@ test('有校验不通过的行时按钮保持禁用，不静默丢草稿', () =>
   assert.match(submit.props.title, /有 1 行校验不通过，先修好再生成/)
 })
 
-test('「采集」模块只读：讲清统计口径与红线，不出现图片直链与可发布草稿', () => {
-  const { openTab } = mountPanel()
-  const text = toText(openTab('采集'))
+/** 切到「采集」tab，等首轮 accounts / sellers.list 落定。 */
+async function openReferenceTab(replies) {
+  const { connection, calls } = createFakeConnection(replies)
+  const mounted = mountPanel({ connection })
+  const tree = mounted.openTab('采集')
+  const text = await snapshotText(mounted, tree)
+  return { mounted, calls, text, tree: () => mounted.render() }
+}
+
+test('「采集」模块：讲清口径与红线，不出现图片直链与可发布草稿', async () => {
+  const { text, tree } = await openReferenceTab(daemonReplies())
   for (const expected of [
-    'xy_reference_collect',
-    '价格带 / 标题长度 / 类目 / 卖点词',
-    '不下载他人图片',
+    '链接 → 商家商品入库',
+    '解析链接',
+    '采集并入库',
+    '不下载图片',
     '不照抄文案',
     '单件失败不影响整批',
+    '还没有采集记录',
   ]) {
     assert.ok(text.includes(expected), '采集视图缺少：' + expected)
   }
-  // 只读：不出现 daemon 地址、不出图片直链、不出入队参数
-  assert.equal(/https?:\/\//.test(text), false)
+  // 红线：不出图片直链、不出入队参数、不出现 daemon 地址。
+  assert.equal(/img[0-9a-z.]*\.(com|cn)\//.test(text), false)
   assert.equal(text.includes('enqueue'), false)
   assert.equal(text.includes('xy_publish_batch'), false)
+  assert.equal(roleElements(tree(), 'reference-parse').length, 1)
+  assert.equal(roleElements(tree(), 'reference-collect').length, 1)
+})
+
+test('采集：贴商家链接 → 解析出商家 id → 两次确认后 seller.collect 带 confirm/账号/件数', async () => {
+  const replies = daemonReplies()
+  replies['reference.parseLink'] = () => ({ ok: true, value: { kind: 'seller', sellerId: '2206569289277' } })
+  replies['sellers.list'] = { ok: true, value: [] }
+  replies['seller.items'] = { ok: true, value: { sellerId: '2206569289277', total: 0, items: [] } }
+  replies['seller.collect'] = { ok: true, value: { stored: 3, skipped: [], truncated: false } }
+  const { calls, tree } = await openReferenceTab(replies)
+
+  roleNodes(tree(), 'reference-link')[0].props.onChange({ target: { value: 'https://www.goofish.com/personal?userId=2206569289277' } })
+  roleElements(tree(), 'reference-parse')[0].props.onClick()
+  await settle()
+
+  const parses = calls.filter((call) => call.endpoint === 'reference.parseLink')
+  assert.equal(parses.length, 1)
+  assert.equal(parses[0].channel, '/bigfish')
+  assert.equal(parses[0].payload.link, 'https://www.goofish.com/personal?userId=2206569289277')
+  assert.match(toText(tree()), /商家 id：2206569289277/)
+
+  // 写磁盘：第一次只上膛，第二次才带 confirm:true。
+  roleElements(tree(), 'reference-collect')[0].props.onClick()
+  assert.equal(calls.filter((call) => call.endpoint === 'seller.collect').length, 0)
+  assert.match(toText(tree()), /确认采集/)
+  roleElements(tree(), 'reference-collect')[0].props.onClick()
+  await settle()
+
+  const collects = calls.filter((call) => call.endpoint === 'seller.collect')
+  assert.equal(collects.length, 1)
+  assert.equal(collects[0].payload.confirm, true)
+  assert.equal(collects[0].payload.accountId, '2206569289277')
+  assert.equal(collects[0].payload.sellerId, '2206569289277')
+  assert.equal(collects[0].payload.maxItems, 20)
+  assert.equal('acknowledgeOther' in collects[0].payload, false)
+  assert.match(toText(tree()), /已入库 3 件/)
+  // 采集成功后自动读该商家的已入库快照。
+  assert.equal(calls.filter((call) => call.endpoint === 'seller.items').length, 1)
+})
+
+test('采集：解析失败把 host 的可操作原因显示出来（短链提示），不降级整页', async () => {
+  const replies = daemonReplies()
+  replies['reference.parseLink'] = { ok: false, error: { code: 'UNSUPPORTED', message: '短链 m.tb.cn 需要在浏览器打开后再粘贴展开后的完整链接' } }
+  const { calls, tree } = await openReferenceTab(replies)
+
+  roleNodes(tree(), 'reference-link')[0].props.onChange({ target: { value: 'https://m.tb.cn/h.5abcdef' } })
+  roleElements(tree(), 'reference-parse')[0].props.onClick()
+  await settle()
+  assert.match(toText(tree()), /需要在浏览器打开/)
+  assert.equal(toText(tree()).includes('未连接后台'), false)
+  assert.equal(calls.filter((call) => call.endpoint === 'seller.collect').length, 0)
+})
+
+test('采集：商品链接给出「改贴商家主页」提示，且采集按钮不可用', async () => {
+  const replies = daemonReplies()
+  replies['reference.parseLink'] = () => ({ ok: true, value: { kind: 'item', itemId: '1091933071728', categoryId: '50023914' } })
+  const { tree } = await openReferenceTab(replies)
+
+  roleNodes(tree(), 'reference-link')[0].props.onChange({ target: { value: 'https://www.goofish.com/item?id=1091933071728' } })
+  roleElements(tree(), 'reference-parse')[0].props.onClick()
+  await settle()
+  assert.match(toText(tree()), /商品 id：1091933071728/)
+  assert.match(toText(tree()), /改贴商家主页链接/)
+  assert.equal(roleElements(tree(), 'reference-collect')[0].props.disabled, true)
+})
+
+test('采集：已采集商家列表可点开，渲染价格（分→元）/类目/浏览/想要/图片数', async () => {
+  const replies = daemonReplies()
+  replies['sellers.list'] = {
+    ok: true,
+    value: [{ sellerId: '2206569289277', nick: '某商家', storedCount: 2, isSelf: true, collectedAt: 1 }],
+  }
+  replies['seller.items'] = {
+    ok: true,
+    value: {
+      sellerId: '2206569289277',
+      total: 2,
+      items: [
+        { itemId: '1', title: '机械键盘', priceCents: 12900, categoryId: '50023914', imageCount: 3, browseCount: 12, wantCount: 3, collectCount: 1, publishedAt: Date.now() - 3600_000 },
+        { itemId: '2', title: '鼠标', priceCents: 9900, imageCount: 1 },
+      ],
+    },
+  }
+  const { calls, tree } = await openReferenceTab(replies)
+
+  const buttons = roleElements(tree(), 'reference-seller')
+  assert.equal(buttons.length, 1)
+  assert.match(toText(buttons[0]), /某商家 · 2 件/)
+  buttons[0].props.onClick()
+  await settle()
+
+  const itemsCalls = calls.filter((call) => call.endpoint === 'seller.items')
+  assert.equal(itemsCalls.length, 1)
+  assert.equal(itemsCalls[0].payload.sellerId, '2206569289277')
+  assert.equal(itemsCalls[0].payload.limit, 200)
+
+  const rows = roleNodes(tree(), 'reference-item')
+  assert.equal(rows.length, 2)
+  assert.match(toText(rows[0]), /机械键盘/)
+  assert.match(toText(rows[0]), /129 元/)
+  assert.match(toText(rows[0]), /50023914/)
+  assert.match(toText(rows[0]), /12/)
+  assert.match(toText(rows[1]), /99 元/)
+  // 缺失字段显示破折号，不虚构 0。
+  assert.match(toText(rows[1]), /—/)
 })
 
 test('rpc 在线：health / 账号就绪 / 队列计数 / 最近批次 / 设置摘要渲染到「自动发布」页', async () => {

@@ -12,15 +12,16 @@ import {
   RateLimiter,
   createItemRepository,
   createLogger,
+  createSellerRepository,
   createTaskEventStore,
   createTaskQueue,
-  fail,
   openStore,
 } from '@bigfish/core'
 import type {
   DaemonConfig,
   ItemRepository,
   Logger,
+  SellerRepository,
   Settings,
   Store,
   TaskQueueHandle,
@@ -28,20 +29,20 @@ import type {
 
 import { dirname, join } from 'node:path'
 
-import { importAccountFromChrome } from './accounts.ts'
-import { listAccountSummaries } from './account-list.ts'
 import { createAccountStateStore } from './account-state.ts'
 import { createAccountVerifier } from './account-session.ts'
 import { createAccountLifecycle } from './account-lifecycle.ts'
 import { createKeepAlivePicker, startAccountKeepAlive } from './account-keepalive.ts'
 import type { AccountKeepAlive } from './account-keepalive.ts'
-import { loginAndSave } from './login.ts'
 import { createReferenceCollector } from './reference.ts'
+import { createSellerCollector } from './seller-collect.ts'
 import { createExecutors } from './executors.ts'
 import type { OperationPort } from './executors.ts'
 import type { ExecutorDeps } from './executor.ts'
 import { createFetchTransport, createOperationPort } from './operations.ts'
 import type { PublishPortOptions } from './operations.ts'
+import { createAccountHandlers } from './runtime-account-handlers.ts'
+import { createCollectHandlers } from './runtime-collect-handlers.ts'
 import { startDaemon } from './server.ts'
 import type { Daemon } from './server.ts'
 import type { RequestShutdown } from './routes.ts'
@@ -79,6 +80,8 @@ export interface DaemonRuntime {
   store: Store
   queue: TaskQueueHandle
   items: ItemRepository
+  /** 采集入库的商家商品快照（seller_items / sellers）。 */
+  sellers: SellerRepository
   credentials: CredentialStore
   limiter: RateLimiter
   circuits: CircuitBreaker
@@ -102,6 +105,8 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
     // 任务事件流：worker/执行器写，GET /events 与面板工作流树读（表由 v3 迁移建）。
     const events = createTaskEventStore(store, now === undefined ? {} : { now })
     const items = createItemRepository({ store, ...(now === undefined ? {} : { now }) })
+    // 采集入库的商家商品快照：与 items（自己的货）分表，见 core/seller-items.ts。
+    const sellers = createSellerRepository({ store, ...(now === undefined ? {} : { now }) })
     const credentials = new CredentialStore({
       dir: config.credentialsDir,
       ...(now === undefined ? {} : { now }),
@@ -177,8 +182,15 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
 
     // 参考采集与执行器共用一份 transport：同一个账号、同一套超时语义。
     // 单独建 collector 而不是塞进 OperationPort：它不由队列任务驱动，是只读的即时查询。
+    // 一次装配共享一个 transport：同账号、同超时语义，也避免重复构造。
+    const transport = options.transport ?? createFetchTransport()
     const referenceCollector = createReferenceCollector({
-      transport: options.transport ?? createFetchTransport(),
+      transport,
+      ...(now === undefined ? {} : { now }),
+    })
+    const sellerCollector = createSellerCollector({
+      transport,
+      sellers,
       ...(now === undefined ? {} : { now }),
     })
 
@@ -214,6 +226,27 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
       ...(now === undefined ? {} : { now }),
     })
 
+    // 路由处理器按域装配：账号与采集各有一个适配层（读凭据/刷新快照/回写 cookie 都在那里），
+    // 主函数只保留基础设施与把结果拼给 startDaemon。
+    const accountHandlers = createAccountHandlers({
+      credentials,
+      settings: settingsWithKeepAlive,
+      state: accountState,
+      verifier,
+      lifecycle,
+      refreshAccounts,
+      // 扫码登录自起浏览器用独立 profile：与用户真实浏览器隔离，也别和它抢 profile 锁。
+      browserProfileDir: join(dirname(config.dbPath), 'chrome-profile'),
+      logger,
+      ...(now === undefined ? {} : { now }),
+    })
+    const collectHandlers = createCollectHandlers({
+      credentials,
+      referenceCollector,
+      sellerCollector,
+      sellers,
+    })
+
     let daemon: Daemon
     try {
       daemon = await startDaemon({
@@ -224,17 +257,9 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
         settings: settingsWithKeepAlive,
         events,
         accounts: () => accounts,
-        // 账号面板的列表：只读摘要，cookie 值不出进程（见 account-list.ts）；顺带带上当前账号与最近检测结论。
-        accountSummaries: async () => {
-          const state = await accountState.read()
-          return listAccountSummaries({
-            credentials,
-            state,
-            activeAccountId: await readActiveAccountId(settings),
-            ...(options.now === undefined ? {} : { now: options.now }),
-          })
-        },
         worker: () => worker.stats(),
+        // 账号摘要/导入/扫码/校验/切换/退出：见 runtime-account-handlers.ts。
+        ...accountHandlers,
         // 人工收尾：requeue 成功后必须立刻唤醒 worker，否则要等下一个 pollIntervalMs，
         // 用户在面板点「重试」会看起来没反应。tick 自身串行（正在 tick 时直接返回），
         // 所以不 await、不阻塞 HTTP 响应；唤醒失败不该让「已成功入队」的重试变成 500。
@@ -248,77 +273,9 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
           })
           return record
         },
-        // 采集参考：只读统计，cookie 值不出进程；令牌过期时用回写的凭据库刷新。
         ...(options.requestShutdown === undefined ? {} : { requestShutdown: options.requestShutdown }),
-        referenceCollect: async (input) => {
-          const record = await credentials.load(input.accountId)
-          if (record === undefined) {
-            fail('UNAUTHORIZED', '没有账号 ' + input.accountId + ' 的登录态，先导入或扫码登录')
-          }
-          return referenceCollector.collect({
-            accountId: input.accountId,
-            cookies: record.cookies,
-            ...(input.itemIds === undefined ? {} : { itemIds: input.itemIds }),
-            ...(input.sellerId === undefined ? {} : { sellerId: input.sellerId }),
-            signal: input.signal,
-            onSessionUpdate: async (cookies) => {
-              await credentials.save({
-                accountId: input.accountId,
-                cookies,
-                ...(record.meta === undefined ? {} : { meta: record.meta }),
-              })
-            },
-          })
-        },
-        importAccount: async (input) => {
-          const imported = await importAccountFromChrome({
-            credentials,
-            ...(options.now === undefined ? {} : { now: options.now }),
-            ...(input.accountId === undefined ? {} : { accountId: input.accountId }),
-            ...(input.port === undefined ? {} : { port: input.port }),
-          })
-          // /status 的账号列表是启动时快照；导入后立刻刷新，概览面板才不会显示旧列表。
-          await refreshAccounts()
-          // 第一个导入的账号自动成为当前账号：否则面板与保活都没有默认可操作对象。
-          // 设置写失败不回滚导入（凭据已经安全落盘），只在日志里提示。
-          try {
-            await lifecycle.activateIfEmpty(imported.accountId)
-          } catch (error) {
-            logger.warn('导入成功但设置当前账号失败（可在设置里手动切换）', {
-              accountId: imported.accountId,
-              error: messageOf(error),
-            })
-          }
-          return imported
-        },
-        // 扫码登录与导入共用 CredentialStore，只是多了「开页面 + 等扫码」的轮询。
-        loginAccount: async (input) => {
-          const logged = await loginAndSave(
-            { credentials, ...(options.now === undefined ? {} : { now: options.now }) },
-            input,
-          )
-          await refreshAccounts()
-          try {
-            await lifecycle.activateIfEmpty(logged.accountId)
-          } catch (error) {
-            logger.warn('登录成功但设置当前账号失败（可在设置里手动切换）', {
-              accountId: logged.accountId,
-              error: messageOf(error),
-            })
-          }
-          return logged
-        },
-        // 登录态校验：只读探测，失败也回 200 + online:false——面板要的是「账号掉没掉线」，
-        // 而不是把 mtop 错误码当成 daemon 故障。只有账号不存在（VALIDATION）与能力未装配走错误信封。
-        verifyAccount: async (input) => verifier.verify(input.accountId),
-        // 切换当前账号只是本地设置，不触达闲鱼；退出登录只删本地凭据（见 account-lifecycle.ts）。
-        activateAccount: async (input) => lifecycle.activate(input.accountId),
-        logoutAccount: async (input) => {
-          const result = await lifecycle.logout(input.accountId)
-          // /status 的账号列表是启动时快照（见下方注释）：退出后必须刷新，否则概览面板仍显示已删账号。
-          await refreshAccounts()
-          return result
-        },
+        // 参考采集与商家采集：读凭据、回写刷新后的 cookie 都在 runtime-collect-handlers.ts。
+        ...collectHandlers,
         ...(options.version === undefined ? {} : { version: options.version }),
       })
     } catch (error) {
@@ -341,6 +298,7 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
       store,
       queue,
       items,
+      sellers,
       credentials,
       limiter,
       circuits,
@@ -358,15 +316,6 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
   } catch (error) {
     store.close()
     throw error
-  }
-}
-
-/** settings 读不出来时只影响「当前账号」高亮，不该让账号列表 500。 */
-async function readActiveAccountId(settings: SettingsStore): Promise<string> {
-  try {
-    return (await settings.get()).activeAccountId
-  } catch {
-    return ''
   }
 }
 

@@ -57,12 +57,12 @@ function expectCode(fn: () => void, code: string): void {
 }
 
 describe('task_events（core）', () => {
-  it('迁移建出 task_events 表并记版本 3', (t) => {
+  it('迁移建出 task_events 表并记版本 3（v4 商家表同批建出）', (t) => {
     const { store } = makeStore(t)
     const tables = store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'task_events'").all()
     assert.equal(Array.isArray(tables) ? tables.length : 0, 1)
     const versions = store.db.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: number }>
-    assert.deepEqual(versions.map((row) => row.version), [1, 2, 3])
+    assert.deepEqual(versions.map((row) => row.version), [1, 2, 3, 4])
   })
 
   it('append 返回递增 id 与注入时钟；list 按 id 升序', (t) => {

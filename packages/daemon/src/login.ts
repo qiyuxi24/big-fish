@@ -9,9 +9,12 @@
  * 返回值、日志、onTick 都不带 cookie 值。
  * @module @bigfish/daemon/login
  */
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+
 import { XianyuError, fail, toXianyuError } from '@bigfish/core'
 import type { CredentialStore } from '@bigfish/core'
-import { CdpConnection, CdpCookieSource, DEFAULT_PORT, attachChrome } from '@bigfish/channel-cdp'
+import { CdpConnection, CdpCookieSource, DEFAULT_PORT, attachChrome, launchChrome } from '@bigfish/channel-cdp'
 import type { CookieJar } from '@bigfish/channel-cdp'
 
 import { saveImportedAccount } from './accounts.ts'
@@ -55,6 +58,13 @@ export interface LoginRuntimeDeps {
   openLoginPage?: (port: number) => Promise<void>
   /** 读一次登录 cookie；缺登录态时应抛 UNAUTHORIZED（默认实现即如此）。 */
   readLoginJar?: (port: number) => Promise<CookieJar>
+  /**
+   * 确保端口上有可连的浏览器，返回释放回调。
+   * 为什么需要：扫码登录曾要求用户先手动 `--remote-debugging-port` 起 Chrome（只是 attach），
+   * 而面板按钮写的是「打开闲鱼登录页等你扫码」——没有调试端口时必失败，用户看到的就是
+   * 「没办法正常登陆」。默认实现改为：能 attach 就复用，连不上就自己起一个带窗口的 Chrome。
+   */
+  ensureBrowser?: (port: number) => Promise<() => Promise<void>>
   now?: () => number
   /** 睡眠；必须响应 signal 中止（默认实现用 setTimeout + abort 监听）。 */
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
@@ -69,6 +79,10 @@ export interface LoginInput extends WaitForLoginOptions {
 /** loginAndSave 的依赖：凭据库 + 可注入的浏览器操作。 */
 export interface LoginDeps extends LoginRuntimeDeps {
   credentials: CredentialStore
+  /** 自起浏览器时的独立 profile 目录（默认 ~/.bigfish/chrome-profile）：留着可复用已登录态。 */
+  browserProfileDir?: string
+  /** 收尾失败（关不掉自起浏览器）时的告警出口；不传就只留在内部，不掩盖登录结果。 */
+  onWarn?: (message: string) => void
   now?: () => number
 }
 
@@ -234,18 +248,61 @@ function sleepMs(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * 扫码登录并落库：先等登录态，再复用 saveImportedAccount 做账号 id 推导与加密写入。
+ * 默认「确保有浏览器」：端口上已有带调试端口的 Chrome 就复用（真人 profile，反检测最好），
+ * 没有就自己起一个带窗口的 Chrome（独立 profile，避免和用户正在用的浏览器抢锁）。
+ */
+async function ensureLoginBrowser(port: number, profileDir: string | undefined): Promise<() => Promise<void>> {
+  if (await browserReachable(port)) return async (): Promise<void> => {}
+  const launched = await launchChrome({
+    port,
+    headless: false,
+    userDataDir: profileDir ?? join(homedir(), '.bigfish', 'chrome-profile'),
+  })
+  return launched.close
+}
+
+/** 探一下端口上有没有可用的 DevTools；没有就返回 false（由调用方决定是否自起浏览器）。 */
+async function browserReachable(port: number): Promise<boolean> {
+  try {
+    const target = await attachChrome(port)
+    await target.close()
+    return true
+  } catch (error) {
+    // 端口没人听、返回非 200、响应不是 DevTools JSON 都属于「这个端口用不了」；
+    // 自起的浏览器会给出更准确的失败原因（找不到 Chrome / DevTools 未就绪）。
+    void error
+    return false
+  }
+}
+
+/** 释放浏览器失败不该盖住登录结果或真实错误：只报一条告警。 */
+async function releaseQuietly(release: () => Promise<void>, onWarn: ((message: string) => void) | undefined): Promise<void> {
+  try {
+    await release()
+  } catch (error) {
+    onWarn?.('关闭扫码浏览器失败：' + toXianyuError(error).message)
+  }
+}
+
+/**
+ * 扫码登录并落库：先确保有浏览器，再等登录态，最后复用 saveImportedAccount 做账号 id 推导与加密写入。
  * 返回 ImportedAccount + elapsedMs；不含任何 cookie 值。
  */
 export async function loginAndSave(deps: LoginDeps, input: LoginInput = {}): Promise<LoginResult> {
   const now = deps.now ?? Date.now
   const startedAt = now()
-  const jar = await waitForLogin(input, deps)
-  const saveInput = input.accountId === undefined ? {} : { accountId: input.accountId }
-  const imported = await saveImportedAccount(
-    { credentials: deps.credentials, ...(deps.now === undefined ? {} : { now: deps.now }) },
-    jar,
-    saveInput,
-  )
-  return { ...imported, elapsedMs: now() - startedAt }
+  const ensure = deps.ensureBrowser ?? ((port: number): Promise<() => Promise<void>> => ensureLoginBrowser(port, deps.browserProfileDir))
+  const release = await ensure(input.port ?? DEFAULT_PORT)
+  try {
+    const jar = await waitForLogin(input, deps)
+    const saveInput = input.accountId === undefined ? {} : { accountId: input.accountId }
+    const imported = await saveImportedAccount(
+      { credentials: deps.credentials, ...(deps.now === undefined ? {} : { now: deps.now }) },
+      jar,
+      saveInput,
+    )
+    return { ...imported, elapsedMs: now() - startedAt }
+  } finally {
+    await releaseQuietly(release, deps.onWarn)
+  }
 }

@@ -303,6 +303,71 @@ describe('loginAndSave', () => {
     assert.equal(record.cookies['unb'], '12345')
   })
 
+  it('先确保有浏览器再开登录页，成功与失败都要释放（自起浏览器不能漏关闭）', async (t) => {
+    const credentials = await makeStore(t)
+    const clock = fakeClock()
+    const events: string[] = []
+    const ensure = async (port: number): Promise<() => Promise<void>> => {
+      events.push('ensure:' + String(port))
+      return async (): Promise<void> => {
+        events.push('release')
+      }
+    }
+    const base = {
+      credentials,
+      ...clock.deps,
+      ensureBrowser: ensure,
+      openLoginPage: async (): Promise<void> => {
+        events.push('open')
+      },
+    }
+    const ok = await loginAndSave(
+      { ...base, readLoginJar: async (): Promise<CookieJar> => READY },
+      { port: 9333 },
+    )
+    assert.equal(ok.accountId, '12345')
+    assert.deepEqual(events, ['ensure:9333', 'open', 'release'])
+
+    // 失败路径：等待超时也要走 finally 释放，否则后台会留一个没人管的 Chrome。
+    events.length = 0
+    await assert.rejects(
+      async () =>
+        loginAndSave(
+          {
+            ...base,
+            readLoginJar: async (): Promise<CookieJar> => {
+              throw unauthorized('还没读到登录 cookie')
+            },
+          },
+          { port: 9333, timeoutMs: 1000, pollIntervalMs: 1000 },
+        ),
+      assertCode('UNAUTHORIZED'),
+    )
+    assert.deepEqual(events, ['ensure:9333', 'open', 'release'])
+  })
+
+  it('释放失败只走告警出口，不盖住登录结果', async (t) => {
+    const credentials = await makeStore(t)
+    const warnings: string[] = []
+    const result = await loginAndSave(
+      {
+        credentials,
+        ensureBrowser: async (): Promise<() => Promise<void>> => async (): Promise<void> => {
+          throw new Error('已经退出了')
+        },
+        onWarn: (message: string): void => {
+          warnings.push(message)
+        },
+        openLoginPage: async (): Promise<void> => {},
+        readLoginJar: async (): Promise<CookieJar> => READY,
+      },
+      { port: 9333 },
+    )
+    assert.equal(result.accountId, '12345')
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0] ?? '', /关闭扫码浏览器失败/)
+  })
+
   it('超时 → UNAUTHORIZED，且一条凭据都不写', async (t) => {
     const credentials = await makeStore(t)
     const clock = fakeClock()

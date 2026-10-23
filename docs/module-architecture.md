@@ -108,8 +108,10 @@
 
 **现状**：`xy_copy_plan` 是纯函数，产出一段纯文本提示词（skill 路径与输入输出契约 + 5 档风格约束 + 事实 JSON + 合规红线 + 下一步），**不调模型、不写文件、不碰 daemon**。`xianyu-listing-copy` 与 `xianyu-listing-audit` 位于 **`.agents/skills/`**（2026-10-22 从 `skills/` 迁入）：`skill-filesystem` 只扫项目根 `.dsh/skills` 与 `.agents/skills`，后者就是 DSH 项目级 skill 根，**启动即自动发现**，不需要 `customSkillDirs`。
 
+**输入侧已结构化（2026-10-23，P1）**：`src/category-templates.js` 定义 6 个品类模板（通用 10 字段 + 品类规格），经 rpc `copy.templates` 下发；面板「文案」tab 变成「选品类 → 勾字段 → 填值 → 选风格 → 生成参数」。勾选语义 = 允许写进本次文案：必填锁定、品类规格默认选中可取消、**未勾选/未填不进提示词**。`reason` / `usedMonths` 已补进 skill 契约，作为第 2 段「为什么出」的唯一事实来源（没给就不许编故事）。模板**不含任何合规阈值**——阈值仍在 `core/policy.ts` 与 audit skill，避免两处漂移。
+
 **到 A 还差（五环，缺一环都闭合不了）**：
-1. **skill 装载**（✅ 已解决：`.agents/skills/` 自动发现，2026-10-22 迁移后 skill 目录已可见）。
+1. **skill 装载 + 输入侧**（✅ 已解决：`.agents/skills/` 自动发现；2026-10-23 品类模板与勾选面板落地）。
 2. **草稿落盘工具**——`xy_publish_draft` 只收 `draftPath`，`xy_copy_plan` 不写文件，现在是人工把文案贴成 JSON。
 3. **发布前合规校验**——policy 校验在 daemon 执行时才跑，违规文案会先入队再 failed；应该入队前拦。
 4. **dry-run 真执行**——工具 dry-run 只打印命令，agent 无法在对话内完成填表验证。

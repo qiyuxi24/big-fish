@@ -34,6 +34,10 @@ const BATCH_ID_RE = /^[A-Za-z0-9._-]{1,64}$/
 const ITEM_ID_RE = /^\d{1,20}$/
 const MAX_BATCH_ITEMS = 20
 const MAX_REFERENCE_ITEMS = 20
+/** 商家商品采集的件数上限，与 daemon 的 MAX_SELLER_ITEMS 保持一致。 */
+const MAX_SELLER_ITEMS = 60
+/** 链接长度上限：闲鱼分享文案可能带说明文字，但没必要更长。 */
+const MAX_LINK_CHARS = 2_048
 const PUBLISH_MIN_INTERVAL_MS = 180_000
 const PUBLISH_MIN_INTERVAL_MIN_MS = 30_000
 const PUBLISH_MIN_INTERVAL_MAX_MS = 3_600_000
@@ -67,6 +71,8 @@ const KEEP_ALIVE_INTERVAL_MAX_MS = 3_600_000
  */
 const WRITE_ENDPOINTS = new Set([
   'tasks.retry', 'accounts.import', 'accounts.login', 'batch.enqueue', 'settings.put',
+  // 商家商品采集会写本地库（seller_items/sellers），属于写磁盘：必须人工确认。
+  'seller.collect',
   // 退出登录只删本地凭据（不注销网页会话），但也是不可逆的本地状态变更，要求 confirm:true。
   'accounts.logout',
   // 停 daemon 会中断正在执行的任务：和写闲鱼一样要求 confirm:true。
@@ -91,17 +97,23 @@ function bad(message) {
   throw new RpcPayloadError(message)
 }
 
+/**
+ * 失败信封**必须**带 details 对象：宿主 client 的 parseConnectionResponse 要求
+ * `isRecord(error.details)`，缺字段直接抛 `connection: invalid server-response failure`，
+ * 把真实原因（daemon 没起 / 连不上 DevTools / 缺 confirm）替换成一句看不懂的报文。
+ * 2026-10-23 面板「导入账号 / 扫码登录」失败时用户只看到这句话，根因全被吞掉。
+ */
 function failEnvelope(code, message) {
-  return { ok: false, error: { code, message } }
+  return { ok: false, error: { code, message, details: {} } }
 }
 
-/** 任何异常都翻译成信封；details 只在确实是对象时透出（字符串细节会破坏客户端解析）。 */
+/** 任何异常都翻译成信封；details 只在确实是对象时透出，否则补空对象（见 failEnvelope 的说明）。 */
 function errorEnvelope(error) {
   const rawCode = error === null || error === undefined ? undefined : error.code
   const code = typeof rawCode === 'string' && KNOWN_CODES.has(rawCode) ? rawCode : 'INTERNAL'
   const message = error instanceof Error ? error.message : 'rpc 调用失败：' + String(error).slice(0, 200)
-  const details = isRecord(error) && isRecord(error.details) ? error.details : undefined
-  return { ok: false, error: details === undefined ? { code, message } : { code, message, details } }
+  const details = isRecord(error) && isRecord(error.details) ? error.details : {}
+  return { ok: false, error: { code, message, details } }
 }
 
 function readRequiredString(body, field, pattern) {
@@ -178,6 +190,29 @@ function readReferenceInput(body) {
 function readItemId(raw) {
   if (typeof raw !== 'string' || !ITEM_ID_RE.test(raw.trim())) bad('itemId/sellerId 必须是纯数字串：' + String(raw).slice(0, 40))
   return raw.trim()
+}
+
+/**
+ * 链接解析入参。格式校验交给 daemon 的 parseXianyuLink：它才知道
+ * 「短链要展开」「纯数字分不清商品/商家」这些可操作提示，host 这里只挡空值与长度。
+ */
+function readLinkInput(body) {
+  const raw = body.link
+  if (typeof raw !== 'string' || raw.trim().length === 0) bad('link 必须是非空字符串')
+  const link = raw.trim()
+  if (link.length > MAX_LINK_CHARS) bad('link 最长 ' + MAX_LINK_CHARS + ' 个字符')
+  return link
+}
+
+/** 商家采集入参：sellerId 是纯数字；acknowledgeOther 只在拉他人店铺时需要（daemon 再校验一次）。 */
+function readSellerCollectInput(body) {
+  const input = {
+    accountId: readRequiredString(body, 'accountId', ACCOUNT_ID_RE),
+    sellerId: readItemId(body.sellerId),
+  }
+  if (body.maxItems !== undefined) input.maxItems = readIntegerValue(body.maxItems, 'maxItems', 1, MAX_SELLER_ITEMS)
+  if (body.acknowledgeOther !== undefined) input.acknowledgeOther = readBoolean(body.acknowledgeOther, 'acknowledgeOther')
+  return input
 }
 
 function readEnqueueItems(raw) {
@@ -404,6 +439,15 @@ function createDefaultHandlers(options) {
     'tasks.retry': (body) => retryTaskEndpoint(client, readRequiredString(body, 'id', ID_RE)),
     'batches.get': (body) => getBatchEndpoint(client, readRequiredString(body, 'id', ID_RE)),
     'reference.collect': (body) => client.collectReferences(readReferenceInput(body)),
+    // 采集模块：先解析链接（只读），再决定采谁 —— 面板两步走，用户能看清要采的是哪家店。
+    'reference.parseLink': (body) => client.resolveLink(readLinkInput(body)),
+    // 会写本地库：在 WRITE_ENDPOINTS 里，等 confirm:true。
+    'seller.collect': (body) => client.collectSeller(readSellerCollectInput(body)),
+    'sellers.list': () => client.listSellers(),
+    'seller.items': (body) => client.listSellerItems(
+      readItemId(body.sellerId),
+      body.limit === undefined ? undefined : readIntegerValue(body.limit, 'limit', 1, 500),
+    ),
     'settings.get': () => readSettingsEndpoint(settingsStore, client),
     'settings.put': (body) => writeSettingsEndpoint(settingsStore, client, readSettingsPatch(body.patch)),
     'accounts.import': (body) => importAccountEndpoint(client, body),

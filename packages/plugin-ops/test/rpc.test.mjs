@@ -19,6 +19,25 @@ function assertError(result, code, pattern) {
   if (pattern !== undefined) assert.match(result.error.message, pattern)
 }
 
+test('失败信封一定带 details 对象（缺了宿主 client 会把原因换成 invalid server-response failure）', async () => {
+  const { bridge } = bridgeWith({
+    health: () => {
+      throw new DaemonError('NETWORK', '连不上 DevTools（端口 9222）：先带 --remote-debugging-port 启动 Chrome')
+    },
+  })
+  const failed = await bridge.handle('health', {})
+  assert.equal(failed.ok, false)
+  assert.equal(failed.error.code, 'NETWORK')
+  assert.match(failed.error.message, /连不上 DevTools/)
+  assert.deepEqual(failed.error.details, {})
+
+  // 网关校验（缺 confirm / 未知端点）与异常同形，否则面板同样拿不到可读原因。
+  for (const result of [await bridge.handle('accounts.import', {}), await bridge.handle('nope.endpoint', {})]) {
+    assert.equal(result.ok, false)
+    assert.deepEqual(result.error.details, {})
+  }
+})
+
 test('只读端点透传：health/status/accounts/items.list 各调一次客户端', async () => {
   const { client, bridge } = bridgeWith({ health: { ok: 1 }, status: { queue: {} }, listAccounts: [], listItems: [] })
   assert.deepEqual(await bridge.handle('health', {}), { ok: true, value: { ok: 1 } })
@@ -228,6 +247,43 @@ test('reference.collect 校验 accountId 与 itemIds/sellerId 至少一个', asy
   assert.deepEqual(client.calls[0].args[0], { accountId: 'acc', itemIds: ['123', '456'], sellerId: '789' })
 })
 
+test('reference.parseLink 只读透传链接（去空白）；空/超长链接 VALIDATION 且不调 daemon', async () => {
+  const { client, bridge } = bridgeWith({ resolveLink: { kind: 'seller', sellerId: '1' } })
+  const result = await bridge.handle('reference.parseLink', { link: ' https://www.goofish.com/personal?userId=1 ' })
+  assert.deepEqual(result, { ok: true, value: { kind: 'seller', sellerId: '1' } })
+  assert.deepEqual(client.calls[0].args, ['https://www.goofish.com/personal?userId=1'])
+
+  assertError(await bridge.handle('reference.parseLink', {}), 'VALIDATION', /link/)
+  assertError(await bridge.handle('reference.parseLink', { link: '   ' }), 'VALIDATION', /link/)
+  assertError(await bridge.handle('reference.parseLink', { link: 'x'.repeat(2049) }), 'VALIDATION', /最长/)
+  assert.equal(client.calls.length, 1)
+})
+
+test('seller.collect 是写端点：必须 confirm:true，透传白名单字段', async () => {
+  const { client, bridge } = bridgeWith({ collectSeller: { stored: 2 } })
+  assertError(await bridge.handle('seller.collect', { accountId: 'a1', sellerId: '2' }), 'VALIDATION', /confirm/)
+  assert.equal(client.calls.length, 0)
+
+  const result = await bridge.handle('seller.collect', {
+    accountId: 'a1', sellerId: '2', maxItems: 5, acknowledgeOther: true, confirm: true, evil: 1,
+  })
+  assert.deepEqual(result, { ok: true, value: { stored: 2 } })
+  assert.deepEqual(client.calls[0].args[0], { accountId: 'a1', sellerId: '2', maxItems: 5, acknowledgeOther: true })
+
+  assertError(await bridge.handle('seller.collect', { accountId: 'a1', sellerId: 'abc', confirm: true }), 'VALIDATION', /纯数字/)
+  assertError(await bridge.handle('seller.collect', { accountId: 'a1', sellerId: '2', maxItems: 61, confirm: true }), 'VALIDATION', /maxItems/)
+  assertError(await bridge.handle('seller.collect', { accountId: '../x', sellerId: '2', confirm: true }), 'VALIDATION', /accountId/)
+})
+
+test('sellers.list / seller.items 只读：透传 sellerId 与 limit', async () => {
+  const { client, bridge } = bridgeWith({ listSellers: [], listSellerItems: { items: [] } })
+  assert.deepEqual(await bridge.handle('sellers.list', {}), { ok: true, value: [] })
+  assert.deepEqual(await bridge.handle('seller.items', { sellerId: '2', limit: 200 }), { ok: true, value: { items: [] } })
+  assert.deepEqual(client.calls[1].args, ['2', 200])
+  assertError(await bridge.handle('seller.items', { sellerId: 'abc' }), 'VALIDATION', /纯数字/)
+  assertError(await bridge.handle('seller.items', { sellerId: '2', limit: 0 }), 'VALIDATION', /limit/)
+})
+
 test('settings.get/put 优先用注入的 settingsStore，字段白名单之外的键被拒绝', async () => {
   const writes = []
   const settingsStore = {
@@ -279,7 +335,8 @@ test('daemon 抛错翻译成稳定 code；未知异常收敛为 INTERNAL 且不�
   const leaking = bridgeWith({ status: new Error('boom\n    at secret.ts:1') }).bridge
   const result = await leaking.handle('status', {})
   assertError(result, 'INTERNAL', /boom/)
-  assert.equal(result.error.details, undefined)
+  // details 必须始终是对象（宿主 client 用它在 parseConnectionResponse 里校验失败信封）。
+  assert.deepEqual(result.error.details, {})
 })
 
 test('非法 payload / endpoint 类型都返回信封而不是抛错（host 侧安全边界）', async () => {

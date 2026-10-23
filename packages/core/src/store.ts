@@ -102,11 +102,48 @@ CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, id);
 CREATE INDEX IF NOT EXISTS idx_task_events_batch ON task_events(batch_id, id);
 `
 
+/**
+ * v4：采集参考的商家商品快照（seller_items + sellers）。
+ * 独立于 items：items 是「自己账号的商品摘要」（发布/擦亮读它），这里是**行情快照**，
+ * 且刻意不存描述与图片地址（AGENTS §1.6 不搬运他人素材）。
+ */
+const V4_SQL = `
+CREATE TABLE IF NOT EXISTS seller_items (
+  item_id TEXT PRIMARY KEY,
+  seller_id TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  price_cents INTEGER NOT NULL,
+  original_price_cents INTEGER,
+  category_id TEXT,
+  image_count INTEGER NOT NULL DEFAULT 0,
+  browse_count INTEGER,
+  want_count INTEGER,
+  collect_count INTEGER,
+  sold_count INTEGER,
+  published_at INTEGER,
+  collected_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_seller_items_seller ON seller_items(seller_id, collected_at);
+
+CREATE TABLE IF NOT EXISTS sellers (
+  seller_id TEXT PRIMARY KEY,
+  nick TEXT,
+  city TEXT,
+  item_count INTEGER,
+  registered_year INTEGER,
+  sold_count INTEGER,
+  is_self INTEGER,
+  collected_at INTEGER NOT NULL
+);
+`
+
 const MIGRATIONS: readonly Migration[] = [
   { version: 1, apply: (db: DatabaseSync): void => db.exec(V1_SQL) },
   { version: 2, apply: applyBatchMigration },
   // v3 全用 IF NOT EXISTS：手工建过表的库再迁移不会失败（与 v2 的探测同样的理由）。
   { version: 3, apply: (db: DatabaseSync): void => db.exec(V3_SQL) },
+  { version: 4, apply: (db: DatabaseSync): void => db.exec(V4_SQL) },
 ]
 
 const CREATE_MIGRATIONS_SQL = `CREATE TABLE IF NOT EXISTS schema_migrations (

@@ -56,6 +56,17 @@
       "maxItems": 20,
       "description": "配件清单"
     },
+    "reason": {
+      "type": "string",
+      "maxLength": 200,
+      "description": "出售原因（换新/搬家/闲置等），第 2 段的事实来源；缺省就不许编故事"
+    },
+    "usedMonths": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 600,
+      "description": "已使用月数；缺省不写，不要用「九成新」反推"
+    },
     "priceCents": {
       "type": "integer",
       "minimum": 100,

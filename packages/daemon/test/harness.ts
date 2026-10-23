@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { loadDaemonConfig } from '@bigfish/core'
-import type { CircuitBreaker, DaemonConfig, ItemRepository, TaskEventSink, TaskRecord } from '@bigfish/core'
+import type { CircuitBreaker, DaemonConfig, ItemRepository, SellerRepository, TaskEventSink, TaskRecord } from '@bigfish/core'
 
 import { DaemonClient } from '../src/client.ts'
 import { startDaemon } from '../src/server.ts'
@@ -25,6 +25,7 @@ import type {
   RetryTaskHandler,
   VerifyAccountHandler,
 } from '../src/routes.ts'
+import type { SellerCollectHandler } from '../src/seller-routes.ts'
 import type { SettingsStore } from '../src/settings.ts'
 import type { AccountSummary } from '../src/account-list.ts'
 import { FakeQueue } from './fake-queue.ts'
@@ -89,6 +90,10 @@ export interface HarnessOptions {
   retryTask?: RetryTaskHandler
   /** 参考采集能力（测试 POST /reference）；缺省时不注入，路由应返回 UNSUPPORTED。 */
   referenceCollect?: ReferenceCollectHandler
+  /** 商家商品采集能力（测试 POST /sellers/collect）；缺省时不注入，路由应返回 UNSUPPORTED。 */
+  sellerCollect?: SellerCollectHandler
+  /** 采集结果仓储（测试 GET /sellers 与 /sellers/:id/items）；缺省时返回空。 */
+  sellerItems?: SellerRepository
   /** 设置存储（测试 GET/PUT /settings）；缺省时不注入，路由应返回 UNSUPPORTED。 */
   settings?: SettingsStore
   /** 优雅关停能力（测试 POST /shutdown）；缺省时不注入，路由应返回 UNSUPPORTED。 */
@@ -129,6 +134,8 @@ export async function createHarness(t: { after(fn: () => Promise<void>): void },
     // 需要断言注入是否被调用（例如唤醒 worker）时再用 options.retryTask 覆盖。
     retryTask: options.retryTask ?? ((id: string): TaskRecord => queue.requeue(id)),
     ...(options.referenceCollect === undefined ? {} : { referenceCollect: options.referenceCollect }),
+    ...(options.sellerCollect === undefined ? {} : { sellerCollect: options.sellerCollect }),
+    ...(options.sellerItems === undefined ? {} : { sellerItems: options.sellerItems }),
     ...(options.settings === undefined ? {} : { settings: options.settings }),
     ...(options.requestShutdown === undefined ? {} : { requestShutdown: options.requestShutdown }),
     ...(options.events === undefined ? {} : { events: options.events }),

@@ -49,7 +49,8 @@
 - 错误：只用 `class XianyuError extends Error`，带稳定 `code`（`VALIDATION | AUTH_EXPIRED | RISK_CONTROL | RATE_LIMITED | CIRCUIT_OPEN | NETWORK | STORAGE | UNSUPPORTED | INTERNAL | UNAUTHORIZED | UNKNOWN`）。禁止裸 `throw "字符串"`、禁止 `catch {}` 吞异常。
 - **金额一律整数分（cent），时间一律整数毫秒**，禁止浮点相乘（mtop 字段本身就是分）。
 - 所有 IO 必须有超时（默认 15s）并透传 `AbortSignal`；重试只对幂等请求，退避用 `min(60 * 2^(n-1), 1800)` 秒。
-- 文件 ≤ 400 行、函数 ≤ 60 行（`packages/plugin-ops/client.js` 例外：loader 每个包只下发**一个** client bundle、无构建步骤，拆文件就要引 bundler，故上限 900 行（2026-10-23 账号模块扩功能时从 700 上调）——四模块面板都挤在这一个 bundle 里；超了先说明再谈）。复杂分支写"为什么"，不写"做了什么"。
+- 文件 ≤ 400 行、函数 ≤ 60 行。复杂分支写"为什么"，不写"做了什么"。
+- **client bundle 例外（2026-10-23 起，见 ADR 0006）**：宿主每个包只下发**一个** client bundle（`exports["./client"]` 只能指向单文件），所以面板源码拆成 `packages/plugin-ops/src/client-bundle/*.part.js`（**每个仍 ≤ 400 行**），产物 `packages/plugin-ops/client.js` 由 `node scripts/build-client.mjs` 纯 concat 生成。产物是**运行时交付物，必须提交**，但**不要直接编辑**：首行有生成物标记，`test/client-parts.test.mjs` 校验「片段拼接 == 产物」。加分区 = 加一个 `NN-模块.part.js`，不要把已有片段撑爆。
 - 标识符/commit 用英文，注释与用户可见文案用中文。
 - 不新增依赖除非必要（禁 lodash/moment/dayjs，用原生）；新依赖需在 PR 说明体积与替代方案。
 - 日志用结构化 JSON（稳定字段名），INFO 以上才落盘。
@@ -81,7 +82,7 @@ node 'C:/Users/34239/Documents/GitHub/deepseek-harness/node_modules/typescript/b
 - 限流、熔断、退避、幂等必须有单测：注入假时钟与假随机数，不 `sleep` 等真实时间。
 - daemon 端到端用本地 fake mtop server（`node:http`）；跨层用 `integration/`（不依赖 spawn）。
 - **真人验证账号纪律（2026-10-21 用户纠正）：本机唯一已导入的账号 `2206569289277` 是用户的大号，不是测试小号。** 默认只跑 `dry-run`；真发（`--submit` / `BF_PUBLISH_SUBMIT=1`）必须用户明确点头、一次一件、文案正常、发完 1 分钟内立即下架并留 itemId + 截图证据。不要反复发同一条商品。
-- 提交前必须跑：`node scripts/test-all.mjs` + 逐包 tsc（见上）；改了插件装配再跑 `node scripts/dsh-dump.mjs`。
+- 提交前必须跑：`node scripts/test-all.mjs` + 逐包 tsc（见上）；改了插件装配再跑 `node scripts/dsh-dump.mjs`；**改了 `src/client-bundle/*.part.js` 必须再跑 `node scripts/build-client.mjs`**（只校验用 `node scripts/build-client.mjs --check`）。
 
 ## 6. Git
 

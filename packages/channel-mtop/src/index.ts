@@ -45,4 +45,6 @@ export type {
   ReferenceSiblingItem,
   ReferenceSummary,
 } from './reference.ts'
+export { parseXianyuLink } from './link.ts'
+export type { XianyuLinkTarget } from './link.ts'
 export type { MtopCallOptions, MtopHttpRequest, MtopHttpResponse, MtopSession, MtopTransport } from './types.ts'

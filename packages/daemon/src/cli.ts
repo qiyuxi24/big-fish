@@ -147,7 +147,8 @@ async function runLogin(options: CliOptions, config: DaemonConfig, io: CliIo, de
   if (options.chromePort !== undefined) input.port = options.chromePort
   if (options.timeoutMs !== undefined) input.timeoutMs = options.timeoutMs
   try {
-    const result = await login({ credentials }, input)
+    // 自起浏览器的 profile 与数据目录放一起，和常见的一次性临时目录分开，便于排查与复用登录态。
+    const result = await login({ credentials, browserProfileDir: join(dirname(config.dbPath), 'chrome-profile') }, input)
     io.stdout(JSON.stringify(result, null, 2))
     io.stdout(
       '已导入账号 ' +

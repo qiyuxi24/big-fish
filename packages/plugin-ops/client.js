@@ -1,3 +1,4 @@
+    // 生成物：由 scripts/build-client.mjs 从 src/client-bundle/*.part.js 拼接而成，不要直接编辑本文件。
 /**
  * BigFish 运营面板（client bundle；手写 loader 产物，id 必须等于包名）。
  * 只做 UI 与只读状态：daemon 状态走 ctx.connection.rpc.call('/bigfish', ...) 每 3 秒轮询，
@@ -30,6 +31,10 @@ window.__ModuleLoader__.load({
       { id: 'visible-wear', label: '明显使用痕迹' }, { id: 'flawed', label: '有瑕疵' },
     ]
     const CATEGORY_MATRIX = '✅ 电子资料 / 学习笔记 / 课业本；❌ 教材教辅 / 语言与兴趣培训 / 学习资料定制 / 文学 / 考研咨询（网页端不支持发布）'
+    /**
+     * 片段 02：草稿集解析与发布参数组装（纯数据：不联网、不碰 daemon、只组 JSON）。
+     * 拼接顺序由文件名决定；单独打开不是合法模块，见 scripts/build-client.mjs。
+     */
     /** 逐行解析草稿集（内联 JSON 对象或 .json 路径）：路径条目交给 host 侧读取，这里只认形状。 */
     function parseDraftLines(text) {
       return text.split('\n').map(line => line.trim()).filter(line => line !== '').map((line, index) => {
@@ -160,6 +165,10 @@ window.__ModuleLoader__.load({
     function gridRow(columns, head) { return { display: 'grid', gridTemplateColumns: columns, gap: '8px', alignItems: 'center', padding: '7px 0', borderBottom: '1px solid var(--dsw-alias-border-l2)', fontSize: head ? '12px' : '13px', color: head ? 'var(--dsw-alias-label-secondary)' : 'var(--dsw-alias-label-primary)' } }
     const TASK_GRID = 'minmax(110px, 1.2fr) 70px 84px 64px 92px 78px'
 
+    /**
+     * 片段 03：client → host 的只读 rpc 与轮询（连接探测、两次确认的写动作、快照与事件流）。
+     * 拼接顺序由文件名决定；单独打开不是合法模块，见 scripts/build-client.mjs。
+     */
     // —— 实时状态：client → host rpc（只读端点）——
     const RPC_CHANNEL = '/bigfish'
     const POLL_MS = 3000
@@ -180,18 +189,20 @@ window.__ModuleLoader__.load({
     }
     /**
      * 单次只读 rpc：传输失败、信封非法、handler 抛错都折成 { ok:false }，绝不冒泡。
-     * 失败时带上 error.code（可能是空串）：面板要区分「daemon 断了」和「宿主加载的是旧插件、
-     * 根本没有这个 rpc」——两者都表现为一次失败的 rpc，但用户该做的事完全不同。
+     * 失败时带上 error.code 与 message：面板要区分「daemon 断了」和「宿主加载的是旧插件、
+     * 根本没有这个 rpc」——两者都表现为一次失败的 rpc，但用户该做的事完全不同；
+     * message 用于展示可操作的原因（例如「短链需要在浏览器打开」）。
      */
     async function callRead(connection, endpoint, payload) {
-      if (connection === null) return { ok: false, code: '' }
+      if (connection === null) return { ok: false, code: '', message: '' }
       try {
         const reply = await connection.rpc.call(RPC_CHANNEL, endpoint, payload ?? {})
         if (reply !== null && typeof reply === 'object' && reply.ok === true) return { ok: true, value: reply.value }
         const error = reply !== null && typeof reply === 'object' ? reply.error : undefined
         const code = error !== null && typeof error === 'object' && typeof error.code === 'string' ? error.code : ''
-        return { ok: false, code }
-      } catch { return { ok: false, code: '' } }
+        const message = error !== null && typeof error === 'object' && typeof error.message === 'string' ? error.message : ''
+        return { ok: false, code, message }
+      } catch { return { ok: false, code: '', message: '' } }
     }
     /** 面板动作（启停 daemon）：与只读快照不同，这里要把 error.message 带回 UI。 */
     async function callAction(connection, endpoint, payload) {
@@ -371,6 +382,10 @@ window.__ModuleLoader__.load({
       return batch.batchId + ' · 共 ' + String(batch.total) + (parts.length === 0 ? '' : ' · ' + parts.join(' · '))
     }
 
+    /**
+     * 片段 04：通用小组件（图标、风格芯片、带标签字段、字段勾选行、请求预览）。
+     * 拼接顺序由文件名决定；单独打开不是合法模块，见 scripts/build-client.mjs。
+     */
     /** 侧边栏栏位图标。 */
     function BigFishIcon({ size, active }) {
       return h('span', {
@@ -434,6 +449,10 @@ window.__ModuleLoader__.load({
         h('div', { style: S.sectionTitle }, '生成请求已就绪'),
         h('pre', { style: S.pre }, JSON.stringify(request, null, 2)))
     }
+    /**
+     * 片段 05：「文案」tab 与面板 tab 栏。
+     * 拼接顺序由文件名决定；单独打开不是合法模块，见 scripts/build-client.mjs。
+     */
     /** 「文案」tab：选品类 → 勾信息 → 选风格 → 生成请求（不调模型、不写库、不碰 daemon 写）。 */
     function CopyStudio(props) {
       const { template, form, fields, ready, request, submitted } = props
@@ -486,21 +505,174 @@ window.__ModuleLoader__.load({
         }, tab.label)))
     }
 
-    /** 采集口径与红线（只读统计；面板不联网，采集由 agent 调工具）。 */
+    /**
+     * 片段 06：「采集」tab（贴链接 → 解析 → 两次确认入库 → 已入库快照）。
+     * 拼接顺序由文件名决定；单独打开不是合法模块，见 scripts/build-client.mjs。
+     */
+    /** 采集口径与红线（面板不联网、不下载图片；落库只留结构化元数据）。 */
     const REFERENCE_NOTES = [
-      '只做统计参考：图片数量、价格、标题长度、类目、卖点词；任何一条都不构成「拿来就能发」的素材。',
-      '红线：不下载他人图片、不照抄文案、不跨账号复制他人商品。要发的是自己的货（AGENTS §1.6）。',
-      '单件失败不影响整批：失败条目进 skipped 列表，AUTH_EXPIRED / RISK_CONTROL / UNAUTHORIZED 会中止整批。',
+      '贴商家主页链接（…/personal?userId=…）或商品链接（…/item?id=…），解析出商家后采其在售商品。',
+      '落库只存标题 / 价格 / 类目 / 浏览·想要·收藏·卖出 / 图片张数 / 发布时间；不下载图片、不存描述全文。',
+      '红线：不照抄文案、不跨账号复制他人商品；他人店铺必须勾选「仅用于看行情」才放开采集（AGENTS §1.6）。',
+      '单件失败不影响整批：失败条目进 skipped，AUTH_EXPIRED / RISK_CONTROL / UNAUTHORIZED 会中止整批。',
     ]
-    /** 「采集」模块：只读统计给定价 / 文案找参照。 */
-    function ReferenceView() {
+    /** 采集商品表列；价格按整数分渲染（÷100 用整数运算，不做浮点乘）。 */
+    const REFERENCE_COLUMNS = ['标题', '价格', '类目', '浏览', '想要', '收藏', '图', '发布']
+    const REFERENCE_GRID = 'minmax(120px, 1fr) 82px 92px 48px 48px 48px 40px 88px'
+    function formatCentsText(cents) {
+      const value = Number(cents)
+      if (!Number.isFinite(value) || value < 0) return '—'
+      const yuan = Math.trunc(value / 100)
+      const fen = value % 100
+      return fen === 0 ? String(yuan) + ' 元' : String(yuan) + '.' + String(fen).padStart(2, '0') + ' 元'
+    }
+    function countText(value) { const num = Number(value); return Number.isFinite(num) && num >= 0 ? String(num) : '—' }
+    /** 采集模块：贴链接 → 解析 → 采集入库（两次确认）→ 看已入库快照。 */
+    function ReferenceView({ connection }) {
+      const writes = useWrite(connection)
+      const [board, setBoard] = React.useState({
+        link: '', accountId: '', accounts: [], maxItems: '20', acknowledge: false,
+        parsed: null, notice: null, sellers: [], sellerId: '', items: { phase: 'idle', total: 0, rows: [] },
+      })
+      const update = patch => setBoard(previous => ({ ...previous, ...patch }))
+      const loadSellers = () => {
+        void callRead(connection, 'sellers.list').then(reply => {
+          if (reply.ok && Array.isArray(reply.value)) update({ sellers: reply.value })
+        })
+      }
+      const loadItems = sellerId => {
+        update({ sellerId, items: { phase: 'loading', total: 0, rows: [] } })
+        void callRead(connection, 'seller.items', { sellerId, limit: 200 }).then(reply => {
+          const value = reply.ok && reply.value !== null && typeof reply.value === 'object' ? reply.value : null
+          const rows = value !== null && Array.isArray(value.items) ? value.items : []
+          update({ items: { phase: reply.ok ? 'ok' : 'offline', total: Number(value?.total ?? rows.length), rows } })
+        })
+      }
+      // 进 tab 拉一次账号（采集要选登录态）与已采集商家；都不轮询（采集是人工动作）。
+      React.useEffect(() => {
+        let alive = true
+        void callRead(connection, 'accounts').then(reply => {
+          if (!alive || !reply.ok || !Array.isArray(reply.value)) return
+          const ids = reply.value.map(row => String(row?.accountId ?? '')).filter(id => id !== '')
+          setBoard(previous => ({ ...previous, accounts: ids, accountId: previous.accountId !== '' ? previous.accountId : (ids[0] ?? '') }))
+        })
+        loadSellers()
+        return () => { alive = false }
+      }, [connection])
+      const parse = () => {
+        const link = board.link.trim()
+        if (link === '') return update({ notice: { kind: 'bad', text: '先粘贴一条闲鱼商品或商家链接' }, parsed: null })
+        update({ notice: null, parsed: null })
+        void callRead(connection, 'reference.parseLink', { link }).then(reply => {
+          if (reply.ok && reply.value !== null && typeof reply.value === 'object') return update({ parsed: reply.value })
+          const hint = reply.message !== undefined && reply.message !== ''
+            ? reply.message
+            : reply.code === 'UNSUPPORTED' ? '宿主里还没有这个 rpc：重启 DSH 桌面应用加载新版插件' : '解析失败（' + (reply.code || 'UNKNOWN') + '）'
+          update({ notice: { kind: 'bad', text: truncateText(hint) } })
+        })
+      }
+      const parsed = board.parsed
+      const sellerId = parsed !== null && parsed.kind === 'seller' ? String(parsed.sellerId ?? '') : ''
+      const busy = writes.state.busy
+      const collectValid = sellerId !== '' && board.accountId !== '' && !busy
+      const collect = () => {
+        if (!collectValid) return
+        const maxItems = Number(board.maxItems)
+        if (!Number.isInteger(maxItems) || maxItems < 1 || maxItems > 60) {
+          return update({ notice: { kind: 'bad', text: '件数必须是 1..60 的整数' } })
+        }
+        const payload = { accountId: board.accountId, sellerId, maxItems }
+        if (board.acknowledge) payload.acknowledgeOther = true
+        update({ notice: null })
+        writes.run('collect', 'seller.collect', payload, {
+          hint: '再点一次「确认采集」：翻页读该商家在售商品并写入本地库（不下载图片、不存描述）',
+          busy: '正在采集…（逐件读详情，最多 1 分钟）',
+          done: value => {
+            const stored = value !== null && typeof value === 'object' ? Number(value.stored ?? 0) : 0
+            const truncated = value !== null && typeof value === 'object' && value.truncated === true
+            const skipped = value !== null && typeof value === 'object' && Array.isArray(value.skipped) ? value.skipped.length : 0
+            return '已入库 ' + String(stored) + ' 件' + (skipped > 0 ? '，跳过 ' + String(skipped) + ' 件' : '') + (truncated ? '（还有更多，未采完：调大件数或分次采）' : '')
+          },
+          after: () => { loadSellers(); loadItems(sellerId) },
+        })
+      }
+      const sellerLabel = profile => String(profile.nick ?? profile.sellerId) + ' · ' + String(profile.storedCount ?? 0) + ' 件'
+      const sellerList = board.sellers.length === 0
+        ? h('div', { style: S.sectionHint, 'data-role': 'reference-empty' }, '还没有采集记录：先贴链接解析，再点两次「采集并入库」')
+        : h('div', { style: S.buttonRow }, ...board.sellers.map(profile => h('button', {
+          key: String(profile.sellerId), type: 'button', 'data-role': 'reference-seller',
+          onClick: () => loadItems(String(profile.sellerId)),
+          style: String(profile.sellerId) === board.sellerId ? S.primary : S.button,
+        }, sellerLabel(profile))))
+      const rowOf = row => h('div', { key: String(row.itemId), style: gridRow(REFERENCE_GRID, false), 'data-role': 'reference-item', 'data-item-id': String(row.itemId) },
+        h('span', { style: S.small }, String(row.title ?? '—')),
+        h('span', null, formatCentsText(row.priceCents)),
+        h('span', { style: S.small }, String(row.categoryId ?? '—')),
+        h('span', { style: S.small }, countText(row.browseCount)),
+        h('span', { style: S.small }, countText(row.wantCount)),
+        h('span', { style: S.small }, countText(row.collectCount)),
+        h('span', { style: S.small }, countText(row.imageCount)),
+        h('span', { style: S.small }, row.publishedAt === undefined ? '—' : formatAgo(row.publishedAt)))
+      const itemsBlock = board.items.phase === 'idle'
+        ? null
+        : board.items.phase === 'loading'
+          ? h('div', { style: S.small }, '正在读已入库商品…')
+          : board.items.phase === 'offline'
+            ? h('div', { style: S.badText }, '读不到已入库商品：daemon 离线或这一版没有 seller.items')
+            : h('div', { 'data-role': 'reference-items' },
+              h('div', { style: S.sectionHint }, '商家 ' + board.sellerId + ' · 本地共 ' + String(board.items.total) + ' 件（最多显示 200 件）'),
+              h('div', { style: gridRow(REFERENCE_GRID, true) }, ...REFERENCE_COLUMNS.map(label => h('span', { key: label }, label))),
+              ...board.items.rows.map(rowOf),
+              board.items.rows.length === 0 ? h('div', { style: S.small }, '这一版还没有商品（采集被截断或全部失败）') : null)
       return h('div', null,
-        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, 'xy_reference_collect'),
-          h('div', { style: S.sectionHint }, '输入：商品 id（≤20）或商家 id（先取主页与在售列表，再逐件读详情统计）。产出：价格带 / 标题长度 / 类目 / 卖点词；不给图片直链、不产出可发布草稿。')),
-        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '红线'),
+        h('div', { style: S.section, 'data-role': 'reference-panel' },
+          h('div', { style: S.sectionTitle }, '链接 → 商家商品入库'),
+          h('div', { style: S.fieldRow },
+            h(Field, { label: '闲鱼链接（商品或商家主页，支持整段分享文案）', control: h('input', {
+              type: 'text', maxLength: 2048, value: board.link, 'data-role': 'reference-link',
+              placeholder: 'https://www.goofish.com/personal?userId=…', onChange: event => update({ link: event.target.value, parsed: null }), style: S.input,
+            }) }),
+            h('div', { style: S.buttonRow },
+              h('button', { type: 'button', 'data-role': 'reference-parse', onClick: parse, style: S.button }, '解析链接'))),
+          parsed === null ? null : h('div', { style: S.small, 'data-role': 'reference-parsed' },
+            parsed.kind === 'seller' ? '商家 id：' + String(parsed.sellerId) : '商品 id：' + String(parsed.itemId) + (parsed.categoryId === undefined ? '' : ' · 类目 ' + String(parsed.categoryId))),
+          parsed !== null && parsed.kind === 'item'
+            ? h('div', { style: S.warnText, 'data-role': 'reference-item-hint' }, '这是商品链接：要采全店请改贴商家主页链接（…/personal?userId=…）；单件统计请用 xy_reference_collect')
+            : null,
+          h('div', { style: S.fieldRow },
+            h(Field, { label: '用哪个账号的登录态', control: board.accounts.length === 0
+              ? h('div', { style: S.small }, '还没有导入账号（去「账号」tab 导入或扫码）')
+              : h('select', { value: board.accountId, 'data-role': 'reference-account', onChange: event => update({ accountId: event.target.value }), style: S.input },
+                ...board.accounts.map(id => h('option', { key: id, value: id }, id))) }),
+            h(Field, { label: '最多采多少件（1–60）', control: h('input', {
+              type: 'number', min: 1, max: 60, value: board.maxItems, 'data-role': 'reference-max-items',
+              onChange: event => update({ maxItems: event.target.value }), style: S.input,
+            }) })),
+          h('div', { style: S.fieldRow },
+            h(Field, { label: '他人店铺', control: h('input', {
+              type: 'checkbox', checked: board.acknowledge, 'data-role': 'reference-acknowledge',
+              onChange: event => update({ acknowledge: event.target.checked }),
+            }) }),
+            h('div', { style: S.sectionHint }, '只有采「不是当前账号」的店铺才要勾选；勾选即确认仅用于看行情、不搬运素材与文案')),
+          h('div', { style: S.buttonRow },
+            h('button', {
+              type: 'button', 'data-role': 'reference-collect', disabled: !collectValid, onClick: collect,
+              title: collectValid ? '翻页读该商家在售商品并写入本地库（写磁盘，点两次确认）' : '先解析出商家 id 并选一个账号',
+              style: collectValid ? S.primary : S.button,
+            }, writes.state.armed === 'collect' ? '确认采集' : busy ? '采集中…' : '采集并入库')),
+          resultLine(board.notice ?? writes.state.result, 'reference-notice')),
+        h('div', { style: S.section, 'data-role': 'reference-sellers' },
+          h('div', { style: S.sectionTitle }, '已采集的商家'),
+          sellerList,
+          itemsBlock),
+        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '口径与红线'),
           ...REFERENCE_NOTES.map((note, index) => h('div', { key: String(index), style: S.sectionHint }, '· ' + note))))
     }
 
+    /**
+     * 片段 07：设置表单、daemon 状态卡、工作流树、「诊断」tab。
+     * 拼接顺序由文件名决定；单独打开不是合法模块，见 scripts/build-client.mjs。
+     */
     /** 设置：发布间隔（秒）/ 默认类目 / 文案风格；保存是写类，点两次才发 settings.put，成功后重新拉 settings.get。 */
     function SettingsForm({ connection, settings }) {
       const save = useWrite(connection)
@@ -579,12 +751,16 @@ window.__ModuleLoader__.load({
           h('div', { style: S.cmdRow }, h('code', { style: S.cmdCode }, 'npm run daemon'), h('code', { style: S.cmdCode }, 'npm run dsh:dev -- --fresh'))))
     }
 
+    /**
+     * 片段 08：面板骨架（tab 分发 + 面板级状态，切 tab 不丢输入）。
+     * 拼接顺序由文件名决定；单独打开不是合法模块，见 scripts/build-client.mjs。
+     */
     /** 当前 tab 的内容区；copy 页的状态留在 Panel 里（切走再切回不丢输入）。 */
     function PanelBody({ tab, copyProps, connection }) {
       if (tab === 'publish-batch') return h(PublishBatchView, { connection })
       if (tab === 'account') return h(AccountView, { connection })
       if (tab === 'copy') return h(CopyStudio, copyProps)
-      if (tab === 'reference') return h(ReferenceView)
+      if (tab === 'reference') return h(ReferenceView, { connection })
       if (tab === 'diagnose') return h(DiagnoseTab, { connection })
       return h('div', { style: S.section },
         h('div', { style: S.sectionHint }, '登录态导入：xy_import_account（本机 Chrome → 加密凭据）；daemon：127.0.0.1:47001（前台进程）。'),
@@ -636,6 +812,10 @@ window.__ModuleLoader__.load({
         h(PanelBody, { tab, copyProps, connection: panelConnection }))
     }
 
+    /**
+     * 片段 09：「自动发布」tab（任务表 + 草稿集校验入队）。
+     * 拼接顺序由文件名决定；单独打开不是合法模块，见 scripts/build-client.mjs。
+     */
     /** 任务区：最近 20 条；failed / needs_review 可重试（两次确认），执行中与完成不给按钮。 */
     function TasksTable({ connection, board, onChanged }) {
       const retry = useWrite(connection)
@@ -706,6 +886,10 @@ window.__ModuleLoader__.load({
         h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '命令'),
           h('div', { style: S.cmdRow }, h('code', { style: S.cmdCode }, 'pnpm daemon:publish -- --draft <草稿.json>'), h('code', { style: S.cmdCode }, 'xy_publish_batch（入队/审批走模型）'))))
     }
+    /**
+     * 片段 10：行内样式表（跟随 DSH 主题变量，不引入样式文件）。
+     * 拼接顺序由文件名决定；单独打开不是合法模块，见 scripts/build-client.mjs。
+     */
     /** 行内样式表：跟随 DSH 主题变量，不引入样式文件。 */
     const S = {
       page: { padding: '32px', maxWidth: '860px', margin: '0 auto', color: 'var(--dsw-alias-label-primary)' },
@@ -740,6 +924,10 @@ window.__ModuleLoader__.load({
       okText: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' }, badText: { fontSize: '12px', color: 'var(--dsw-alias-label-danger, #c0392b)' }, goodText: { fontSize: '12px', color: 'var(--dsw-alias-label-success, #1a7f37)' }, warnText: { fontSize: '12px', color: 'var(--dsw-alias-label-warning, #9a6700)' },
       small: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' }, actions: { display: 'flex', gap: '6px', flexWrap: 'wrap' },
     }
+    /**
+     * 片段 11：「账号」tab（多账号表、登录检测缓存、保活开关）。
+     * 拼接顺序由文件名决定；单独打开不是合法模块，见 scripts/build-client.mjs。
+     */
     // —— 账号管理：多账号表（切换 / 退出 / 登录态剩余 / 保活）+ 进入即检测（10 分钟内不重复）——
     const VERIFY_TTL_MS = 600_000
     const ACCOUNT_COLUMNS = ['当前', '账号', '登录状态', '登录态剩余', '最近检测', '凭据更新', '操作']
@@ -864,13 +1052,25 @@ window.__ModuleLoader__.load({
         writes.run('add:' + kind, kind === 'import' ? 'accounts.import' : 'accounts.login', payload, addTexts(kind))
       }
       const keep = board.keep ?? { enabled: false, seconds: '600' }
-      const keepSeconds = Number(keep.seconds), keepValid = Number.isInteger(keepSeconds) && keepSeconds >= 600 && keepSeconds <= 3600
-      const saveKeepAlive = () => {
-        if (!keepValid) return update({ result: { kind: 'bad', text: '保活间隔必须是 600..3600 的整数秒' } })
+      const keepSeconds = Number(keep.seconds), keepValid = Number.isInteger(keepSeconds) && keepSeconds >= 60 && keepSeconds <= 3600
+      /** 保存成功后按 daemon 回读的值重填表单（不信本地推断）。 */
+      const reloadKeep = () => { void callRead(connection, 'settings.get').then(reply => { if (reply.ok && reply.value !== null && typeof reply.value === 'object') update({ keep: keepAliveForm(reply.value) }) }) }
+      /** 一个按钮管开关：当前关 → 点两次开启；当前开 → 点两次关闭。间隔与开关一起提交，免得两个入口打架。 */
+      const toggleKeepAlive = () => {
+        if (!keepValid) return update({ result: { kind: 'bad', text: '保活间隔必须是 60..3600 的整数秒' } })
+        const enabled = !keep.enabled
         update({ result: null })
-        writes.run('keepalive', 'settings.put', { patch: { keepAliveEnabled: keep.enabled, keepAliveIntervalMs: keepSeconds * 1000 } }, {
-          hint: '再点一次「确认保存」写入保活设置', busy: '正在保存…', done: () => '保活设置已保存',
-          after: () => { void callRead(connection, 'settings.get').then(reply => { if (reply.ok && reply.value !== null && typeof reply.value === 'object') update({ keep: keepAliveForm(reply.value) }) }) },
+        writes.run('keepalive-toggle', 'settings.put', { patch: { keepAliveEnabled: enabled, keepAliveIntervalMs: keepSeconds * 1000 } }, {
+          hint: enabled ? '再点一次「确认开启」：daemon 每 ' + keepSeconds + ' 秒校验一次当前账号登录态' : '再点一次「确认关闭」：停止定时校验（已保存的凭据不动）',
+          busy: enabled ? '正在开启…' : '正在关闭…', done: () => (enabled ? '保活已开启' : '保活已关闭'), after: reloadKeep,
+        })
+      }
+      /** 开启状态下改间隔：只提交新间隔，开关保持当前值。 */
+      const saveKeepInterval = () => {
+        if (!keepValid) return update({ result: { kind: 'bad', text: '保活间隔必须是 60..3600 的整数秒' } })
+        update({ result: null })
+        writes.run('keepalive-interval', 'settings.put', { patch: { keepAliveEnabled: keep.enabled, keepAliveIntervalMs: keepSeconds * 1000 } }, {
+          hint: '再点一次「确认保存」写入保活间隔', busy: '正在保存…', done: () => '保活间隔已保存', after: reloadKeep,
         })
       }
       const actionButton = (role, label, onClick, disabled) => h('button', { key: role, type: 'button', 'data-role': role, disabled, onClick, style: disabled ? S.button : S.primary }, label)
@@ -902,13 +1102,20 @@ window.__ModuleLoader__.load({
         h('div', { style: S.fieldRow },
           h(Field, { label: '账号 id（留空 = 从 Chrome 读 unb）', control: h('input', { type: 'text', maxLength: 64, value: board.addId, placeholder: '2206569289277', 'data-role': 'account-add-id', onChange: event => update({ addId: event.target.value }), style: S.input }) }),
           h(Field, { label: 'Chrome 调试端口', control: h('input', { type: 'number', min: 1, max: 65535, value: board.addPort, 'data-role': 'account-add-port', onChange: event => update({ addPort: event.target.value }), style: S.input }) })),
+        // 两种入口的前置条件不同，「导入」必须由用户先把带调试端口的浏览器准备好（面板不能替他登录），
+        // 「扫码」会由 daemon 自己拉起窗口：写清这一句，省掉「点了没反应/报连不上」的往返。
+        h('div', { style: S.small, 'data-role': 'account-add-hint' }, '「从 Chrome 导入」需要先用 --remote-debugging-port=' + String(board.addPort) + ' 启动并登录闲鱼的 Chrome；「扫码登录」由后台自己打开浏览器窗口。'),
         h('div', { style: S.buttonRow }, addButton('account-add-import', 'import', '从 Chrome 导入'), addButton('account-add-login', 'login', '扫码登录')))
+      const keepButtonLabel = writes.state.armed === 'keepalive-toggle'
+        ? (keep.enabled ? '确认关闭' : '确认开启')
+        : busy ? '请稍候…' : (keep.enabled ? '关闭保活' : '开启保活')
       const keepaliveSection = h('div', { style: S.section, 'data-role': 'account-keepalive' },
         h('div', { style: S.sectionTitle }, '登录保活'),
         h('div', { style: S.fieldRow },
-          h(Field, { label: '保活', control: h('input', { type: 'checkbox', 'data-role': 'keepalive-toggle', checked: keep.enabled, onChange: event => update({ keep: { ...keep, enabled: event.target.checked } }) }) }),
-          h(Field, { label: '间隔（秒，600–3600）', control: h('input', { type: 'number', min: 600, max: 3600, value: keep.seconds, 'data-role': 'keepalive-interval', onChange: event => update({ keep: { ...keep, seconds: event.target.value } }), style: S.input }) }),
-          h('div', { style: S.buttonRow }, actionButton('keepalive-save', writes.state.armed === 'keepalive' ? '确认保存' : busy ? '保存中…' : '保存保活', saveKeepAlive, !keepValid || busy))))
+          h('div', { style: { ...S.buttonRow, marginTop: '0', alignSelf: 'flex-end' } }, actionButton('keepalive-toggle', keepButtonLabel, toggleKeepAlive, !keepValid || busy)),
+          h(Field, { label: '间隔（秒，60–3600）', control: h('input', { type: 'number', min: 60, max: 3600, value: keep.seconds, 'data-role': 'keepalive-interval', onChange: event => update({ keep: { ...keep, seconds: event.target.value } }), style: S.input }) }),
+          h('div', { style: { ...S.buttonRow, marginTop: '0', alignSelf: 'flex-end' } }, actionButton('keepalive-save', writes.state.armed === 'keepalive-interval' ? '确认保存' : busy ? '保存中…' : '保存间隔', saveKeepInterval, !keepValid || busy))),
+        h('div', { style: { ...S.small, marginTop: '10px' }, 'data-role': 'keepalive-state' }, keep.enabled ? '已开启：每 ' + keep.seconds + ' 秒校验一次当前账号登录态' : '未开启'))
       const emptyRow = h('div', { style: gridRow(ACCOUNT_GRID, false), 'data-role': 'account-empty' }, h('span', { style: { ...S.small, gridColumn: 'span 7' } }, '还没有导入账号'))
       return h('div', { style: S.section },
         h('div', { style: S.sectionTitle }, '账号管理'),
@@ -921,6 +1128,10 @@ window.__ModuleLoader__.load({
           ...board.accounts.map(rowOf), board.phase === 'ok' && board.accounts.length === 0 ? emptyRow : null),
         resultLine(board.result ?? writes.state.result, 'account-result'))
     }
+    /**
+     * 片段 12：连接句柄与 apply（只注册侧边栏栏位 + 主面板）。
+     * 拼接顺序由文件名决定；单独打开不是合法模块，见 scripts/build-client.mjs。
+     */
     /** 当前连接句柄：apply 时从 ctx 取一次（服务由宿主注入；缺失则 null → 面板降级）。 */
     let panelConnection = null
 
