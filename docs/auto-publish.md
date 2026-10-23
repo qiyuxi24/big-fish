@@ -43,14 +43,14 @@
 | 编号 | 做什么 | 文件 | 验收 |
 | --- | --- | --- | --- |
 | A1 | 侧边栏面板内「自动发布」tab（`PANEL_TABS` 第一项、默认选中）：流水线说明 + 草稿集粘贴 + 发布前校验 + 产出请求 JSON（不执行；只读状态走 `/bigfish` rpc 轮询） | `packages/plugin-ops/client.js`（面板内模块 tab） | 桌面端 GUI 实拍点开看到面板；`plugin-ops` 测试全绿 |
-| A2 | `xy_publish_batch`：批量校验 + 幂等入队 + 逐条状态汇总；`mode=dry-run` 默认 | `packages/plugin-ops/src/batch.js`、`tools.js`、`gate.js` | 单测（假 daemon client）+ 全量测试；写类工具走审批门禁 |
+| A2 | `xy_publish_batch`：批量校验 + 幂等入队 + 逐条状态汇总；`mode=dry-run` 默认 | `packages/plugin-ops/src/batch.js`、`tools.js`（spec `access`）、`tool-middleware.js` | 单测（假 daemon client）+ 全量测试；写类工具走审批门禁 |
 | A3 | 真机小批量试验：1 条 dry-run → 1 条真发 → 观察队列/截图/itemId | 无代码（用已导入的账号，默认 dry-run，真发须用户点头） | 见 §5 验收口径 |
 
 后续（不跨步）：B1 批量 pacing（任务间隔、夜间不跑）→ B2 批次汇总端点/面板进度 → B3 类目矩阵补测（A3 扫码兜底）→ B4 一条命令跑 10 件并回归。
 
 **已落地**：
 - **A1 ✅**：`packages/plugin-ops/client.js` 的 `PANEL_TABS` 第一项 = 自动发布（点侧边栏「BigFish 闲鱼运营」进面板即默认这个分区）。面板 = 流水线四步说明 + 草稿集 textarea（每行内联 JSON 或 `.json` 路径）+ 发布前校验（JSON 合法性、缺字段、类目矩阵提示）+ 模式 chips（dry-run / enqueue，默认 dry-run）+ 「生成批量发布请求」产出 `xy_publish_batch` 参数 JSON + 发布命令清单。纯客户端：不联网、不调模型、不执行写操作。**2026-10-21 曾注册成会话顶部 tab（`conversation.view`），用户要求主页面在侧边栏面板里，已收回面板内**。
-- **A2 ✅ 单测**：`packages/plugin-ops/src/batch.js`（`normalizeBatchArgs` / `prepareBatch` / `runBatch` / `formatBatchResult`）+ 第 11 个工具 `xy_publish_batch` + `gate.js` 审批口径（仅 `mode=enqueue` 需确认）。单条与批量共用 `publish-flow.js` 的 `buildPublishEnqueueInput`，幂等键同口径（`publish:<8hex>`）。
+- **A2 ✅ 单测**：`packages/plugin-ops/src/batch.js`（`normalizeBatchArgs` / `prepareBatch` / `runBatch` / `formatBatchResult`）+ 第 11 个工具 `xy_publish_batch` + specs 的审批口径（`writeWhen: nonDryRunIsWrite`，仅 `mode=enqueue` 需确认）。单条与批量共用 `publish-flow.js` 的 `buildPublishEnqueueInput`，幂等键同口径（`publish:<8hex>`）。
 - **A3 🟡 dry-run 段完成**：单件 dry-run（含类目 + 地址）、单件真提交、**队列批量 dry-run（2 条同批 → 2/2 done）** 均已真机通过，见 §5.1；**批量真提交、同批混「不支持类目」、失败重放还没跑**。
 - **A4 失败收尾 ✅ 单测**：`core/src/queue.ts` 的 `requeue`（failed / needs_review → queued，attempts 归零、清租约与 lastError、保留 dedupeKey/payload）+ `POST /tasks/:id/retry` + 工具 `xy_task_retry`（写类、挂审批，理由写明 `BF_PUBLISH_SUBMIT=1` 下会真重放）。**未真机重放发布。**
 - **A5 账号级 pacing ✅ 单测**：`core/src/limiter.ts` 的 `resolvePublishMinIntervalMs`（默认 180s，夹 30s..3600s）与 `nextPublishAvailableAt`；`plugin-ops/src/batch.js` 批量按账号逐条预约 `availableAt`，支持 `BF_PUBLISH_MIN_INTERVAL_MS`，入队失败不占位。**180s 是推导值、未真机校准；单条 enqueue / 直接 `POST /tasks` 不受约束**（写桶 1/60s 兜底）。

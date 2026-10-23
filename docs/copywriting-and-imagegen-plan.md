@@ -18,7 +18,7 @@
 | 发布前策略 | `packages/core/src/policy.ts:54-59` | 标题 >30 字=warn、描述 <30 字=warn、图片 1–9 张=error、首图非 1:1=warn、违禁词 38 条=error、禁售类目 20 条=error |
 | CDP 上传 | `packages/channel-cdp/src/publish.ts:217`、`docs/architecture.md:192` | `accept="image/png, image/jpg, image/jpeg, image/heic, image/webp"`，`DOM.setFileInputFiles` 读本机文件 |
 | 发布页无独立标签字段 | `docs/architecture.md` §13 表单清单 | 5 个话题标签以 `#标签` 形式并入描述，不单独提交 |
-| 插件零依赖、写类审批 | `packages/plugin-ops/src/gate.js:14` | 新增生图工具必须加入 `WRITE_TOOLS` 并写确认原因 |
+| 插件零依赖、写类审批 | `packages/plugin-ops/src/tools.js`（specs）、`src/tool-middleware.js` | 新增生图工具必须标 `access:'confirm'` 并写 `reason`；注册/门禁由中间件统一处理 |
 | 本机无 API key、运行时零依赖 | AGENTS.md §2、§1.4 | key 只从环境变量/DSH settings 读；未配置时工具返回 `UNSUPPORTED`，不伪造成功 |
 
 ## 2. 文案 skill 集
@@ -190,7 +190,7 @@ DSH 的 skill 发现只认**根下一层**的 `<name>/SKILL.md` 或 `<name>.md`�
 输出：`{ files: string[], provider, model, costCents, requestId?, warnings: string[] }`
 
 - 放在 `packages/plugin-ops`（纯 ESM JS、零依赖、Node 24 全局 fetch），**不进 core/daemon**；写盘走 `node:fs/promises`，输出目录默认 `.scratch/imagegen/<YYYYMMDD>/`。
-- `gate.js` 的 `WRITE_TOOLS` 加入 `xy_imagegen`，原因："会调用付费生图接口并写入本机图片文件，需要人工确认。"
+- 工具 spec 标 `access: 'confirm'`、`reason` 写"会调用付费生图接口并写入本机图片文件，需要人工确认。"（门禁由 `tool-middleware.js` 按 specs 自动挂）。
 - 失败映射：无 key → `UNSUPPORTED`；限流/超额 → `RATE_LIMITED`；网络 → `NETWORK`；返回结构不符 → `INTERNAL`（手写窄化，禁 `any`）。
 - 生成结果必须**人工过目**后才允许写进草稿的 `images`；工具不自动调用 `xy_publish_draft`。
 
@@ -282,4 +282,4 @@ DSH 的 skill 发现只认**根下一层**的 `<name>/SKILL.md` 或 `<name>.md`�
 - Gemini 3 Pro Image 价格（第三方聚合）：<https://inferencebench.io/models/google/gemini-3-pro-image/>
 - OpenAI 图像模型 token 价（第三方，2026-08）：<https://www.modellix.ai/blog/openai-image-generation-api-pricing>
 - 闲鱼实拍/9 图/方形经验（自媒体，非官方）：<https://www.sohu.com/a/995025242_122606198>
-- 仓库内依据：`docs/architecture.md:162,192`、`docs/xianyu-wuli-kit-analysis.md:147`、`docs/end-to-end-chain-and-borrowing.md:69`、`docs/asset-extraction.md:47,144`、`packages/core/src/policy.ts:54-59`、`packages/plugin-ops/src/draft.js`、`packages/plugin-ops/src/gate.js:14`、`packages/channel-cdp/src/publish.ts:217`
+- 仓库内依据：`docs/architecture.md:162,192`、`docs/xianyu-wuli-kit-analysis.md:147`、`docs/end-to-end-chain-and-borrowing.md:69`、`docs/asset-extraction.md:47,144`、`packages/core/src/policy.ts:54-59`、`packages/plugin-ops/src/draft.js`、`packages/plugin-ops/src/tools.js`、`packages/channel-cdp/src/publish.ts:217`

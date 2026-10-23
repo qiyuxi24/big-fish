@@ -65,6 +65,7 @@ window.__ModuleLoader__.load({
 | 分发 | `PanelBody({ tab, copyProps, connection })` 按 `tab` 返回对应模块组件；模块组件只返回 section 列表，**不自带页头**（页头 + tab 栏在 `BigFishPanel` 骨架里） |
 | 注册项 | **只有** `sidebar.panellist`（id `bigfish`、order 30、label `BigFish 闲鱼运营`）与 `main`（key `bigfish`）。单测断言 `registered.length === 2` 且**没有** `conversation.view` |
 | 加模块 | `PANEL_TABS` 追加一项 + `PanelBody` 补一行分支 |
+| 「账号」分区（第 2 个 tab，2026-10-23） | 动态账号表（`data-role='account-table'`）：账号 / 登录状态徽标 / 最近检测 / 凭据更新 / 字段数 / 操作。进 tab 自动跑 `accounts.verify`（模块级 `verifyCache` 60s 内不重打，手动「检测」强制刷新）；失败只落该行徽标（`在线` / `已过期` / `无法确认 · 网络异常|风控拦截|被限流` / `检测中` / `未检测`），不降级整页。「重新导入」「扫码登录」是写类：点两次才发（第一次只把按钮改成「确认导入」/「确认扫码」并显示一行提示，第二次才带 `confirm:true`）。空列表显示「还没有导入账号」+ 两个入口 |
 | 「采集」分区（第 4 个 tab） | 只读统计入口：填 `itemIds` / `sellerId` 生成 `xy_reference_collect` 参数 JSON，展示价格带 / 标题长度 / 类目分布 / 高频卖点词 / 图片数 / 商家量级字段说明 + 三条红线（不下载他人图片、不照抄文案、不跨账号复制）。纯 UI：不联网、不调工具、不产出可发布草稿 |
 
 **为什么回退（历史存档，别再踩）**：`conversation.view` 是会话 header 的 list 插槽
@@ -85,7 +86,10 @@ ctx.connection.rpc.call('/bigfish', '<endpoint>', payload) // → { ok: true, va
 | --- | --- | --- |
 | `health` | `{}` | 版本、已运行时长 |
 | `status` | `{}` | 队列各状态计数（queued/leased/done/failed/needs_review） |
-| `accounts` | `{}` | 账号数、可写账号数（`ready === true`） |
+| `accounts` | `{}` | 账号列表（`accountId` / `updatedAt` / `savedFieldCount` / `ready`），「账号」tab 与 `DaemonView` 共用 |
+| `accounts.verify` | `{ accountId }` | 登录态校验：真调一次 mtop `head`，返回 `{accountId, online, checkedAt, refreshed, code?, message?}`；`_m_h5_tk` 过期会顺手刷新并回写凭据。**只读**，不挂 `confirm`；40s 超时 |
+| `accounts.import` | `{ confirm: true, accountId? }` | 「重新导入」：从本机 Chrome 读 cookie 并加密落盘。写类，`confirm:true` 必需 |
+| `accounts.login` | `{ confirm: true, accountId? }` | 「扫码登录」：打开闲鱼登录页等扫码（最长 180s）。写类，`confirm:true` 必需 |
 | `settings.get` | `{}` | copyStyle / defaultCategory / publishMinIntervalMs |
 | `tasks.list` | `{ limit: 50 }` | 反查最新一轮批次的 `batchId`（daemon 没有批次列表端点） |
 | `batches.get` | `{ id: <batchId> }` | 最近批次的 total 与非零 counts；失败只丢这一行，不拖垮主状态 |
@@ -241,8 +245,11 @@ stub `window.__ModuleLoader__.load` 捕获注册、假 `react`（`useState` **�
 - factory 懒执行：加载 bundle 时**不**调 `require`，apply 时才 require `react`；
 - `inject` 恰好 `['slots', 'connection']`；`apply` 通过 `inject` 只注册两项：`sidebar.panellist`
   （id `bigfish` / order 30 / label `BigFish 闲鱼运营`）与 `main`（key `bigfish`），并断言**没有** `conversation.view` 注册；
-- 账号模块只读（`openTab('账号')`）：文案含登录态来源、`npm run daemon:login`、`xy_accounts_list` / `xy_import_account`，
-  且不含任何 cookie 值（`cookie=` / `unb=\d` / `_m_h5_tk=`）；
+- 「账号」模块（`openTab('账号')`）9 条用例：进 tab 自动 `accounts.verify` 一次 + 徽标「在线」+ 六列/三按钮齐全且不含 cookie 值；
+  两账号（在线/过期）分行、`AUTH_EXPIRED` 只标该行「已过期」不整页降级；verify 失败（`NETWORK` / rpc 出错）→「无法确认 · …」；
+  点「检测」强制重打且请求中按钮 disabled；导入两次确认（第一次不发请求、文案「确认导入」；第二次 `payload.confirm === true` 且带 `accountId`）；
+  扫码同理（第二次先出「等待扫码…（最长 180s）」）；空列表给「还没有导入账号」且不调 verify；
+  来回切 tab 60s 内不重复 verify；`updatedAt` 渲染成相对时间（`20749 天前 · 字段齐备`）；
 - 图标 `🐟`、active=true 时 opacity 1、否则 0.72、size 下限 12；
 - 面板内 6 个 tab（自动发布/账号/文案/采集/概览/诊断），默认选中「自动发布」，点击后内容与 `aria-selected` 同步切换；
 - 「采集」模块只读：讲清统计口径与红线，不出现图片直链、不产出可发布草稿；
@@ -251,7 +258,7 @@ stub `window.__ModuleLoader__.load` 捕获注册、假 `react`（`useState` **�
 - 文案风格区 5 个 chip、默认选中 `plain`、点击后 `aria-pressed` 转移；
 - 填完商品名 + 价格后「生成文案请求」可用，产出的是 `xy_copy_plan` 参数 JSON（面板不调模型）；
 - 面板内嵌风格表与 `src/copy.js` 的 `COPY_STYLES` 不漂移（id/label/summary 逐项比对）；
-- 「自动发布」模块（默认 tab）：流水线四步、草稿集输入框、类目矩阵、发布命令、页脚「面板不执行发布」都在；
+- 「自动发布」模块（默认 tab）：流水线四步、草稿集输入框、类目矩阵、发布命令都在；
 - 草稿集逐行解析：内联 JSON 合法 / JSON 坏 / 缺 `images` / `.json` 路径 / 非法行，逐行给 `data-ok` 与提示；
 - 至少 2 条合法草稿才启用「生成批量发布请求」：禁用时用 title 说明原因；产出 `xy_publish_batch` 参数
   JSON（`mode` dry-run/enqueue、`draftPaths`/`drafts`、可选 `accountId`），任何输入变化都会撤销旧 JSON；
@@ -271,14 +278,13 @@ stub `window.__ModuleLoader__.load` 捕获注册、假 `react`（`useState` **�
 
 ## 5. 未做（P1 再评估）
 
-- 写类端点没接：面板能看（health / 账号就绪 / 队列计数 / 最近批次 / settings 摘要），但**不能点**——
-  `tasks.retry` / `accounts.import` / `accounts.login` / `batch.enqueue` / `settings.put` 都要求 `confirm:true`，
-  需要二次确认 UI 与按钮态设计，留到下一轮；在那之前写操作入口仍在 agent 工具审批里。
+- 写类端点只接了一部分：`accounts.import` / `accounts.login` 已接「点两次才发 `confirm:true`」（2026-10-23）；
+  `tasks.retry` / `batch.enqueue` / `settings.put` 仍没接 UI，写完参数只能交给 agent 调工具（都要求 `confirm:true`，host 门禁不放行裸调用）。
 - 文案风格区只到「可交互组请求」：选风格 → 填商品名/价格/成色 → 产出 `xy_copy_plan` 参数 JSON；**真正的文案生成在 agent 侧**（面板不联网、不调模型），谁执行与面板解耦。
 - 没有服务端推送（SSE/WebSocket）到 client：P1 要展示队列进度时需要一条 daemon → 插件 → client 的通道。
 - 没有 `settings` 卡片（daemonUrl / tokenPath 现在只能写 `cordis.patch.yml`）。
-- 「账号」模块是只读面板：讲清登录态来源（导入 / 扫码 / 加密落盘）与两个工具入口，不读凭据、不联网；
-  面板内直接点「导入 / 扫码」需要把写类 rpc（`accounts.import` / `accounts.login`）接上二次确认 UI（通道已有，ADR 0004）。
+- 「账号」模块的自动检测会真调一次 mtop `head`（`accounts.verify`）：60s 缓存 + 手动刷新，但**多账号同时进 tab 会挨个串行打**；
+  还没有定时保活（只在打开面板/点检测时探测），也没有「凭据更新后自动重检测」的钩子。
 - 「自动发布」模块 = 实时 daemon 状态（只读轮询）+「生成 `xy_publish_batch` 参数 JSON」；批量入队/发布由 agent 调工具或 CLI 执行，
   面板发起写操作留到下一轮（执行与 UI 解耦）。
 - 「采集」模块只到「生成 `xy_reference_collect` 参数 JSON」：真正采集由 agent 调工具（daemon `POST /reference`），

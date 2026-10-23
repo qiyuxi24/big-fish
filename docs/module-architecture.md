@@ -17,10 +17,10 @@
 [侧边栏面板]  packages/plugin-ops/client.js（PANEL_TABS 六个分区：自动发布/账号/文案/采集/概览/诊断，只组参数，不执行写）
       │  用户把面板生成的 JSON / 命令贴给 agent
       ▼
-[host 插件]   packages/plugin-ops/src/tools.js（14 个 xy_* 工具）+ gate.js（写操作 ask 审批）
+[host 插件]   packages/plugin-ops/src/tools.js（14 个 xy_* 工具 specs：access read/confirm）+ tool-middleware.js（校验/注册/统一 ask 审批）
       │  HTTP + Bearer token（daemon.token）
       ▼
-[daemon]      routes.ts（13 条路由）→ queue.ts（SQLite，dedupe_key 幂等；`requeue` 支持人工重排）
+[daemon]      routes.ts（19 条路由）→ queue.ts（SQLite，dedupe_key 幂等；`requeue` 支持人工重排）
       │  worker.ts：concurrency 1、同账号最多一个在飞、lease 60s
       ▼
 [执行器]      executors.ts（probe / polish / publish / deliver / reply 五种 TaskKind）
@@ -145,7 +145,7 @@
 
 **加一个模块（或分区）**：
 1. `plugin-ops/client.js` 的 `PANEL_TABS` 加一项 + `PanelBody` 补一行分支（面板只组参数，不写）。
-2. `plugin-ops/src/tools.js` 加 `xy_*` 工具；写类进 `gate.js` 的 `WRITE_TOOLS`。
+2. `plugin-ops/src/tools.js` 加 `xy_*` 工具 spec：写类标 `access: 'confirm'` 并写 `reason`（要按参数判定的再给 `writeWhen`）；注册与门禁由 `tool-middleware.js` 统一处理，**不要再单独加 pre-execute 监听**。
 3. 需要 daemon 动作就加执行器 kind 或路由，写操作必须幂等（`dedupe_key`）。
 4. 补单测 + 真机试验记录，更新 `STATUS.md` 与本文。
 
