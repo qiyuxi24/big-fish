@@ -20,7 +20,7 @@
 [host 插件]   packages/plugin-ops/src/tools.js（14 个 xy_* 工具 specs：access read/confirm）+ tool-middleware.js（校验/注册/统一 ask 审批）
       │  HTTP + Bearer token（daemon.token）
       ▼
-[daemon]      routes.ts（19 条路由）→ queue.ts（SQLite，dedupe_key 幂等；`requeue` 支持人工重排）
+[daemon]      routes.ts（21 条路由）→ queue.ts（SQLite，dedupe_key 幂等；`requeue` 支持人工重排）
       │  worker.ts：concurrency 1、同账号最多一个在飞、lease 60s
       ▼
 [执行器]      executors.ts（probe / polish / publish / deliver / reply 五种 TaskKind）

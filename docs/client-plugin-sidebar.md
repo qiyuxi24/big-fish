@@ -65,7 +65,7 @@ window.__ModuleLoader__.load({
 | 分发 | `PanelBody({ tab, copyProps, connection })` 按 `tab` 返回对应模块组件；模块组件只返回 section 列表，**不自带页头**（页头 + tab 栏在 `BigFishPanel` 骨架里） |
 | 注册项 | **只有** `sidebar.panellist`（id `bigfish`、order 30、label `BigFish 闲鱼运营`）与 `main`（key `bigfish`）。单测断言 `registered.length === 2` 且**没有** `conversation.view` |
 | 加模块 | `PANEL_TABS` 追加一项 + `PanelBody` 补一行分支 |
-| 「账号」分区（第 2 个 tab，2026-10-23） | 动态账号表（`data-role='account-table'`）：账号 / 登录状态徽标 / 最近检测 / 凭据更新 / 字段数 / 操作。进 tab 自动跑 `accounts.verify`（模块级 `verifyCache` 60s 内不重打，手动「检测」强制刷新）；失败只落该行徽标（`在线` / `已过期` / `无法确认 · 网络异常|风控拦截|被限流` / `检测中` / `未检测`），不降级整页。「重新导入」「扫码登录」是写类：点两次才发（第一次只把按钮改成「确认导入」/「确认扫码」并显示一行提示，第二次才带 `confirm:true`）。空列表显示「还没有导入账号」+ 两个入口 |
+| 「账号」分区（第 2 个 tab，2026-10-23 v2） | 动态账号表（`data-role='account-table'`）7 列：当前（`account-active` 徽标 + `account-switch` 切换）/ 账号 / 登录状态徽标（`account-status`）/ 登录态剩余（`account-lifetime`：真实过期时间或 `refreshedAt+2h` 标「估算」，都没有显示「—」）/ 最近检测（`account-checked`）/ 凭据更新（`account-updated`：相对时间 + 字段齐备）/ 操作（`account-verify` / `account-import` / `account-login` / `account-logout`）。进 tab 自动跑 `accounts.verify`（模块级 `verifyCache` **10 分钟**内不重打——每次都是真调 mtop head、账号级风控敏感；手动「检测」强制刷新）；失败只落该行徽标（`在线` / `已过期` / `无法确认 · 网络异常|风控拦截|被限流|后台错误` / `检测中` / `未检测`），不降级整页。写操作全部「点两次」：切换（`accounts.activate`，免 confirm，一次点完）/ 退出（第一次改文案「确认退出登录」并提示只删本地凭据、不注销网页会话）/ 导入 / 扫码（`confirm:true`、可填 Chrome 端口）。表格上方「添加账户」区（`account-add` / `-add-id` / `-add-port` / `-add-import` / `-add-login`）与「保活」区（`account-keepalive` / `keepalive-toggle` / `keepalive-interval` / `keepalive-save`，600–3600s，两次确认写 `settings.put`）。空列表（仅在线时）显示「还没有导入账号」；daemon 离线整块降级 `account-offline`。共 25 个 `data-role` |
 | 「采集」分区（第 4 个 tab） | 只读统计入口：填 `itemIds` / `sellerId` 生成 `xy_reference_collect` 参数 JSON，展示价格带 / 标题长度 / 类目分布 / 高频卖点词 / 图片数 / 商家量级字段说明 + 三条红线（不下载他人图片、不照抄文案、不跨账号复制）。纯 UI：不联网、不调工具、不产出可发布草稿 |
 
 **为什么回退（历史存档，别再踩）**：`conversation.view` 是会话 header 的 list 插槽
@@ -248,11 +248,13 @@ stub `window.__ModuleLoader__.load` 捕获注册、假 `react`（`useState` **�
 - factory 懒执行：加载 bundle 时**不**调 `require`，apply 时才 require `react`；
 - `inject` 恰好 `['slots', 'connection']`；`apply` 通过 `inject` 只注册两项：`sidebar.panellist`
   （id `bigfish` / order 30 / label `BigFish 闲鱼运营`）与 `main`（key `bigfish`），并断言**没有** `conversation.view` 注册；
-- 「账号」模块（`openTab('账号')`）9 条用例：进 tab 自动 `accounts.verify` 一次 + 徽标「在线」+ 六列/三按钮齐全且不含 cookie 值；
+- 「账号」模块（`openTab('账号')`）约 19 条用例：进 tab 自动 `accounts.verify` 一次 + 徽标「在线」+ 七列/四按钮齐全且不含 cookie 值；
   两账号（在线/过期）分行、`AUTH_EXPIRED` 只标该行「已过期」不整页降级；verify 失败（`NETWORK` / rpc 出错）→「无法确认 · …」；
-  点「检测」强制重打且请求中按钮 disabled；导入两次确认（第一次不发请求、文案「确认导入」；第二次 `payload.confirm === true` 且带 `accountId`）；
-  扫码同理（第二次先出「等待扫码…（最长 180s）」）；空列表给「还没有导入账号」且不调 verify；
-  来回切 tab 60s 内不重复 verify；`updatedAt` 渲染成相对时间（`20749 天前 · 字段齐备`）；
+  点「检测」强制重打且请求中按钮 disabled；导入两次确认（第一次不发请求、文案「确认导入」；第二次 `payload.confirm === true` 且带 `accountId` 与 `port`）；
+  扫码同理（第二次先出「等待扫码…（最长 180s）」）；空列表（仅在线时）给「还没有导入账号」且不调 verify；
+  切换一次点击即发 `accounts.activate` 并迁移「当前」徽标；退出两次确认（第一次文案「确认退出登录」）；
+  `loginExpiresAt` 渲染成「1 小时 59 分」/「—」，并区分 browser / 估算来源；保活开关 + 间隔两次确认写 `settings.put`；
+  来回切 tab 10 分钟内不重复 verify；`updatedAt` 渲染成相对时间（`20749 天前 · 字段齐备`）；
 - 图标 `🐟`、active=true 时 opacity 1、否则 0.72、size 下限 12；
 - 面板内 6 个 tab（自动发布/账号/文案/采集/概览/诊断），默认选中「自动发布」，点击后内容与 `aria-selected` 同步切换；
 - 「采集」模块只读：讲清统计口径与红线，不出现图片直链、不产出可发布草稿；
@@ -281,7 +283,7 @@ stub `window.__ModuleLoader__.load` 捕获注册、假 `react`（`useState` **�
 
 ## 5. 未做（P1 再评估）
 
-- 写类端点已全部接 UI（`accounts.import` / `accounts.login` / `tasks.retry` / `batch.enqueue` / `settings.put` / `daemon.stop`，都是「点两次才发 `confirm:true`」，2026-10-23）；
+- 写类端点已全部接 UI（`accounts.import` / `accounts.login` / `accounts.logout` / `tasks.retry` / `batch.enqueue` / `settings.put` / `daemon.stop` 点两次才发 `confirm:true`；`accounts.activate` 是本地设置，一次点击；2026-10-23 v2）；
   还缺的是**批次进度可视化**（`batches.get` 已能读，任务表只显示单条任务）、多账号入队（面板只认 daemon 里的唯一账号）。
 - 文案风格区只到「可交互组请求」：选风格 → 填商品名/价格/成色 → 产出 `xy_copy_plan` 参数 JSON；**真正的文案生成在 agent 侧**（面板不联网、不调模型），谁执行与面板解耦。
 - 没有服务端推送（SSE/WebSocket）到 client：P1 要展示队列进度时需要一条 daemon → 插件 → client 的通道。

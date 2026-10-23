@@ -114,10 +114,12 @@ openStore({path: config.dbPath})
 | --- | --- | --- |
 | GET | `/health` | 免鉴权：`{version,pid,uptimeMs}` |
 | GET | `/status` | 队列五态计数、`accounts`、`circuits`（账号→原因）、`worker` 计数 |
-| GET | `/accounts` | 账号只读摘要：`{accountId, updatedAt, savedFieldCount, ready, unb?, ageMs, broken?, brokenReason?}`；坏凭据单条标 `broken`（不带 cookie 值），未注入时返回 `[]` |
+| GET | `/accounts` | 账号只读摘要：`{accountId, updatedAt, savedFieldCount, ready, unb?, ageMs, active, loginExpiresAt?, source?, lastCheckedAt?, lastOnline?, lastCode?, broken?, brokenReason?}`——`active` 是 `settings.activeAccountId`；`source` = `browser`（导入时 CDP 给的 `_m_h5_tk` 过期时间）/ `estimated`（最近真刷新 + 2h）；检测结果来自 `<data>/account-state.json`。坏凭据单条标 `broken`（不带 cookie 值），未注入时返回 `[]` |
 | POST | `/accounts/import` | 从本机 Chrome（CDP，默认 9222）读 goofish cookie 并加密落盘：`{accountId?, port?}` → `{accountId, savedFieldCount, updatedAt, source}`；未注入导入能力时 `UNSUPPORTED` |
 | POST | `/accounts/login` | 扫码登录：打开登录页等用户扫码，轮询到 `unb` + `_m_h5_tk` 齐备才落加密凭据（默认超时 180s）；未注入能力时 `UNSUPPORTED` |
-| POST | `/accounts/:id/verify` | 登录态校验（只读探测）：真调一次 mtop `head`，`{accountId, online, checkedAt, refreshed, code?, message?}`；`_m_h5_tk` 过期会自动刷新并回写凭据（`refreshed:true` 只在回写成功时置位）；账号不存在 → 400 `VALIDATION`，其余失败也是 200 `online:false`；未注入能力时 `UNSUPPORTED` |
+| POST | `/accounts/:id/verify` | 登录态校验（只读探测）：真调一次 mtop `head`，`{accountId, online, checkedAt, refreshed, cached?, code?, message?}`；`_m_h5_tk` 过期会自动刷新并回写凭据（`refreshed:true` 只在回写成功时置位）；同账号单飞 + 5s 冷却，命中返回上次结果并带 `cached:true`（失败不缓存）；账号不存在 → 400 `VALIDATION`，其余失败也是 200 `online:false`；未注入能力时 `UNSUPPORTED` |
+| POST | `/accounts/activate` | 切换当前账号（只写本地 `settings.activeAccountId`，不碰闲鱼）：`{accountId}` → `{activeAccountId}`；空/空白、缺字段、账号不存在 → 400 `VALIDATION` |
+| POST | `/accounts/:id/logout` | 退出登录：**只删本地加密凭据，不注销闲鱼网页会话**；删的是当前账号则清空 `activeAccountId` → `{accountId, activeAccountId}`；账号不存在 → 400 `VALIDATION` |
 | GET | `/tasks?state&kind&limit` | 列表（缺省 50、上限 500） |
 | GET | `/tasks/:id` | 单条 |
 | POST | `/tasks` | 入队，201；幂等键去重 |
