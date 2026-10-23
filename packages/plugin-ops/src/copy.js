@@ -207,6 +207,9 @@ export function buildCopyRequest(raw) {
   const flaws = readStringList(record, 'flaws', 'flaws', 10)
   const accessories = readStringList(record, 'accessories', 'accessories', 20)
   const variantCount = readEnumCount(record.variantCount)
+  // 出售原因/使用时长是 SKILL.md 第 2 段的事实来源：不给就允许模型省略，但不许编。
+  const reason = readText(record, 'reason', '出售原因', { max: 200 })
+  const usedMonths = readOptionalMonths(record.usedMonths)
 
   /** @type {Record<string, unknown>} */
   const facts = {
@@ -226,6 +229,8 @@ export function buildCopyRequest(raw) {
   if (flaws !== undefined) facts.flaws = flaws
   if (accessories !== undefined) facts.accessories = accessories
   if (imagePaths !== undefined) facts.imagePaths = imagePaths
+  if (reason !== undefined) facts.reason = reason
+  if (usedMonths !== undefined) facts.usedMonths = usedMonths
 
   // 图片缺失不阻断「出提示词」，但必须显式告诉执行者：落稿前要补 images（1–9 张）。
   const missing = []
@@ -245,6 +250,15 @@ function readEnumCount(value) {
   if (value === undefined) return 1
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1 || value > 3) {
     throw invalid('variantCount 只能是 1–3 的整数')
+  }
+  return value
+}
+
+/** 使用时长：允许 0（刚买就出），上限 600 个月；缺省不猜。 */
+function readOptionalMonths(value) {
+  if (value === undefined) return undefined
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0 || value > 600) {
+    throw invalid('usedMonths 只能是 0–600 的整数（月）')
   }
   return value
 }

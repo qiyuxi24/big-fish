@@ -10,8 +10,16 @@
  */
 import { fail } from '@bigfish/core'
 import type { CredentialStore } from '@bigfish/core'
-import { CdpConnection, CdpCookieSource, DEFAULT_PORT, attachChrome } from '@bigfish/channel-cdp'
-import type { CookieJar } from '@bigfish/channel-cdp'
+import {
+  CdpConnection,
+  CdpCookieSource,
+  DEFAULT_PORT,
+  assertLoginCookies,
+  attachChrome,
+  selectGoofishCookieExpiries,
+  selectGoofishCookies,
+} from '@bigfish/channel-cdp'
+import type { BrowserCookie, CookieJar } from '@bigfish/channel-cdp'
 
 /** 账号 id 白名单，与 core/CredentialStore 一致；这里提前校验是为了报错更早、文案更可操作。 */
 const ACCOUNT_ID_RE = /^[A-Za-z0-9._-]{1,64}$/
@@ -52,13 +60,22 @@ export async function saveImportedAccount(
   deps: ImportAccountDeps,
   jar: CookieJar,
   input: ImportAccountInput = {},
+  cookies?: readonly BrowserCookie[],
 ): Promise<ImportedAccount> {
   const accountId = resolveAccountId(jar, input.accountId)
   const importedAt = (deps.now ?? Date.now)()
+  // CookieJar 只有 name→value，浏览器侧过期时间得从原始 cookie 数组里取；登录扫码路径拿不到原始数组，
+  // 所以 expires 缺失是允许的（面板会退化成「按检测时间估算」）。
+  const expires = cookies === undefined ? {} : selectGoofishCookieExpiries(cookies)
   await deps.credentials.save({
     accountId,
     cookies: { ...jar.goofish },
-    meta: { source: 'chrome-cdp', importedAt, otherCookies: jar.others },
+    meta: {
+      source: 'chrome-cdp',
+      importedAt,
+      otherCookies: jar.others,
+      ...(Object.keys(expires).length > 0 ? { expires } : {}),
+    },
   })
   const record = await deps.credentials.load(accountId)
   if (record === undefined) fail('INTERNAL', '凭据刚写入却读不回来：' + accountId)
@@ -81,8 +98,12 @@ export async function importAccountFromChrome(
   const target = await attachChrome(port)
   const connection = await CdpConnection.connect(target.browserWsUrl)
   try {
-    const jar = await new CdpCookieSource(connection).readGoofishCookies()
-    return await saveImportedAccount(deps, jar, deps)
+    // 不用 readGoofishCookies()：这里还要原始 cookie 数组来记录浏览器给的过期时间。
+    const source = new CdpCookieSource(connection)
+    const cookies = await source.getAllCookies()
+    const jar = selectGoofishCookies(cookies)
+    assertLoginCookies(jar)
+    return await saveImportedAccount(deps, jar, deps, cookies)
   } finally {
     await connection.close()
     await target.close()

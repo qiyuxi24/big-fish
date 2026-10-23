@@ -29,6 +29,8 @@ export interface AccountSessionState {
   refreshed: boolean
   code?: AccountVerifyCode
   message?: string
+  /** 命中冷却窗口、直接返回上次成功结果时为 true；面板据此避免把缓存值当新检测展示。 */
+  cached?: boolean
 }
 
 /** 分类结果：code 稳定、message 可直接展示。 */

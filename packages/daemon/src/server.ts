@@ -20,8 +20,10 @@ import { extractBearer, loadRedact, sendError, sendMappedError, tokenMatches } f
 import type { RedactFn } from './http.ts'
 import { buildStatus, matchRoute } from './routes.ts'
 import type {
+  ActivateAccountHandler,
   ImportAccountHandler,
   LoginAccountHandler,
+  LogoutAccountHandler,
   ReferenceCollectHandler,
   VerifyAccountHandler,
   RequestShutdown,
@@ -54,6 +56,10 @@ export interface StartDaemonOptions {
   loginAccount?: LoginAccountHandler
   /** 登录态校验能力；缺省时 POST /accounts/:id/verify 返回 UNSUPPORTED。 */
   verifyAccount?: VerifyAccountHandler
+  /** 切换当前账号能力；缺省时 POST /accounts/activate 返回 UNSUPPORTED。 */
+  activateAccount?: ActivateAccountHandler
+  /** 退出登录能力；缺省时 POST /accounts/:id/logout 返回 UNSUPPORTED。 */
+  logoutAccount?: LogoutAccountHandler
   /** 账号摘要能力；缺省时 GET /accounts 返回空数组。 */
   accountSummaries?: () => Promise<AccountSummary[]>
   /** 人工重新入队能力；缺省时 POST /tasks/:id/retry 返回 UNSUPPORTED。 */
@@ -90,6 +96,8 @@ interface ServerContext {
   importAccount: ImportAccountHandler | undefined
   loginAccount: LoginAccountHandler | undefined
   verifyAccount: VerifyAccountHandler | undefined
+  activateAccount: ActivateAccountHandler | undefined
+  logoutAccount: LogoutAccountHandler | undefined
   accountSummaries: (() => Promise<AccountSummary[]>) | undefined
   retryTask: RetryTaskHandler | undefined
   referenceCollect: ReferenceCollectHandler | undefined
@@ -124,6 +132,8 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
     importAccount: options.importAccount,
     loginAccount: options.loginAccount,
     verifyAccount: options.verifyAccount,
+    activateAccount: options.activateAccount,
+    logoutAccount: options.logoutAccount,
     accountSummaries: options.accountSummaries,
     retryTask: options.retryTask,
     referenceCollect: options.referenceCollect,
@@ -198,6 +208,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, context:
       importAccount: context.importAccount,
       loginAccount: context.loginAccount,
       verifyAccount: context.verifyAccount,
+      activateAccount: context.activateAccount,
+      logoutAccount: context.logoutAccount,
       accountSummaries: context.accountSummaries,
       retryTask: context.retryTask,
       referenceCollect: context.referenceCollect,

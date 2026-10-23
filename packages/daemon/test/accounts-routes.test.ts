@@ -75,7 +75,7 @@ describe('POST /accounts/import', () => {
 })
 
 const SUMMARIES: AccountSummary[] = [
-  { accountId: '2206569289277', updatedAt: 1_700_000_000_000, savedFieldCount: 18, ready: true, unb: '2206569289277', ageMs: 4_000 },
+  { accountId: '2206569289277', updatedAt: 1_700_000_000_000, savedFieldCount: 18, ready: true, unb: '2206569289277', ageMs: 4_000, active: true },
 ]
 
 describe('GET /accounts', () => {

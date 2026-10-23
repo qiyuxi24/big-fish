@@ -18,10 +18,10 @@ import {
   openStore,
 } from '@bigfish/core'
 import type {
-  CredentialRecord,
   DaemonConfig,
   ItemRepository,
   Logger,
+  Settings,
   Store,
   TaskQueueHandle,
 } from '@bigfish/core'
@@ -30,11 +30,15 @@ import { dirname, join } from 'node:path'
 
 import { importAccountFromChrome } from './accounts.ts'
 import { listAccountSummaries } from './account-list.ts'
-import { buildAccountSessionState, classifyVerifyError } from './account-verify.ts'
+import { createAccountStateStore } from './account-state.ts'
+import { createAccountVerifier } from './account-session.ts'
+import { createAccountLifecycle } from './account-lifecycle.ts'
+import { createKeepAlivePicker, startAccountKeepAlive } from './account-keepalive.ts'
+import type { AccountKeepAlive } from './account-keepalive.ts'
 import { loginAndSave } from './login.ts'
 import { createReferenceCollector } from './reference.ts'
 import { createExecutors } from './executors.ts'
-import type { OperationPort, Session } from './executors.ts'
+import type { OperationPort } from './executors.ts'
 import type { ExecutorDeps } from './executor.ts'
 import { createFetchTransport, createOperationPort } from './operations.ts'
 import type { PublishPortOptions } from './operations.ts'
@@ -42,6 +46,7 @@ import { startDaemon } from './server.ts'
 import type { Daemon } from './server.ts'
 import type { RequestShutdown } from './routes.ts'
 import { createSettingsStore } from './settings.ts'
+import type { SettingsStore } from './settings.ts'
 import { startWorker } from './worker.ts'
 import type { WorkerHandle } from './worker.ts'
 import type { MtopTransport } from '@bigfish/channel-mtop'
@@ -61,6 +66,8 @@ export interface DaemonRuntimeOptions {
   owner?: string
   /** 是否自动开始 worker 轮询，默认 true；集成测试传 false 手动 tick。 */
   autoStartWorker?: boolean
+  /** 是否随设置启动账号保活定时器，默认 true；测试传 false，避免定时器泄漏到下一个用例。 */
+  autoStartKeepAlive?: boolean
   /** 优雅关停回调（POST /shutdown 触发）；cli 注入，测试可不传。 */
   requestShutdown?: RequestShutdown
   version?: string
@@ -106,6 +113,11 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
     })
     // 设置跟数据库放同一目录：一次备份/迁移就是搬整个数据目录，不用记两处路径。
     const settings = createSettingsStore(join(dirname(config.dbPath), 'settings.json'))
+    // 最近一次登录态检测的缓存：与 settings 同目录；文件坏了就当没有历史，绝不影响 /accounts。
+    const accountState = createAccountStateStore({
+      path: join(dirname(config.dbPath), 'account-state.json'),
+      ...(now === undefined ? {} : { now }),
+    })
 
     // ports：真实通道 + 测试覆盖；Partial 覆盖只替换指定方法。
     const basePorts = createOperationPort({
@@ -114,6 +126,54 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
       ...(options.publish === undefined ? {} : { publish: options.publish }),
     })
     const ports: OperationPort = { ...basePorts, ...(options.ports ?? {}) }
+
+    // 登录态校验执行器：同账号单飞 + 5s 冷却，结果与结论都落 account-state（见 account-session.ts）。
+    const verifier = createAccountVerifier({
+      credentials,
+      ports,
+      state: accountState,
+      now: now ?? Date.now,
+      onRecordError: (error) => {
+        logger.warn('账号状态缓存写入失败（不影响本次校验结论）', { error: messageOf(error) })
+      },
+    })
+    const lifecycle = createAccountLifecycle({
+      credentials,
+      settings,
+      state: accountState,
+      onStateError: (error) => {
+        logger.warn('账号状态缓存清理失败（凭据已删除）', { error: messageOf(error) })
+      },
+    })
+
+    // 保活定时器由设置驱动：update 成功后立刻按新开关/间隔重建，否则用户改完设置要等重启才生效。
+    // 包一层 SettingsStore 而不是改 routes：路由调用面保持不变（routes 只依赖 get/update）。
+    const autoStartKeepAlive = options.autoStartKeepAlive ?? true
+    let keepAlive: AccountKeepAlive | undefined
+    const stopKeepAlive = (): void => {
+      keepAlive?.stop()
+      keepAlive = undefined
+    }
+    const reconcileKeepAlive = (current: Settings): void => {
+      stopKeepAlive()
+      if (!autoStartKeepAlive || !current.keepAliveEnabled) return
+      keepAlive = startAccountKeepAlive({
+        intervalMs: current.keepAliveIntervalMs,
+        verify: (accountId) => verifier.verify(accountId, 'keepalive'),
+        pickAccountId: createKeepAlivePicker({ credentials, settings }),
+        onError: (error) => {
+          logger.warn('保活检测失败（定时器继续下一轮）', { error: messageOf(error) })
+        },
+      })
+    }
+    const settingsWithKeepAlive: SettingsStore = {
+      get: () => settings.get(),
+      update: async (patch) => {
+        const next = await settings.update(patch)
+        reconcileKeepAlive(next)
+        return next
+      },
+    }
 
     // 参考采集与执行器共用一份 transport：同一个账号、同一套超时语义。
     // 单独建 collector 而不是塞进 OperationPort：它不由队列任务驱动，是只读的即时查询。
@@ -161,15 +221,19 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
         queue,
         items,
         circuits,
-        settings,
+        settings: settingsWithKeepAlive,
         events,
         accounts: () => accounts,
-        // 账号面板的列表：只读摘要，cookie 值不出进程（见 account-list.ts）。
-        accountSummaries: () =>
-          listAccountSummaries({
+        // 账号面板的列表：只读摘要，cookie 值不出进程（见 account-list.ts）；顺带带上当前账号与最近检测结论。
+        accountSummaries: async () => {
+          const state = await accountState.read()
+          return listAccountSummaries({
             credentials,
+            state,
+            activeAccountId: await readActiveAccountId(settings),
             ...(options.now === undefined ? {} : { now: options.now }),
-          }),
+          })
+        },
         worker: () => worker.stats(),
         // 人工收尾：requeue 成功后必须立刻唤醒 worker，否则要等下一个 pollIntervalMs，
         // 用户在面板点「重试」会看起来没反应。tick 自身串行（正在 tick 时直接返回），
@@ -215,6 +279,16 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
           })
           // /status 的账号列表是启动时快照；导入后立刻刷新，概览面板才不会显示旧列表。
           await refreshAccounts()
+          // 第一个导入的账号自动成为当前账号：否则面板与保活都没有默认可操作对象。
+          // 设置写失败不回滚导入（凭据已经安全落盘），只在日志里提示。
+          try {
+            await lifecycle.activateIfEmpty(imported.accountId)
+          } catch (error) {
+            logger.warn('导入成功但设置当前账号失败（可在设置里手动切换）', {
+              accountId: imported.accountId,
+              error: messageOf(error),
+            })
+          }
           return imported
         },
         // 扫码登录与导入共用 CredentialStore，只是多了「开页面 + 等扫码」的轮询。
@@ -224,60 +298,40 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
             input,
           )
           await refreshAccounts()
+          try {
+            await lifecycle.activateIfEmpty(logged.accountId)
+          } catch (error) {
+            logger.warn('登录成功但设置当前账号失败（可在设置里手动切换）', {
+              accountId: logged.accountId,
+              error: messageOf(error),
+            })
+          }
           return logged
         },
         // 登录态校验：只读探测，失败也回 200 + online:false——面板要的是「账号掉没掉线」，
         // 而不是把 mtop 错误码当成 daemon 故障。只有账号不存在（VALIDATION）与能力未装配走错误信封。
-        verifyAccount: async (input) => {
-          const checkedAt = now === undefined ? Date.now() : now()
-          let record: CredentialRecord | undefined
-          try {
-            record = await credentials.load(input.accountId)
-          } catch (error) {
-            // 凭据库读失败是本地故障，但结论仍然只是「校验不出登录态」，不该变成 HTTP 500。
-            return buildAccountSessionState({
-              accountId: input.accountId,
-              checkedAt,
-              refreshed: false,
-              failure: classifyVerifyError(error),
-            })
-          }
-          if (record === undefined) fail('VALIDATION', '账号不存在：' + input.accountId)
-          const credential: CredentialRecord = record
-          let refreshed = false
-          const deviceId = credential.meta?.['deviceId']
-          const session: Session = {
-            accountId: credential.accountId,
-            cookies: credential.cookies,
-            ...(typeof deviceId === 'string' ? { deviceId } : {}),
-            // 与 executors 的 sessionWriter 同语义：save 成功才置 refreshed；meta 必须原样带回，
-            // 丢了 deviceId 会影响后续 IM 鉴权。
-            onSessionUpdate: async (cookies: Record<string, string>): Promise<void> => {
-              await credentials.save({
-                accountId: credential.accountId,
-                cookies,
-                ...(credential.meta === undefined ? {} : { meta: credential.meta }),
-              })
-              refreshed = true
-            },
-          }
-          try {
-            await ports.verifySession({ session })
-            return buildAccountSessionState({ accountId: credential.accountId, checkedAt, refreshed })
-          } catch (error) {
-            return buildAccountSessionState({
-              accountId: credential.accountId,
-              checkedAt,
-              refreshed,
-              failure: classifyVerifyError(error),
-            })
-          }
+        verifyAccount: async (input) => verifier.verify(input.accountId),
+        // 切换当前账号只是本地设置，不触达闲鱼；退出登录只删本地凭据（见 account-lifecycle.ts）。
+        activateAccount: async (input) => lifecycle.activate(input.accountId),
+        logoutAccount: async (input) => {
+          const result = await lifecycle.logout(input.accountId)
+          // /status 的账号列表是启动时快照（见下方注释）：退出后必须刷新，否则概览面板仍显示已删账号。
+          await refreshAccounts()
+          return result
         },
         ...(options.version === undefined ? {} : { version: options.version }),
       })
     } catch (error) {
+      stopKeepAlive()
       await worker.stop()
       throw error
+    }
+
+    // 启动保活：设置读失败只告警，不让一个可选后台任务拖垮 daemon 启动。
+    try {
+      reconcileKeepAlive(await settings.get())
+    } catch (error) {
+      logger.warn('读取设置失败，账号保活未启动', { error: messageOf(error) })
     }
 
     let closed = false
@@ -294,6 +348,7 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
       async close(): Promise<void> {
         if (closed) return
         closed = true
+        stopKeepAlive()
         await worker.stop()
         await daemon.close()
         queue.close()
@@ -304,4 +359,17 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
     store.close()
     throw error
   }
+}
+
+/** settings 读不出来时只影响「当前账号」高亮，不该让账号列表 500。 */
+async function readActiveAccountId(settings: SettingsStore): Promise<string> {
+  try {
+    return (await settings.get()).activeAccountId
+  } catch {
+    return ''
+  }
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }

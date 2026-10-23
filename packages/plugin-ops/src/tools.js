@@ -520,6 +520,8 @@ export function buildTools(deps) {
           specs: { type: 'object', additionalProperties: { type: 'string' }, description: '型号/尺寸/材质等键值，值一律字符串。' },
           flaws: { type: 'array', maxItems: 10, items: { type: 'string' }, description: '瑕疵清单，每条一个；不给表示未填写。' },
           accessories: { type: 'array', maxItems: 20, items: { type: 'string' }, description: '配件清单。' },
+          reason: { type: 'string', maxLength: 200, description: '出售原因（换新/搬家/闲置）；第 2 段的事实来源，不给就不许编故事。' },
+          usedMonths: { type: 'integer', minimum: 0, maximum: 600, description: '已使用月数；不给就不写。' },
           imagePaths: { type: 'array', maxItems: 9, items: { type: 'string' }, description: '本机图片绝对路径；面板入口通常暂缺，提示词会标为待补。' },
           variantCount: { type: 'integer', minimum: 1, maximum: 3, description: '备选套数，默认 1。' },
           usedAiImages: { type: 'boolean', description: '是否含 AI 生成图；true 时描述第 3 段必须声明。' },

@@ -378,10 +378,13 @@ test('账号表：进入 tab 自动检测一次，在线徽标「在线」，账
   assert.equal(rows.length, 1)
   assert.match(toText(rows[0]), /2206569289277/)
   assert.equal(toText(roleNodes(tree(), 'account-status')[0]), '在线')
-  assert.match(toText(roleNodes(tree(), 'account-checked')[0]), /^[0-9]{2}:[0-9]{2}:[0-9]{2}$/)
+  assert.match(toText(roleNodes(tree(), 'account-checked')[0]), /^[0-9]{2}:[0-9]{2}:[0-9]{2}（自动）$/)
   assert.match(toText(roleNodes(tree(), 'account-updated')[0]), /天前 · 字段齐备/)
-  assert.equal(toText(roleNodes(tree(), 'account-fields')[0]), '3')
-  for (const role of ['account-verify', 'account-import', 'account-login']) {
+  assert.match(toText(roleNodes(tree(), 'account-fields')[0]), /3 项/)
+  // 7 列齐全：当前 / 账号 / 登录状态 / 登录态剩余 / 最近检测 / 凭据更新 / 操作。
+  assert.equal(roleNodes(tree(), 'account-lifetime').length, 1)
+  assert.equal(toText(roleNodes(tree(), 'account-lifetime')[0]), '—')
+  for (const role of ['account-verify', 'account-import', 'account-login', 'account-logout', 'account-switch']) {
     assert.equal(roleElements(tree(), role).length, 1, '缺少按钮：' + role)
   }
 
@@ -482,19 +485,21 @@ test('账号表：扫码登录也要点两次，第二次带 confirm:true 发 ac
   assert.match(toText(tree()), /扫码登录成功/)
 })
 
-test('账号表：空列表显示「还没有导入账号」+ 导入/扫码入口', async () => {
+test('账号表：空列表显示「还没有导入账号」+ 顶部添加账户入口', async () => {
   const replies = daemonReplies()
   replies.accounts = { ok: true, value: [] }
   const { calls, text, tree } = await openAccountTab(replies)
 
   assert.match(text, /还没有导入账号/)
   assert.equal(roleNodes(tree(), 'account-empty').length, 1)
-  assert.equal(roleElements(tree(), 'account-import').length, 1)
-  assert.equal(roleElements(tree(), 'account-login').length, 1)
+  assert.equal(roleElements(tree(), 'account-import').length, 0)
+  assert.equal(roleElements(tree(), 'account-login').length, 0)
+  assert.equal(roleElements(tree(), 'account-add-import').length, 1)
+  assert.equal(roleElements(tree(), 'account-add-login').length, 1)
   assert.equal(calls.filter((call) => call.endpoint === 'accounts.verify').length, 0)
 })
 
-test('账号表：来回切 tab 不重复自动检测（60 秒缓存）', async () => {
+test('账号表：来回切 tab 不重复自动检测（10 分钟缓存）', async () => {
   const replies = daemonReplies()
   replies['accounts.verify'] = { ok: true, value: { online: true, checkedAt: Date.now() } }
   const { mounted, calls } = await openAccountTab(replies)
@@ -508,6 +513,133 @@ test('账号表：来回切 tab 不重复自动检测（60 秒缓存）', async 
   mounted.flush()
   await settle()
   assert.equal(count(), 1)
+})
+
+test('账号表：多账号点「切换」调 accounts.activate（本地状态，不需 confirm），当前徽标跟着换', async () => {
+  const replies = daemonReplies()
+  let accountsList = [
+    { accountId: 'acc-1', updatedAt: Date.now(), savedFieldCount: 3, ready: true, active: true },
+    { accountId: 'acc-2', updatedAt: Date.now(), savedFieldCount: 3, ready: true, active: false },
+  ]
+  replies.accounts = () => ({ ok: true, value: accountsList })
+  replies['accounts.verify'] = (payload) => ({ ok: true, value: { accountId: payload.accountId, online: true, checkedAt: Date.now() } })
+  replies['accounts.activate'] = (payload) => {
+    if (payload.accountId !== 'acc-2') return { ok: false, error: { code: 'VALIDATION', message: '账号不存在' } }
+    accountsList = accountsList.map((account) => ({ ...account, active: account.accountId === 'acc-2' }))
+    return { ok: true, value: { activeAccountId: 'acc-2' } }
+  }
+  const { calls, tree } = await openAccountTab(replies)
+
+  const switches = roleElements(tree(), 'account-switch')
+  assert.equal(switches.length, 2)
+  assert.equal(toText(roleNodes(tree(), 'account-active')[0]), '当前')
+  switches[1].props.onClick()
+  await settle()
+
+  const activates = calls.filter((call) => call.endpoint === 'accounts.activate')
+  assert.equal(activates.length, 1)
+  assert.equal(activates[0].payload.accountId, 'acc-2')
+  // activate 只改本地设置，不能带 confirm（它不是 WRITE_ENDPOINTS）。
+  assert.equal('confirm' in activates[0].payload, false)
+  assert.match(toText(tree()), /已切换到 acc-2/)
+  const rows = roleNodes(tree(), 'account-row')
+  assert.equal(toText(rows[1]).includes('当前'), true)
+  assert.equal(toText(rows[0]).includes('当前'), false)
+  assert.equal(toText(roleNodes(tree(), 'account-status')[0]), '在线')
+})
+
+test('账号表：登录态剩余倒计时（estimated 加「（估算）」、过期显示「已过期」、缺失显示「—」）', async () => {
+  const replies = daemonReplies()
+  const lifetime = Date.now() + 2 * 3600_000 + 13 * 60_000 + 30_000
+  replies.accounts = { ok: true, value: [
+    { accountId: 'acc-browser', updatedAt: Date.now(), savedFieldCount: 3, ready: true, loginExpiresAt: lifetime, loginExpiresSource: 'browser' },
+    { accountId: 'acc-est', updatedAt: Date.now(), savedFieldCount: 3, ready: true, loginExpiresAt: lifetime, loginExpiresSource: 'estimated' },
+    { accountId: 'acc-old', updatedAt: Date.now(), savedFieldCount: 3, ready: true, loginExpiresAt: Date.now() - 60_000 },
+    { accountId: 'acc-unknown', updatedAt: Date.now(), savedFieldCount: 3, ready: true },
+  ] }
+  replies['accounts.verify'] = (payload) => ({ ok: true, value: { accountId: payload.accountId, online: true, checkedAt: Date.now() } })
+  const { tree } = await openAccountTab(replies)
+  const lifetimes = roleNodes(tree(), 'account-lifetime').map((node) => toText(node))
+  assert.equal(lifetimes[0], '2 小时 13 分')
+  assert.equal(lifetimes[1], '2 小时 13 分（估算）')
+  assert.equal(lifetimes[2], '已过期')
+  assert.equal(lifetimes[3], '—')
+})
+
+test('账号表：退出登录点两次才发 accounts.logout（confirm:true），第一次只提示不删凭据', async () => {
+  const replies = daemonReplies()
+  replies['accounts.verify'] = { ok: true, value: { online: true, checkedAt: Date.now() } }
+  replies['accounts.logout'] = (payload) => ({ ok: true, value: { accountId: payload.accountId, activeAccountId: '' } })
+  const { calls, tree } = await openAccountTab(replies)
+  const logouts = () => calls.filter((call) => call.endpoint === 'accounts.logout')
+
+  roleElements(tree(), 'account-logout')[0].props.onClick()
+  assert.equal(logouts().length, 0)
+  assert.match(toText(tree()), /确认退出登录/)
+  assert.match(toText(tree()), /只删本地凭据/)
+
+  roleElements(tree(), 'account-logout')[0].props.onClick()
+  await settle()
+  assert.equal(logouts().length, 1)
+  assert.equal(logouts()[0].payload.accountId, '2206569289277')
+  assert.equal(logouts()[0].payload.confirm, true)
+  assert.match(toText(tree()), /已退出 2206569289277/)
+})
+
+test('添加账户：输入账号 id 与 Chrome 端口，点两次才带 confirm:true 发 accounts.import', async () => {
+  const replies = daemonReplies()
+  replies['accounts.import'] = (payload) => ({ ok: true, value: { accountId: payload.accountId } })
+  const { calls, tree } = await openAccountTab(replies)
+  const imports = () => calls.filter((call) => call.endpoint === 'accounts.import')
+
+  roleNodes(tree(), 'account-add-id')[0].props.onChange({ target: { value: 'acc-new' } })
+  roleNodes(tree(), 'account-add-port')[0].props.onChange({ target: { value: '9333' } })
+  roleElements(tree(), 'account-add-import')[0].props.onClick()
+  assert.equal(imports().length, 0)
+  assert.match(toText(tree()), /确认导入/)
+  roleElements(tree(), 'account-add-import')[0].props.onClick()
+  await settle()
+  assert.equal(imports().length, 1)
+  assert.equal(imports()[0].payload.confirm, true)
+  assert.equal(imports()[0].payload.port, 9333)
+  assert.equal(imports()[0].payload.accountId, 'acc-new')
+  assert.match(toText(tree()), /登录态已导入/)
+
+  // 非法端口在面板侧就拦下，不发请求。
+  roleNodes(tree(), 'account-add-port')[0].props.onChange({ target: { value: '70000' } })
+  roleElements(tree(), 'account-add-import')[0].props.onClick()
+  await settle()
+  assert.equal(imports().length, 1)
+  assert.match(toText(tree()), /端口必须是 1..65535 的整数/)
+})
+
+test('登录保活：settings.get 回填，保存点两次、秒换算毫秒并带 confirm:true，保存后重新拉设置', async () => {
+  const replies = daemonReplies()
+  let settings = { copyStyle: 'warm', defaultCategory: '电子资料', publishMinIntervalMs: 180000, keepAliveEnabled: true, keepAliveIntervalMs: 600000 }
+  replies['settings.get'] = () => ({ ok: true, value: settings })
+  replies['accounts.verify'] = { ok: true, value: { online: true, checkedAt: Date.now() } }
+  replies['settings.put'] = (payload) => { settings = { ...settings, ...payload.patch }; return { ok: true, value: settings } }
+  const { calls, tree } = await openAccountTab(replies)
+  const saves = () => calls.filter((call) => call.endpoint === 'settings.put')
+  const settingsReads = () => calls.filter((call) => call.endpoint === 'settings.get').length
+  const before = settingsReads()
+
+  assert.equal(roleNodes(tree(), 'keepalive-toggle')[0].props.checked, true)
+  assert.equal(roleNodes(tree(), 'keepalive-interval')[0].props.value, '600')
+  roleNodes(tree(), 'keepalive-interval')[0].props.onChange({ target: { value: '900' } })
+  roleElements(tree(), 'keepalive-save')[0].props.onClick()
+  assert.equal(saves().length, 0)
+  assert.match(toText(tree()), /确认保存/)
+  roleElements(tree(), 'keepalive-save')[0].props.onClick()
+  await settle()
+
+  assert.equal(saves().length, 1)
+  assert.equal(saves()[0].payload.confirm, true)
+  assert.equal(saves()[0].payload.patch.keepAliveEnabled, true)
+  assert.equal(saves()[0].payload.patch.keepAliveIntervalMs, 900000)
+  assert.match(toText(tree()), /保活设置已保存/)
+  // 保存成功后必须重新拉一次 settings.get 回填，而不是复用旧值。
+  assert.equal(settingsReads(), before + 1)
 })
 
 test('侧边栏图标渲染 🐟，选中态与未选中态透明度不同', () => {
@@ -635,6 +767,94 @@ test('面板内嵌的风格表与 src/copy.js 权威定义不漂移', () => {
   assert.deepEqual(options.map((option) => option.id), COPY_STYLES.map((style) => style.id))
   assert.deepEqual(options.map((option) => option.label), COPY_STYLES.map((style) => style.label))
   assert.deepEqual(options.map((option) => option.summary), COPY_STYLES.map((style) => style.summary))
+})
+
+/** 文案页的最小模板回放：一个品类一项规格，足够验证勾选语义与组装。 */
+function copyTemplatesReply() {
+  return {
+    ok: true,
+    value: {
+      common: [
+        { id: 'productName', label: '商品名', type: 'text', group: 'base', required: true, maxLength: 120 },
+        { id: 'priceYuan', label: '售价（元）', type: 'text', group: 'base', required: true, maxLength: 20 },
+        { id: 'condition', label: '成色', type: 'enum', group: 'base', required: true, options: [{ value: 'like-new', label: '几乎全新' }] },
+        { id: 'reason', label: '出售原因', type: 'text', group: 'story', maxLength: 200 },
+      ],
+      categories: [
+        { id: 'digital', label: '数码/手机', categoryHint: '数码/手机', specs: [{ id: 'model', label: '型号', type: 'text', group: 'specs', maxLength: 60 }] },
+        { id: 'other', label: '其他', categoryHint: '', specs: [] },
+      ],
+    },
+  }
+}
+
+test('品类模板：拉到后按品类渲染，勾选/取消决定最终参数（未勾选不出现）', async () => {
+  const { connection } = createFakeConnection({ 'copy.templates': copyTemplatesReply() })
+  const mounted = mountPanel({ connection })
+  // 先渲染一次让 useEffect 注册，再 flush + 等微任务链落地。
+  mounted.render()
+  mounted.flush()
+  await settle()
+  let tree = mounted.openTab('文案')
+  assert.deepEqual(roleElements(tree, 'copy-category').map(toText), ['数码/手机', '其他'])
+  assert.equal(roleElements(tree, 'copy-category')[0].props['aria-pressed'], true)
+
+  const checkbox = field => roleNodes(tree, 'copy-field').find(node => node.props['data-field'] === field)
+  const inputOf = field => roleNodes(tree, 'copy-input').find(node => node.props['data-field'] === field)
+  // 规格默认选中（选了品类就要把这些说清楚），叙事字段默认不选。
+  assert.equal(checkbox('model').props.checked, true)
+  assert.equal(checkbox('reason').props.checked, false)
+
+  inputOf('productName').props.onChange({ target: { value: 'iPad Air 5' } })
+  tree = mounted.render()
+  inputOf('priceYuan').props.onChange({ target: { value: '2200' } })
+  tree = mounted.render()
+  inputOf('model').props.onChange({ target: { value: 'A2588' } })
+  tree = mounted.render()
+  checkbox('model').props.onChange({ target: { checked: false } })
+  tree = mounted.render()
+  checkbox('reason').props.onChange({ target: { checked: true } })
+  tree = mounted.render()
+  inputOf('reason').props.onChange({ target: { value: '换新后闲置' } })
+  tree = mounted.render()
+
+  roleElements(tree, 'copy-submit')[0].props.onClick()
+  tree = mounted.render()
+  const text = toText(tree)
+  assert.match(text, /"reason": "换新后闲置"/)
+  // 填了值但取消勾选 → 既不进 specs，也不出现该键；空规格不生成空对象。
+  assert.equal(text.includes('"model"'), false)
+  assert.equal(text.includes('"specs"'), false)
+})
+
+test('全选 / 清空：清空会把规格的默认选中显式取消', () => {
+  const { connection } = createFakeConnection({ 'copy.templates': copyTemplatesReply() })
+  const mounted = mountPanel({ connection })
+  mounted.flush()
+  let tree = mounted.openTab('文案')
+  roleElements(tree, 'copy-pick-all')[0].props.onClick()
+  tree = mounted.render()
+  assert.equal(roleNodes(tree, 'copy-field').every(node => node.props.checked === true), true)
+
+  roleElements(tree, 'copy-clear')[0].props.onClick()
+  tree = mounted.render()
+  assert.equal(roleNodes(tree, 'copy-field').every(node => node.props.checked === false), true)
+})
+
+test('品类模板拉不到：显式提示降级，仍能用通用字段生成；模板只拉一次', async () => {
+  const { connection, calls } = createFakeConnection({})
+  const mounted = mountPanel({ connection })
+  mounted.render()
+  mounted.flush()
+  await settle()
+  let tree = mounted.openTab('文案')
+  assert.match(toText(tree), /品类模板没拉到/)
+  assert.deepEqual(roleElements(tree, 'copy-category').map(toText), ['其他'])
+
+  mounted.openTab('自动发布')
+  tree = mounted.openTab('文案')
+  assert.match(toText(tree), /品类模板没拉到/)
+  assert.equal(calls.filter(call => call.endpoint === 'copy.templates').length, 1)
 })
 
 test('「自动发布」模块（默认 tab）：流水线四步、草稿集与类目矩阵都在', () => {
@@ -783,8 +1003,8 @@ test('rpc 在线：health / 账号就绪 / 队列计数 / 最近批次 / 设置�
   // 乱序断言：effect 的 flush 顺序由假 React 的注册顺序决定，这里只认「都发了、payload 对」。
   assert.deepEqual(calls.filter((call) => call.endpoint === 'tasks.list').map((call) => call.payload.limit).sort(), [20, 50])
   assert.deepEqual(
-    calls.map((call) => call.endpoint).filter((endpoint) => endpoint !== 'tasks.list'),
-    ['health', 'status', 'accounts', 'settings.get', 'events.list', 'batches.get'],
+    calls.map((call) => call.endpoint).filter((endpoint) => endpoint !== 'tasks.list').sort(),
+    ['accounts', 'batches.get', 'copy.templates', 'events.list', 'health', 'settings.get', 'status'],
   )
   assert.equal(calls.every((call) => call.channel === '/bigfish'), true)
   assert.equal(calls.filter((call) => call.endpoint === 'events.list')[0].payload.since, 0)

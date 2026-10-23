@@ -49,7 +49,7 @@
 - 错误：只用 `class XianyuError extends Error`，带稳定 `code`（`VALIDATION | AUTH_EXPIRED | RISK_CONTROL | RATE_LIMITED | CIRCUIT_OPEN | NETWORK | STORAGE | UNSUPPORTED | INTERNAL | UNAUTHORIZED | UNKNOWN`）。禁止裸 `throw "字符串"`、禁止 `catch {}` 吞异常。
 - **金额一律整数分（cent），时间一律整数毫秒**，禁止浮点相乘（mtop 字段本身就是分）。
 - 所有 IO 必须有超时（默认 15s）并透传 `AbortSignal`；重试只对幂等请求，退避用 `min(60 * 2^(n-1), 1800)` 秒。
-- 文件 ≤ 400 行、函数 ≤ 60 行（`packages/plugin-ops/client.js` 例外：loader 每个包只下发**一个** client bundle、无构建步骤，拆文件就要引 bundler，故上限 700 行——四模块面板都挤在这一个 bundle 里；超了先说明再谈）。复杂分支写"为什么"，不写"做了什么"。
+- 文件 ≤ 400 行、函数 ≤ 60 行（`packages/plugin-ops/client.js` 例外：loader 每个包只下发**一个** client bundle、无构建步骤，拆文件就要引 bundler，故上限 900 行（2026-10-23 账号模块扩功能时从 700 上调）——四模块面板都挤在这一个 bundle 里；超了先说明再谈）。复杂分支写"为什么"，不写"做了什么"。
 - 标识符/commit 用英文，注释与用户可见文案用中文。
 - 不新增依赖除非必要（禁 lodash/moment/dayjs，用原生）；新依赖需在 PR 说明体积与替代方案。
 - 日志用结构化 JSON（稳定字段名），INFO 以上才落盘。

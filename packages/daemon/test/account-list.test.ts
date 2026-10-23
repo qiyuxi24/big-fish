@@ -8,8 +8,9 @@ import { describe, it } from 'node:test'
 import { XianyuError } from '@bigfish/core'
 import type { CredentialRecord } from '@bigfish/core'
 
-import { listAccountSummaries } from '../src/account-list.ts'
+import { ESTIMATED_TOKEN_TTL_MS, listAccountSummaries } from '../src/account-list.ts'
 import type { CredentialSource } from '../src/account-list.ts'
+import type { AccountRuntimeState } from '../src/account-state.ts'
 
 function record(accountId: string, cookies: Record<string, string>, updatedAt = 1_000): CredentialRecord {
   return { accountId, cookies, updatedAt }
@@ -36,7 +37,7 @@ describe('listAccountSummaries', () => {
       now: () => 5_000,
     })
     assert.deepEqual(summaries, [
-      { accountId: '2206569289277', updatedAt: 1_000, savedFieldCount: 3, ready: true, unb: '2206569289277', ageMs: 4_000 },
+      { accountId: '2206569289277', updatedAt: 1_000, savedFieldCount: 3, ready: true, unb: '2206569289277', ageMs: 4_000, active: false },
     ])
   })
 
@@ -79,6 +80,7 @@ describe('listAccountSummaries', () => {
       savedFieldCount: 0,
       ready: false,
       ageMs: 0,
+      active: false,
       broken: true,
       brokenReason: '凭据文件无法读取或解密（STORAGE）',
     })
@@ -93,6 +95,68 @@ describe('listAccountSummaries', () => {
   it('时钟倒退时 ageMs 不为负', async () => {
     const summaries = await listAccountSummaries({ credentials: source({ a1: record('a1', { unb: 'u', _m_h5_tk: 'tk' }, 5_000) }), now: () => 1_000 })
     assert.equal(summaries[0]?.ageMs, 0)
+  })
+
+  it('active 标记来自 deps.activeAccountId（缺省一律 false）', async () => {
+    const summaries = await listAccountSummaries({
+      credentials: source({ a1: record('a1', {}), a2: record('a2', {}) }),
+      now: () => 1,
+      activeAccountId: 'a2',
+    })
+    assert.deepEqual(summaries.map((summary) => summary.active), [false, true])
+  })
+
+  it('meta.refreshedAt → 按 refreshedAt + ESTIMATED_TOKEN_TTL_MS 估算，来源 estimated', async () => {
+    const summaries = await listAccountSummaries({
+      credentials: source({
+        a1: { ...record('a1', { unb: 'u', _m_h5_tk: 'tk' }), meta: { refreshedAt: 1_000_000 } },
+      }),
+      now: () => 2_000_000,
+    })
+    assert.equal(summaries[0]?.loginExpiresAt, 1_000_000 + ESTIMATED_TOKEN_TTL_MS)
+    assert.equal(summaries[0]?.loginExpiresSource, 'estimated')
+  })
+
+  it('无 refreshedAt → 用导入时读到的 meta.expires._m_h5_tk，来源 browser', async () => {
+    const summaries = await listAccountSummaries({
+      credentials: source({ a1: { ...record('a1', {}), meta: { expires: { _m_h5_tk: 999_000 } } } }),
+      now: () => 1,
+    })
+    assert.equal(summaries[0]?.loginExpiresAt, 999_000)
+    assert.equal(summaries[0]?.loginExpiresSource, 'browser')
+  })
+
+  it('refreshedAt 优先于 expires（刷新过的令牌已续期，旧过期时间不再可信）', async () => {
+    const summaries = await listAccountSummaries({
+      credentials: source({
+        a1: { ...record('a1', {}), meta: { refreshedAt: 1_000, expires: { _m_h5_tk: 5_000 } } },
+      }),
+      now: () => 1,
+    })
+    assert.equal(summaries[0]?.loginExpiresSource, 'estimated')
+    assert.equal(summaries[0]?.loginExpiresAt, 1_000 + ESTIMATED_TOKEN_TTL_MS)
+  })
+
+  it('两种过期时间来源都没有 → 生命周期字段全部缺省（不编造时间）', async () => {
+    const summaries = await listAccountSummaries({ credentials: source({ a1: record('a1', {}) }), now: () => 1 })
+    const summary = summaries[0] ?? {}
+    assert.equal('loginExpiresAt' in summary, false)
+    assert.equal('loginExpiresSource' in summary, false)
+    assert.equal('lastCheckedAt' in summary, false)
+    assert.equal('lastOnline' in summary, false)
+    assert.equal('lastCode' in summary, false)
+  })
+
+  it('account-state 快照 → lastCheckedAt / lastOnline / lastCode', async () => {
+    const state: Record<string, AccountRuntimeState> = {
+      a1: { checkedAt: 444, online: false, refreshed: false, source: 'keepalive', code: 'AUTH_EXPIRED', message: '登录态已失效' },
+    }
+    const summaries = await listAccountSummaries({ credentials: source({ a1: record('a1', {}) }), now: () => 1, state })
+    assert.equal(summaries[0]?.lastCheckedAt, 444)
+    assert.equal(summaries[0]?.lastOnline, false)
+    assert.equal(summaries[0]?.lastCode, 'AUTH_EXPIRED')
+    // 摘要只带 code，不带 message：面板按 code 查自己的文案，避免 daemon 文案与 UI 版本漂移。
+    assert.equal('lastMessage' in (summaries[0] ?? {}), false)
   })
 
   it('摘要里不出现任何 cookie 值（只回个数）', async () => {

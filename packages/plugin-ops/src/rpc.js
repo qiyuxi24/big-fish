@@ -11,6 +11,7 @@
  *
  * @module @bigfish/plugin-ops/rpc
  */
+import { listCategoryTemplates } from './category-templates.js'
 import { startDaemon, stopDaemon } from './daemon-control.js'
 
 /**
@@ -53,7 +54,12 @@ const VERIFY_REQUEST_TIMEOUT_MS = 40_000
 const SETTINGS_FIELDS = new Set([
   'copyStyle', 'defaultCategory', 'defaultAddress', 'shipping',
   'publishMinIntervalMs', 'maxBatchItems', 'imageProvider',
+  // 账号模块（2026-10-23）：当前账号 / 登录保活开关与间隔。
+  'activeAccountId', 'keepAliveEnabled', 'keepAliveIntervalMs',
 ])
+/** 保活间隔：面板按秒输入，host 侧统一存毫秒（60s ~ 1h）。 */
+const KEEP_ALIVE_INTERVAL_MIN_MS = 60_000
+const KEEP_ALIVE_INTERVAL_MAX_MS = 3_600_000
 
 /**
  * 写类端点：必须 payload.confirm === true 才放行。
@@ -61,6 +67,8 @@ const SETTINGS_FIELDS = new Set([
  */
 const WRITE_ENDPOINTS = new Set([
   'tasks.retry', 'accounts.import', 'accounts.login', 'batch.enqueue', 'settings.put',
+  // 退出登录只删本地凭据（不注销网页会话），但也是不可逆的本地状态变更，要求 confirm:true。
+  'accounts.logout',
   // 停 daemon 会中断正在执行的任务：和写闲鱼一样要求 confirm:true。
   'daemon.stop',
 ])
@@ -208,12 +216,29 @@ function readSettingsPatch(raw) {
     if (!SETTINGS_FIELDS.has(key)) bad('settings 不支持字段：' + key.slice(0, 40))
     const value = raw[key]
     if (key === 'publishMinIntervalMs') patch[key] = readIntegerValue(value, key, PUBLISH_MIN_INTERVAL_MIN_MS, PUBLISH_MIN_INTERVAL_MAX_MS)
+    else if (key === 'keepAliveIntervalMs') patch[key] = readIntegerValue(value, key, KEEP_ALIVE_INTERVAL_MIN_MS, KEEP_ALIVE_INTERVAL_MAX_MS)
+    else if (key === 'keepAliveEnabled') patch[key] = readBoolean(value, key)
+    else if (key === 'activeAccountId') patch[key] = readActiveAccountId(value)
     else if (key === 'maxBatchItems') patch[key] = readIntegerValue(value, key, 1, MAX_BATCH_ITEMS_LIMIT)
     else if (key === 'imageProvider') patch[key] = readImageProvider(value)
     else if (key === 'shipping') patch[key] = readShipping(value)
     else patch[key] = readSettingsText(value, key)
   }
   return patch
+}
+
+function readBoolean(value, field) {
+  if (typeof value !== 'boolean') bad(field + ' 必须是布尔')
+  return value
+}
+
+/** 当前账号：空串表示「没有当前账号」，非空必须是合法 accountId。 */
+function readActiveAccountId(value) {
+  if (typeof value !== 'string') bad('activeAccountId 必须是字符串')
+  const text = value.trim()
+  if (text.length > 64) bad('activeAccountId 最长 64 个字符')
+  if (text !== '' && !ACCOUNT_ID_RE.test(text)) bad('activeAccountId 格式非法：' + text.slice(0, 40))
+  return text
 }
 
 function readSettingsText(value, field) {
@@ -343,6 +368,18 @@ function verifyAccountEndpoint(client, body) {
   return client.request(path, { method: 'POST', body: {}, timeoutMs: VERIFY_REQUEST_TIMEOUT_MS })
 }
 
+function activateAccountEndpoint(client, body) {
+  const accountId = readRequiredString(body, 'accountId', ACCOUNT_ID_RE)
+  if (typeof client.activateAccount === 'function') return client.activateAccount(accountId)
+  return client.request('/accounts/activate', { method: 'POST', body: { accountId } })
+}
+
+function logoutAccountEndpoint(client, body) {
+  const accountId = readRequiredString(body, 'accountId', ACCOUNT_ID_RE)
+  if (typeof client.logoutAccount === 'function') return client.logoutAccount(accountId)
+  return client.request('/accounts/' + encodeURIComponent(accountId) + '/logout', { method: 'POST', body: {} })
+}
+
 function enqueueBatchEndpoint(client, body) {
   const batchId = readOptionalString(body, 'batchId', 64)
   if (batchId !== undefined && !BATCH_ID_RE.test(batchId)) bad('batchId 格式非法：' + batchId.slice(0, 40))
@@ -359,6 +396,8 @@ function createDefaultHandlers(options) {
     status: () => client.status(),
     accounts: () => client.listAccounts(),
     'items.list': () => client.listItems(),
+    // 面板「文案」tab 的品类模板：纯常量、不碰 daemon，也不写任何状态。
+    'copy.templates': () => listCategoryTemplates(),
     'tasks.list': (body) => client.listTasks(readTaskFilter(body)),
     // 面板工作流树：只读增量拉取，since 游标由客户端持有（daemon 不记面板状态）。
     'events.list': (body) => client.listEvents(readEventFilter(body)),
@@ -371,6 +410,9 @@ function createDefaultHandlers(options) {
     'accounts.login': (body) => loginAccountEndpoint(client, body),
     // 只读探测（不写闲鱼、不写磁盘外的状态）：不挂 confirm，面板进 tab 可自动调用。
     'accounts.verify': (body) => verifyAccountEndpoint(client, body),
+    // 切换当前账号只改本地设置（不触达闲鱼），因此不进 WRITE_ENDPOINTS；退出登录要 confirm。
+    'accounts.activate': (body) => activateAccountEndpoint(client, body),
+    'accounts.logout': (body) => logoutAccountEndpoint(client, body),
     'batch.enqueue': (body) => enqueueBatchEndpoint(client, body),
     // 面板「进程管理」按钮：start 让宿主拉起 daemon（跳过冷却，人点了就要试），
     // stop 是写操作（会打断在飞任务），因此挂在 WRITE_ENDPOINTS 后面等 confirm。

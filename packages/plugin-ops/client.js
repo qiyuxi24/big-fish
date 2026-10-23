@@ -57,11 +57,88 @@ window.__ModuleLoader__.load({
       if (accountId.trim() !== '') args.accountId = accountId.trim()
       return args
     }
-    /** 组装 xy_copy_plan 参数（纯数据）；价格按「元」原样传，转分交给 host。 */
-    function buildCopyPlanArguments(styleId, productName, priceYuan, condition) {
-      const args = { styleId, productName: productName.trim(), condition }
-      const price = priceYuan.trim()
-      if (price !== '') args.priceYuan = price
+    /**
+     * 模板兜底：rpc `copy.templates` 拉不到（daemon 未起、宿主里是旧插件）时，至少能填最小事实。
+     * 有模板时以 host 下发的为准——client 不复刻品类表，避免第二份定义漂移。
+     */
+    const FALLBACK_TEMPLATE = {
+      common: [
+        { id: 'productName', label: '商品名', type: 'text', group: 'base', required: true, maxLength: 120 },
+        { id: 'priceYuan', label: '售价（元）', type: 'text', group: 'base', required: true, maxLength: 20 },
+        { id: 'condition', label: '成色', type: 'enum', group: 'base', required: true, options: CONDITION_OPTIONS.map(option => ({ value: option.id, label: option.label })) },
+      ],
+      categories: [{ id: 'other', label: '其他', categoryHint: '', specs: [] }],
+    }
+    /** 输入框占位符：只影响手感，不参与组装。 */
+    const FIELD_PLACEHOLDERS = {
+      productName: '如：iPhone 13 128G 星光色',
+      priceYuan: '如：129.90',
+      imagePaths: 'D:/pics/01.jpg, D:/pics/02.jpg',
+      flaws: '边框两处磕碰, 屏幕无划痕',
+      accessories: '原装充电线, 包装盒',
+      reason: '换新机后闲置 / 搬家清库存',
+    }
+    function isTemplateField(value) {
+      return value !== null && typeof value === 'object'
+        && typeof value.id === 'string' && typeof value.label === 'string'
+        && typeof value.type === 'string'
+    }
+    /** 手写窄化：host 的响应也是外部输入，形状不对就当离线处理。 */
+    function isTemplateShape(value) {
+      if (value === null || typeof value !== 'object' || !Array.isArray(value.common) || !Array.isArray(value.categories)) return false
+      return value.common.every(isTemplateField) && value.categories.every(category => category !== null && typeof category === 'object'
+        && typeof category.id === 'string' && typeof category.label === 'string'
+        && Array.isArray(category.specs) && category.specs.every(isTemplateField))
+    }
+    /** 当前品类的字段全集：通用字段 + 该品类规格。 */
+    function fieldsOfTemplate(template, categoryId) {
+      const category = template.categories.find(item => item.id === categoryId) ?? template.categories[0]
+      return [...template.common, ...(category === undefined ? [] : category.specs)]
+    }
+    /**
+     * 勾选语义：勾选 = 允许写进本次文案。
+     * 必填恒选；品类规格默认选（选了品类就是要把这些信息说清楚），可显式取消；其余默认不选。
+     */
+    function fieldPicked(field, form) {
+      if (field.required === true) return true
+      if (field.group === 'specs') return form.picked[field.id] !== false
+      return form.picked[field.id] === true
+    }
+    /** 全选：非必填项全部显式选中（必填本来就恒选）。 */
+    function allPicked(fields) {
+      const picked = {}
+      for (const field of fields) if (field.required !== true) picked[field.id] = true
+      return picked
+    }
+    /** 清空：规格默认是选中的，必须显式 false 才能取消。 */
+    function clearedPicked(fields) {
+      const picked = {}
+      for (const field of fields) if (field.required !== true) picked[field.id] = false
+      return picked
+    }
+    /** 组装 xy_copy_plan 参数（纯数据）；未勾选/未填的字段一律不出现，避免模型替你编。 */
+    function buildCopyPlanArguments(form, fields) {
+      const args = { styleId: form.styleId }
+      const specs = {}
+      for (const field of fields) {
+        if (!fieldPicked(field, form)) continue
+        const raw = form.values[field.id]
+        if (raw === undefined || raw === null || (typeof raw === 'string' && raw.trim() === '')) continue
+        if (field.group === 'specs') { specs[field.id] = String(raw).trim(); continue }
+        if (field.type === 'integer') {
+          const number = Number(raw)
+          if (Number.isSafeInteger(number)) args[field.id] = number
+          continue
+        }
+        if (field.type === 'bool') { if (raw === true) args[field.id] = true; continue }
+        if (field.type === 'list') {
+          const items = String(raw).split(/[,，\n]/u).map(item => item.trim()).filter(item => item !== '')
+          if (items.length > 0) args[field.id] = items
+          continue
+        }
+        args[field.id] = String(raw).trim()
+      }
+      if (Object.keys(specs).length > 0) args.specs = specs
       return { tool: 'xy_copy_plan', arguments: args }
     }
     /** 内联草稿 → publish 任务（面板的 price 是分）；daemon 执行时 title/desc/priceCents/images 必填，缺了在这里拦下。 */
@@ -316,17 +393,40 @@ window.__ModuleLoader__.load({
     function Field({ label, control }) {
       return h('label', { style: S.field }, h('span', { style: S.fieldLabel }, label), control)
     }
-    /** 商品事实输入：只收最小集，其余字段在对话里补。 */
-    function CopyInputs({ productName, onName, priceYuan, onPrice, condition, onCondition }) {
-      const text = (label, value, placeholder, onChange) => h(Field, { label, control: h('input', {
-        type: 'text', value, placeholder, onChange: event => onChange(event.target.value), style: S.input,
-      }) })
-      return h('div', { style: S.fieldRow },
-        text('商品名', productName, '如：iPhone 13 128G 星光色', onName),
-        text('价格（元）', priceYuan, '如：129.90', onPrice),
-        h(Field, { label: '成色', control: h('select', {
-          value: condition, onChange: event => onCondition(event.target.value), style: S.input,
-        }, ...CONDITION_OPTIONS.map(option => h('option', { key: option.id, value: option.id }, option.label))) }))
+    /** 一个字段 = 「勾选 + 控件」；必填不渲染勾选框（锁死），只标「必填」。 */
+    function CopyFieldRow({ field, picked, value, onToggle, onChange }) {
+      const enabled = field.required === true || picked === true
+      const control = field.type === 'enum'
+        ? h('select', {
+          value: typeof value === 'string' ? value : String(field.default ?? ''),
+          'data-role': 'copy-select', 'data-field': field.id,
+          onChange: event => onChange(field.id, event.target.value), style: S.input,
+        }, ...(field.options ?? []).map(option => h('option', { key: option.value, value: option.value }, option.label)))
+        : field.type === 'bool'
+          ? h('label', { style: S.checkRow },
+            h('input', {
+              type: 'checkbox', 'data-role': 'copy-field-bool', 'data-field': field.id,
+              checked: value === true, onChange: event => onChange(field.id, event.target.checked),
+            }),
+            h('span', { style: S.small }, '是'))
+          : h('input', {
+            type: field.type === 'integer' ? 'number' : 'text',
+            'data-role': 'copy-input', 'data-field': field.id,
+            value: typeof value === 'string' || typeof value === 'number' ? String(value) : '',
+            placeholder: FIELD_PLACEHOLDERS[field.id] ?? '',
+            onChange: event => onChange(field.id, event.target.value), style: S.input,
+          })
+      return h('div', { key: field.id, 'data-role': 'copy-field-row', 'data-field': field.id, style: S.copyField },
+        h('div', { style: S.checkRow },
+          field.required === true
+            ? h('span', { style: S.requiredTag }, '必填')
+            : h('input', {
+              type: 'checkbox', 'data-role': 'copy-field', 'data-field': field.id,
+              checked: picked === true, onChange: event => onToggle(field.id, event.target.checked),
+            }),
+          h('span', { style: S.fieldLabel }, field.label)),
+        enabled ? control : null,
+        enabled && typeof field.hint === 'string' ? h('div', { style: S.sectionHint }, field.hint) : null)
     }
     /** 请求预览：把参数 JSON 摊开，便于复制或直接在对话里让模型执行。 */
     function CopyPlanPreview({ request }) {
@@ -334,16 +434,48 @@ window.__ModuleLoader__.load({
         h('div', { style: S.sectionTitle }, '生成请求已就绪'),
         h('pre', { style: S.pre }, JSON.stringify(request, null, 2)))
     }
-    /** 文案风格区：选风格 → 填事实 → 生成请求。 */
+    /** 「文案」tab：选品类 → 勾信息 → 选风格 → 生成请求（不调模型、不写库、不碰 daemon 写）。 */
     function CopyStudio(props) {
-      const { styleId, onStyle, ready, submitted, request } = props
-      return h('div', { style: S.section },
-        h('div', { style: S.sectionTitle }, '文案风格（skill 注入）'),
-        h(StylePicker, { styleId, onStyle }), h(CopyInputs, props),
-        h('div', { style: S.buttonRow },
-          h('button', { type: 'button', 'data-role': 'copy-submit', disabled: !ready, title: ready ? '按当前风格组装 xy_copy_plan 请求' : '先填商品名与价格（元）', onClick: () => props.onSubmit(), style: ready ? S.primary : S.button }, '生成文案请求'),
-          h('span', { style: S.sectionHint }, ready ? '' : '商品名与价格都填了才能生成（价格用于校验，不写进标题）。')),
-        submitted ? h(CopyPlanPreview, { request }) : null)
+      const { template, form, fields, ready, request, submitted } = props
+      const commonFields = fields.filter(field => field.group !== 'specs')
+      const specFields = fields.filter(field => field.group === 'specs')
+      const rows = list => list.map(field => h(CopyFieldRow, {
+        key: field.id, field, picked: fieldPicked(field, form), value: form.values[field.id],
+        onToggle: props.onToggle, onChange: props.onValue,
+      }))
+      const pickedSpecs = specFields.filter(field => fieldPicked(field, form)).length
+      return h('div', null,
+        h('div', { style: S.section },
+          h('div', { style: S.sectionTitle }, '① 品类（决定问哪些信息）'),
+          h('div', { style: S.chipRow }, ...template.data.categories.map(category => h('button', {
+            key: category.id, type: 'button', 'data-role': 'copy-category', 'data-category': category.id,
+            'aria-pressed': category.id === form.categoryId,
+            onClick: () => props.onCategory(category.id),
+            style: category.id === form.categoryId ? { ...S.chip, ...S.chipActive } : S.chip,
+          }, category.label))),
+          template.phase === 'offline'
+            ? h('div', { style: S.warnText }, '品类模板没拉到（daemon 未启动或插件是旧版）：先用通用字段，规格等连上后台再填。')
+            : h('div', { style: S.sectionHint }, '已选 ' + String(pickedSpecs) + '/' + String(specFields.length) + ' 项规格；未勾选的字段不会出现在提示词里。')),
+        h('div', { style: S.section },
+          h('div', { style: S.sectionTitle }, '② 勾选要写进文案的信息'),
+          h('div', { style: S.fieldRow }, ...rows(commonFields)),
+          specFields.length === 0 ? null : h('div', { style: S.fieldRow }, ...rows(specFields)),
+          h('div', { style: S.buttonRow },
+            h('button', { type: 'button', 'data-role': 'copy-pick-all', onClick: () => props.onPickAll(), style: S.button }, '全选'),
+            h('button', { type: 'button', 'data-role': 'copy-clear', onClick: () => props.onClear(), style: S.button }, '清空勾选'))),
+        h('div', { style: S.section },
+          h('div', { style: S.sectionTitle }, '③ 文案风格（skill 注入）'),
+          h(StylePicker, { styleId: form.styleId, onStyle: props.onStyle })),
+        h('div', { style: S.section },
+          h('div', { style: S.buttonRow },
+            h('button', {
+              type: 'button', 'data-role': 'copy-submit', disabled: !ready,
+              title: ready ? '按当前品类/勾选/风格组装 xy_copy_plan 请求' : '先填商品名与价格（元）',
+              onClick: () => props.onSubmit(), style: ready ? S.primary : S.button,
+            }, '生成文案请求'),
+            h('span', { style: S.sectionHint }, ready ? '生成的是工具参数，不是文案；拿到后由 agent 按 skill 出稿。' : '商品名与价格都填了才能生成（价格用于校验，不写进标题）。')),
+          h('div', { style: S.sectionHint }, '图片：面板暂不能选文件（素材库接入前在对话里给本机绝对路径）；出稿后先 dry-run，再让 agent 跑 xianyu-listing-audit 自检。'),
+          submitted ? h(CopyPlanPreview, { request }) : null))
     }
     function TabBar({ active, onSelect }) {
       return h('div', { role: 'tablist', 'aria-label': 'BigFish 面板分区', style: S.tabBar },
@@ -462,19 +594,37 @@ window.__ModuleLoader__.load({
     /** 面板骨架：顶部 tab + 内容区 + 门禁说明。connection 由 apply 注入（模块级单实例）。 */
     function BigFishPanel() {
       const [tab, setTab] = React.useState(PANEL_TABS[0].id)
-      const [styleId, setStyleId] = React.useState(COPY_STYLE_OPTIONS[0].id)
-      const [productName, setProductName] = React.useState('')
-      const [priceYuan, setPriceYuan] = React.useState('')
-      const [condition, setCondition] = React.useState('like-new')
-      const [submitted, setSubmitted] = React.useState(false)
-      const ready = productName.trim() !== '' && priceYuan.trim() !== ''
-      const request = buildCopyPlanArguments(styleId, productName, priceYuan, condition)
+      const [template, setTemplate] = React.useState({ phase: 'loading', data: FALLBACK_TEMPLATE })
+      const [copyForm, setCopyForm] = React.useState({
+        categoryId: 'digital', styleId: COPY_STYLE_OPTIONS[0].id,
+        picked: {}, values: { condition: 'like-new', shipping: 'free' }, submitted: false,
+      })
+      // 品类模板只拉一次（纯常量、不轮询）；失败就用兜底模板，面板照常可用。
+      React.useEffect(() => {
+        let alive = true
+        void callRead(panelConnection, 'copy.templates').then(reply => {
+          if (!alive) return
+          const ok = reply.ok && isTemplateShape(reply.value)
+          setTemplate({ phase: ok ? 'ok' : 'offline', data: ok ? reply.value : FALLBACK_TEMPLATE })
+        })
+        return () => { alive = false }
+      }, [])
+      const fields = fieldsOfTemplate(template.data, copyForm.categoryId)
+      const name = copyForm.values.productName, price = copyForm.values.priceYuan
+      const ready = typeof name === 'string' && name.trim() !== '' && typeof price === 'string' && price.trim() !== ''
       // 任一输入变化都撤销「已就绪」，避免拿着旧参数去生成。
-      const reset = setter => value => { setter(value); setSubmitted(false) }
+      const patch = next => setCopyForm(previous => ({ ...previous, ...next, submitted: false }))
       const copyProps = {
-        styleId, onStyle: reset(setStyleId), productName, onName: reset(setProductName),
-        priceYuan, onPrice: reset(setPriceYuan), condition, onCondition: reset(setCondition),
-        ready, submitted, onSubmit: () => setSubmitted(true), request,
+        template, form: copyForm, fields, ready,
+        request: buildCopyPlanArguments(copyForm, fields),
+        submitted: copyForm.submitted,
+        onCategory: id => patch({ categoryId: id }),
+        onStyle: id => patch({ styleId: id }),
+        onToggle: (id, checked) => setCopyForm(previous => ({ ...previous, submitted: false, picked: { ...previous.picked, [id]: checked } })),
+        onValue: (id, value) => setCopyForm(previous => ({ ...previous, submitted: false, values: { ...previous.values, [id]: value } })),
+        onPickAll: () => setCopyForm(previous => ({ ...previous, submitted: false, picked: allPicked(fields) })),
+        onClear: () => setCopyForm(previous => ({ ...previous, submitted: false, picked: clearedPicked(fields) })),
+        onSubmit: () => setCopyForm(previous => ({ ...previous, submitted: true })),
       }
       return h('div', { style: S.page },
         h('div', { style: S.header },
@@ -578,6 +728,9 @@ window.__ModuleLoader__.load({
       chipActive: { background: 'var(--dsw-alias-bg-l3)', color: 'var(--dsw-alias-label-primary)', borderColor: 'var(--dsw-alias-label-secondary)', fontWeight: 600 },
       fieldRow: { display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '12px' }, field: { display: 'flex', flexDirection: 'column', gap: '6px', minWidth: '180px', flex: '1 1 180px' },
       fieldLabel: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' },
+      copyField: { display: 'flex', flexDirection: 'column', gap: '6px', minWidth: '200px', flex: '1 1 200px' },
+      checkRow: { display: 'flex', gap: '6px', alignItems: 'center' },
+      requiredTag: { fontSize: '11px', padding: '1px 6px', borderRadius: '4px', background: 'var(--dsw-alias-bg-l3)', color: 'var(--dsw-alias-label-secondary)' },
       input: { fontSize: '13px', padding: '6px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-primary)' },
       preview: { marginTop: '16px' },
       pre: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '12px', background: 'var(--dsw-alias-bg-l2)', borderRadius: '8px', padding: '12px', whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: '10px 0 0' },
@@ -587,15 +740,26 @@ window.__ModuleLoader__.load({
       okText: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' }, badText: { fontSize: '12px', color: 'var(--dsw-alias-label-danger, #c0392b)' }, goodText: { fontSize: '12px', color: 'var(--dsw-alias-label-success, #1a7f37)' }, warnText: { fontSize: '12px', color: 'var(--dsw-alias-label-warning, #9a6700)' },
       small: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' }, actions: { display: 'flex', gap: '6px', flexWrap: 'wrap' },
     }
-    // —— 账号管理：账号表 + 进入即检测（60 秒内不重复）+ 重新导入 / 扫码登录（写类点两次）——
-    const VERIFY_TTL_MS = 60_000
-    const ACCOUNT_COLUMNS = ['账号', '登录状态', '最近检测', '凭据更新', '字段数', '操作']
-    const ACCOUNT_GRID = 'minmax(120px, 1.2fr) 150px 92px 160px 60px 250px'
+    // —— 账号管理：多账号表（切换 / 退出 / 登录态剩余 / 保活）+ 进入即检测（10 分钟内不重复）——
+    const VERIFY_TTL_MS = 600_000
+    const ACCOUNT_COLUMNS = ['当前', '账号', '登录状态', '登录态剩余', '最近检测', '凭据更新', '操作']
+    const ACCOUNT_GRID = '92px minmax(88px, 1fr) 136px 112px 100px 172px 268px'
     const ACCOUNT_CODE_LABELS = { AUTH_EXPIRED: '登录态过期', RISK_CONTROL: '风控拦截', RATE_LIMITED: '被限流', NETWORK: '网络异常', VALIDATION: '参数不合法', INTERNAL: '后台错误' }
-    /** 自动检测的 60 秒缓存：同一账号在缓存期内重开面板不重复打 mtop。 */
+    /** 自动检测的 10 分钟缓存：自动检测真调 mtop head（账号级风控敏感），缓存期内重开面板不重复打；行内「检测」仍强制刷新。 */
     const verifyCache = new Map()
+    /** 正在检测的账号：3 秒轮询和手动点击可能撞在一起，用模块级集合去重。 */
+    const verifyInFlight = new Set()
     function formatClock(ms) { const value = Number(ms); return Number.isFinite(value) && value > 0 ? new Date(value).toTimeString().slice(0, 8) : '—' }
     function formatAgo(ms) { const value = Number(ms); if (!Number.isFinite(value) || value <= 0) return '—'; const minutes = Math.floor((Date.now() - value) / 60_000); if (minutes < 1) return '刚刚'; if (minutes < 60) return String(minutes) + ' 分钟前'; const hours = Math.floor(minutes / 60); return hours < 24 ? String(hours) + ' 小时前' : String(Math.floor(hours / 24)) + ' 天前' }
+    /** 登录态剩余：loginExpiresAt 是毫秒时间戳；估算值加后缀，缺失/过期不虚构。 */
+    function formatLifetime(expiresAt, source) {
+      const value = Number(expiresAt)
+      if (!Number.isFinite(value) || value <= 0) return '—'
+      const minutes = Math.floor((value - Date.now()) / 60_000)
+      if (minutes <= 0) return '已过期'
+      const hours = Math.floor(minutes / 60)
+      return (hours > 0 ? String(hours) + ' 小时 ' + String(minutes % 60) + ' 分' : String(minutes) + ' 分') + (source === 'estimated' ? '（估算）' : '')
+    }
     /** 状态徽标：未检测 / 检测中 / 在线 / 已过期 / 无法确认（网络、限流、风控只影响这一行）。 */
     function accountBadge(entry) {
       if (entry === undefined) return ['未检测', S.small]
@@ -606,79 +770,156 @@ window.__ModuleLoader__.load({
       return ['无法确认 · ' + (ACCOUNT_CODE_LABELS[entry.code] ?? '未返回原因'), S.warnText]
     }
     function truncateText(text) { const value = typeof text === 'string' && text !== '' ? text : '操作失败'; return value.length > 120 ? value.slice(0, 118) + '…' : value }
-    /** 账号表：进入 tab 自动检测（60 秒缓存），导入 / 扫码是写操作，点两次才发 confirm。 */
+    /** daemon 摘要里的最近检测（本地没有会话时兜底）；没有 lastCheckedAt 就不虚构。 */
+    function storedEntry(account) {
+      const checkedAt = Number(account.lastCheckedAt)
+      if (!Number.isFinite(checkedAt) || checkedAt <= 0) return undefined
+      return { phase: 'done', online: account.lastOnline === true, code: typeof account.lastCode === 'string' ? account.lastCode : '', checkedAt, source: 'auto' }
+    }
+    /** 保活设置 → 表单初值（间隔按秒展示，缺省 600 秒）。 */
+    function keepAliveForm(settings) {
+      const seconds = Math.round(Number(settings.keepAliveIntervalMs) / 1000)
+      return { enabled: settings.keepAliveEnabled === true, seconds: String(Number.isFinite(seconds) && seconds > 0 ? seconds : 600) }
+    }
+    /** 账号表：进入自动检测（10 分钟缓存）+ 3 秒轮询摘要；导入 / 扫码 / 退出 / 保活点两次才发 confirm。 */
     function AccountView({ connection }) {
-      const [board, setBoard] = React.useState({ phase: 'loading', accounts: [], verifies: {}, busy: '', armed: '', result: null })
+      const [board, setBoard] = React.useState({ phase: 'loading', accounts: [], verifies: {}, keep: null, addId: '', addPort: '9222', result: null })
+      const writes = useWrite(connection)
+      const [switching, setSwitching] = React.useState('')
       const update = patch => setBoard(previous => ({ ...previous, ...patch }))
-      const loadAccounts = async () => {
-        const reply = await callRead(connection, 'accounts'), list = reply.ok && Array.isArray(reply.value) ? reply.value : []
-        update({ phase: reply.ok ? 'ok' : 'offline', accounts: list }); return list
-      }
+      const busy = writes.state.busy || switching !== ''
       /** 只改这一行的状态：检测失败（网络/限流/风控）不降级整页。 */
-      const verifyOne = async accountId => {
-        setBoard(previous => ({ ...previous, busy: 'verify:' + accountId, verifies: { ...previous.verifies, [accountId]: { phase: 'checking' } } }))
+      const verifyOne = async (accountId, source) => {
+        if (verifyInFlight.has(accountId)) return
+        verifyInFlight.add(accountId)
+        setBoard(previous => ({ ...previous, verifies: { ...previous.verifies, [accountId]: { phase: 'checking' } } }))
         const reply = await callRead(connection, 'accounts.verify', { accountId })
         const value = reply.ok && reply.value !== null && typeof reply.value === 'object' ? reply.value : null
-        const entry = value === null ? { phase: 'failed', code: reply.code } : { phase: 'done', online: value.online === true, code: typeof value.code === 'string' ? value.code : '', checkedAt: Number(value.checkedAt) || Date.now() }
+        const entry = value === null
+          ? { phase: 'failed', code: reply.code, checkedAt: Date.now(), source }
+          : { phase: 'done', online: value.online === true, code: typeof value.code === 'string' ? value.code : '', checkedAt: Number(value.checkedAt) || Date.now(), source }
         verifyCache.set(accountId, { at: Date.now(), entry })
-        setBoard(previous => ({ ...previous, busy: '', verifies: { ...previous.verifies, [accountId]: entry } }))
+        verifyInFlight.delete(accountId)
+        setBoard(previous => ({ ...previous, verifies: { ...previous.verifies, [accountId]: entry } }))
+      }
+      /** 拉账号摘要；auto=true 时对缓存过期的账号自动检测（新导入的账号也会补一次）。 */
+      const pull = async (auto, alive = () => true) => {
+        const reply = await callRead(connection, 'accounts')
+        if (!alive()) return
+        const list = reply.ok && Array.isArray(reply.value) ? reply.value : []
+        setBoard(previous => ({ ...previous, phase: reply.ok ? 'ok' : 'offline', accounts: list }))
+        if (!auto || !reply.ok) return
+        for (const account of list) {
+          const accountId = String(account !== null && typeof account === 'object' ? account.accountId ?? '' : '')
+          if (accountId === '') continue
+          const cached = verifyCache.get(accountId)
+          if (cached !== undefined && Date.now() - cached.at < VERIFY_TTL_MS) continue
+          if (!alive()) return
+          await verifyOne(accountId, 'auto')
+        }
       }
       React.useEffect(() => {
         let alive = true
-        void loadAccounts().then(async list => {
-          for (const account of list) {
-            const accountId = String(account !== null && typeof account === 'object' ? account.accountId ?? '' : '')
-            if (!alive || accountId === '') continue
-            const cached = verifyCache.get(accountId)
-            if (cached !== undefined && Date.now() - cached.at < VERIFY_TTL_MS) setBoard(previous => ({ ...previous, verifies: { ...previous.verifies, [accountId]: cached.entry } }))
-            else await verifyOne(accountId)
-          }
+        void pull(true, () => alive)
+        const timer = setInterval(() => { if (alive) void pull(true, () => alive) }, POLL_MS)
+        return () => { alive = false; clearInterval(timer) }
+      }, [connection])
+      // 保活设置只回填一次：3 秒轮询只刷新账号摘要，免得把正在编辑的输入覆盖掉。
+      React.useEffect(() => {
+        let alive = true
+        void callRead(connection, 'settings.get').then(reply => {
+          if (!alive || !reply.ok || reply.value === null || typeof reply.value !== 'object') return
+          setBoard(previous => previous.keep === null ? { ...previous, keep: keepAliveForm(reply.value) } : previous)
         })
         return () => { alive = false }
       }, [connection])
-      /** 第一次点只上膛；第二次才带 confirm:true 发出（写类 rpc 的 host 门禁要求）。 */
-      const runWrite = async (kind, accountId) => {
-        const key = kind + ':' + accountId
-        const wording = kind === 'import'
-          ? { hint: '再点一次「确认导入」：从本机 Chrome 读 cookie 并加密写凭据', busy: '正在导入登录态…', done: '登录态已导入' }
-          : { hint: '再点一次「确认扫码」：打开闲鱼登录页等你扫码，最长 180s', busy: '等待扫码…（最长 180s）', done: '扫码登录成功' }
-        if (board.armed !== key) { update({ armed: key, result: { kind: 'hint', text: wording.hint } }); return }
-        update({ armed: '', busy: kind, result: { kind: 'hint', text: wording.busy } })
-        const reply = await callAction(connection, kind === 'import' ? 'accounts.import' : 'accounts.login', accountId === '' ? { confirm: true } : { confirm: true, accountId })
-        update({ busy: '', result: reply.ok ? { kind: 'ok', text: wording.done } : { kind: 'bad', text: truncateText(reply.message) } })
-        if (reply.ok) await loadAccounts()
+      const switchAccount = accountId => {
+        if (busy) return
+        setSwitching(accountId)
+        void callAction(connection, 'accounts.activate', { accountId }).then(reply => {
+          setSwitching('')
+          update({ result: reply.ok ? { kind: 'ok', text: '已切换到 ' + accountId } : { kind: 'bad', text: truncateText(reply.message) } })
+          if (reply.ok) void pull(true)
+        })
       }
-      const actionButton = (role, label, onClick) => h('button', { key: role, type: 'button', 'data-role': role, disabled: board.busy !== '', onClick, style: board.busy !== '' ? S.button : S.primary }, label)
-      const rowActions = accountId => [
-        actionButton('account-verify', board.busy === 'verify:' + accountId ? '检测中…' : '检测', () => void verifyOne(accountId)),
-        actionButton('account-import', board.busy === 'import' ? '导入中…' : board.armed === 'import:' + accountId ? '确认导入' : '重新导入', () => void runWrite('import', accountId)),
-        actionButton('account-login', board.busy === 'login' ? '等待扫码…' : board.armed === 'login:' + accountId ? '确认扫码' : '扫码登录', () => void runWrite('login', accountId)),
+      /** 第一次点只上膛；第二次带 confirm:true 才发（写类 rpc 的 host 门禁要求）。 */
+      const rowTexts = (kind, accountId) => kind === 'import'
+        ? { hint: '再点一次「确认导入」：从本机 Chrome 读 cookie 并加密写凭据', busy: '正在导入登录态…', done: () => '登录态已导入', after: () => pull(true) }
+        : kind === 'login'
+          ? { hint: '再点一次「确认扫码」：打开闲鱼登录页等你扫码，最长 180s', busy: '等待扫码…（最长 180s）', done: () => '扫码登录成功', after: () => pull(true) }
+          : { hint: '再点一次：只删本地凭据，不会注销闲鱼网页会话', busy: '正在退出登录…', done: () => '已退出 ' + accountId, after: () => pull(true) }
+      const runRowWrite = (kind, accountId) => {
+        update({ result: null })
+        return writes.run(kind + ':' + accountId, kind === 'import' ? 'accounts.import' : kind === 'login' ? 'accounts.login' : 'accounts.logout', { accountId }, rowTexts(kind, accountId))
+      }
+      const addTexts = kind => kind === 'import'
+        ? { hint: '再点一次「确认导入」：从本机 Chrome 读 cookie 并加密写凭据', busy: '正在导入登录态…', done: value => '登录态已导入' + (value !== null && typeof value === 'object' && typeof value.accountId === 'string' ? ' · ' + value.accountId : ''), after: () => pull(true) }
+        : { hint: '再点一次「确认扫码」：打开闲鱼登录页等你扫码，最长 180s', busy: '等待扫码…（最长 180s）', done: value => '扫码登录成功' + (value !== null && typeof value === 'object' && typeof value.accountId === 'string' ? ' · ' + value.accountId : ''), after: () => pull(true) }
+      const runAdd = kind => {
+        const port = Number(board.addPort)
+        if (!Number.isInteger(port) || port < 1 || port > 65535) return update({ result: { kind: 'bad', text: 'Chrome 端口必须是 1..65535 的整数' } })
+        const payload = { port }, accountId = board.addId.trim()
+        if (accountId !== '') payload.accountId = accountId
+        update({ result: null })
+        writes.run('add:' + kind, kind === 'import' ? 'accounts.import' : 'accounts.login', payload, addTexts(kind))
+      }
+      const keep = board.keep ?? { enabled: false, seconds: '600' }
+      const keepSeconds = Number(keep.seconds), keepValid = Number.isInteger(keepSeconds) && keepSeconds >= 600 && keepSeconds <= 3600
+      const saveKeepAlive = () => {
+        if (!keepValid) return update({ result: { kind: 'bad', text: '保活间隔必须是 600..3600 的整数秒' } })
+        update({ result: null })
+        writes.run('keepalive', 'settings.put', { patch: { keepAliveEnabled: keep.enabled, keepAliveIntervalMs: keepSeconds * 1000 } }, {
+          hint: '再点一次「确认保存」写入保活设置', busy: '正在保存…', done: () => '保活设置已保存',
+          after: () => { void callRead(connection, 'settings.get').then(reply => { if (reply.ok && reply.value !== null && typeof reply.value === 'object') update({ keep: keepAliveForm(reply.value) }) }) },
+        })
+      }
+      const actionButton = (role, label, onClick, disabled) => h('button', { key: role, type: 'button', 'data-role': role, disabled, onClick, style: disabled ? S.button : S.primary }, label)
+      const rowActions = (accountId, checking) => [
+        actionButton('account-verify', checking ? '检测中…' : '检测', () => void verifyOne(accountId, 'manual'), checking || busy),
+        actionButton('account-import', writes.state.armed === 'import:' + accountId ? '确认导入' : busy ? '导入中…' : '导入', () => runRowWrite('import', accountId), busy),
+        actionButton('account-login', writes.state.armed === 'login:' + accountId ? '确认扫码' : busy ? '等待扫码…' : '扫码', () => runRowWrite('login', accountId), busy),
+        actionButton('account-logout', writes.state.armed === 'logout:' + accountId ? '确认退出登录' : busy ? '退出中…' : '退出', () => runRowWrite('logout', accountId), busy),
       ]
-      const rowStyle = head => ({ display: 'grid', gridTemplateColumns: ACCOUNT_GRID, gap: '8px', alignItems: 'center', padding: '7px 0', borderBottom: '1px solid var(--dsw-alias-border-l2)', fontSize: head ? '12px' : '13px', color: head ? 'var(--dsw-alias-label-secondary)' : 'var(--dsw-alias-label-primary)' })
       const rowOf = account => {
-        const accountId = String(account.accountId ?? ''), entry = board.verifies[accountId], badge = accountBadge(entry)
-        return h('div', { key: accountId, style: rowStyle(false), 'data-role': 'account-row', 'data-account-id': accountId },
+        const accountId = String(account.accountId ?? ''), entry = board.verifies[accountId] ?? storedEntry(account), badge = accountBadge(entry)
+        const checking = entry !== undefined && entry.phase === 'checking'
+        return h('div', { key: accountId, style: gridRow(ACCOUNT_GRID, false), 'data-role': 'account-row', 'data-account-id': accountId },
+          h('div', { style: S.actions },
+            account.active === true ? h('span', { key: 'active', style: S.goodText, 'data-role': 'account-active' }, '当前') : null,
+            h('button', { key: 'switch', type: 'button', 'data-role': 'account-switch', disabled: busy, title: '把当前账号切到 ' + accountId, onClick: () => switchAccount(accountId), style: S.chip }, switching === accountId ? '切换中…' : '切换')),
           h('span', null, accountId),
           h('span', { style: badge[1], 'data-role': 'account-status' }, badge[0]),
-          h('span', { style: S.small, 'data-role': 'account-checked' }, entry === undefined || entry.checkedAt === undefined ? '—' : formatClock(entry.checkedAt)),
-          h('span', { style: S.small, 'data-role': 'account-updated' }, formatAgo(account.updatedAt) + ' · ' + (account.ready === true ? '字段齐备' : '字段不齐')),
-          h('span', { style: S.small, 'data-role': 'account-fields' }, String(account.savedFieldCount ?? '?')),
-          h('div', { style: S.actions }, ...rowActions(accountId)))
+          h('span', { style: S.small, 'data-role': 'account-lifetime' }, formatLifetime(account.loginExpiresAt, account.loginExpiresSource)),
+          h('span', { style: S.small, 'data-role': 'account-checked' }, entry === undefined ? '—' : formatClock(entry.checkedAt) + '（' + (entry.source === 'manual' ? '人工' : '自动') + '）'),
+          h('span', null,
+            h('span', { style: S.small, 'data-role': 'account-updated' }, formatAgo(account.updatedAt) + ' · ' + (account.ready === true ? '字段齐备' : '字段不齐')),
+            h('span', { style: S.small, 'data-role': 'account-fields' }, ' · ' + String(account.savedFieldCount ?? '?') + ' 项')),
+          h('div', { style: S.actions }, ...rowActions(accountId, checking)))
       }
-      const emptyRow = h('div', { style: rowStyle(false), 'data-role': 'account-empty' },
-        h('span', { style: { ...S.small, gridColumn: 'span 5' } }, '还没有导入账号'),
-        h('div', { style: S.actions },
-          actionButton('account-import', board.busy === 'import' ? '导入中…' : board.armed === 'import:' ? '确认导入' : '导入登录态', () => void runWrite('import', '')),
-          actionButton('account-login', board.busy === 'login' ? '等待扫码…' : board.armed === 'login:' ? '确认扫码' : '扫码登录', () => void runWrite('login', ''))))
-      const resultLine = board.result === null ? null : h('div', { style: board.result.kind === 'bad' ? S.badText : S.small, 'data-role': 'account-result' }, board.result.text)
+      const addButton = (role, kind, label) => actionButton(role, writes.state.armed === 'add:' + kind ? (kind === 'import' ? '确认导入' : '确认扫码') : label, () => runAdd(kind), busy)
+      const addSection = h('div', { style: S.section, 'data-role': 'account-add' },
+        h('div', { style: S.sectionTitle }, '添加账户'),
+        h('div', { style: S.fieldRow },
+          h(Field, { label: '账号 id（留空 = 从 Chrome 读 unb）', control: h('input', { type: 'text', maxLength: 64, value: board.addId, placeholder: '2206569289277', 'data-role': 'account-add-id', onChange: event => update({ addId: event.target.value }), style: S.input }) }),
+          h(Field, { label: 'Chrome 调试端口', control: h('input', { type: 'number', min: 1, max: 65535, value: board.addPort, 'data-role': 'account-add-port', onChange: event => update({ addPort: event.target.value }), style: S.input }) })),
+        h('div', { style: S.buttonRow }, addButton('account-add-import', 'import', '从 Chrome 导入'), addButton('account-add-login', 'login', '扫码登录')))
+      const keepaliveSection = h('div', { style: S.section, 'data-role': 'account-keepalive' },
+        h('div', { style: S.sectionTitle }, '登录保活'),
+        h('div', { style: S.fieldRow },
+          h(Field, { label: '保活', control: h('input', { type: 'checkbox', 'data-role': 'keepalive-toggle', checked: keep.enabled, onChange: event => update({ keep: { ...keep, enabled: event.target.checked } }) }) }),
+          h(Field, { label: '间隔（秒，600–3600）', control: h('input', { type: 'number', min: 600, max: 3600, value: keep.seconds, 'data-role': 'keepalive-interval', onChange: event => update({ keep: { ...keep, seconds: event.target.value } }), style: S.input }) }),
+          h('div', { style: S.buttonRow }, actionButton('keepalive-save', writes.state.armed === 'keepalive' ? '确认保存' : busy ? '保存中…' : '保存保活', saveKeepAlive, !keepValid || busy))))
+      const emptyRow = h('div', { style: gridRow(ACCOUNT_GRID, false), 'data-role': 'account-empty' }, h('span', { style: { ...S.small, gridColumn: 'span 7' } }, '还没有导入账号'))
       return h('div', { style: S.section },
         h('div', { style: S.sectionTitle }, '账号管理'),
+        addSection,
+        keepaliveSection,
         board.phase === 'loading' ? h('div', { style: S.small }, '正在读取账号…') : null,
         board.phase === 'offline' ? h('div', { style: S.badText, 'data-role': 'account-offline' }, '连不上 daemon：启动 daemon 后重开本页') : null,
         h('div', { 'data-role': 'account-table' },
-          h('div', { style: rowStyle(true) }, ...ACCOUNT_COLUMNS.map(label => h('span', { key: label }, label))),
-          ...board.accounts.map(rowOf), board.accounts.length === 0 && board.phase !== 'loading' ? emptyRow : null),
-        resultLine)
+          h('div', { style: gridRow(ACCOUNT_GRID, true) }, ...ACCOUNT_COLUMNS.map(label => h('span', { key: label }, label))),
+          ...board.accounts.map(rowOf), board.phase === 'ok' && board.accounts.length === 0 ? emptyRow : null),
+        resultLine(board.result ?? writes.state.result, 'account-result'))
     }
     /** 当前连接句柄：apply 时从 ctx 取一次（服务由宿主注入；缺失则 null → 面板降级）。 */
     let panelConnection = null

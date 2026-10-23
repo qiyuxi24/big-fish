@@ -43,6 +43,7 @@ import type { ImportAccountInput, ImportedAccount } from './accounts.ts'
 import type { LoginInput, LoginResult } from './login.ts'
 import type { AccountSummary } from './account-list.ts'
 import type { AccountSessionState } from './account-verify.ts'
+import type { ActivateResult, LogoutResult } from './account-lifecycle.ts'
 import { lifecycleRoutes } from './lifecycle.ts'
 import { parseReferenceRequest } from './reference.ts'
 import type { ReferenceReport, ReferenceRequest } from './reference.ts'
@@ -59,6 +60,12 @@ export type LoginAccountHandler = (input: LoginInput) => Promise<LoginResult>
  * 返回 200 的 value（online=false 也是成功响应），账号不存在才抛 VALIDATION。
  */
 export type VerifyAccountHandler = (input: { accountId: string }) => Promise<AccountSessionState>
+
+/** 切换当前账号的注入签名；未注入时 POST /accounts/activate 返回 UNSUPPORTED。 */
+export type ActivateAccountHandler = (input: { accountId: string }) => Promise<ActivateResult>
+
+/** 退出登录（只清本地凭据）的注入签名；未注入时 POST /accounts/:id/logout 返回 UNSUPPORTED。 */
+export type LogoutAccountHandler = (input: { accountId: string }) => Promise<LogoutResult>
 
 /**
  * 人工重新入队能力的注入签名；未注入时 POST /tasks/:id/retry 返回 UNSUPPORTED。
@@ -92,6 +99,10 @@ export interface RouteContext {
   loginAccount: LoginAccountHandler | undefined
   /** 登录态校验能力；未注入时 POST /accounts/:id/verify 返回 UNSUPPORTED。 */
   verifyAccount: VerifyAccountHandler | undefined
+  /** 切换当前账号能力；未注入时 POST /accounts/activate 返回 UNSUPPORTED。 */
+  activateAccount: ActivateAccountHandler | undefined
+  /** 退出登录能力；未注入时 POST /accounts/:id/logout 返回 UNSUPPORTED。 */
+  logoutAccount: LogoutAccountHandler | undefined
   /** 账号摘要能力；未注入时 GET /accounts 返回空数组（不是错误，开发态也能渲染面板）。 */
   accountSummaries: (() => Promise<AccountSummary[]>) | undefined
   /** 人工重新入队能力；未注入时 POST /tasks/:id/retry 返回 UNSUPPORTED。 */
@@ -153,6 +164,9 @@ const ROUTES: readonly Route[] = [
   { method: 'POST', pattern: /^\/accounts\/login\/?$/, handler: loginAccountHandler },
   // 放在 login 之后：两条都是精确/带参路径，顺序只影响可读性；带参路由不要抢在精确路由前。
   { method: 'POST', pattern: /^\/accounts\/([^/]+)\/verify\/?$/, handler: verifyAccountHandler },
+  { method: 'POST', pattern: /^\/accounts\/([^/]+)\/logout\/?$/, handler: logoutAccountHandler },
+  // 精确路径，与上面两条带参路由不冲突（activate 里没有第二个路径段）。
+  { method: 'POST', pattern: /^\/accounts\/activate\/?$/, handler: activateAccountHandler },
   { method: 'GET', pattern: /^\/tasks\/?$/, handler: listTasksHandler },
   { method: 'POST', pattern: /^\/tasks\/?$/, handler: enqueueHandler },
   // 批次视图只是 tasks.batch_id 的聚合，放在 /tasks 之后、/tasks/:id 之前读起来最顺。
@@ -313,6 +327,32 @@ async function verifyAccountHandler(ctx: RouteContext): Promise<void> {
   const accountId = ctx.params[0] ?? fail('VALIDATION', '缺少账号 id')
   const state = await verify({ accountId })
   await sendJson(ctx.res, 200, ok(state), ctx.redact)
+}
+
+/**
+ * 切换当前账号：只写本地设置（settings.activeAccountId），不触达闲鱼。
+ * 清空当前账号走 logout，所以这里不接受空串（避免用空串伪造一个「没有账号」的状态）。
+ * 这是写磁盘操作（settings.json），插件侧必须走审批门禁。
+ */
+async function activateAccountHandler(ctx: RouteContext): Promise<void> {
+  const activate = ctx.activateAccount ?? fail('UNSUPPORTED', 'daemon 未注入切换账号能力')
+  const body = asRecord(await readJsonBody(ctx.req), '切换账号请求体')
+  const accountId = requiredString(body, 'accountId', '切换账号请求体').trim()
+  if (accountId === '') fail('VALIDATION', 'accountId 不能为空')
+  const result = await activate({ accountId })
+  await sendJson(ctx.res, 200, ok(result), ctx.redact)
+}
+
+/**
+ * 退出登录：删本地加密凭据并清掉「当前账号」标记，绝不调用闲鱼接口踢掉网页端会话。
+ * 账号不存在 → 400 VALIDATION：重复退出的客户端 bug 应该被看见，而不是静默成功。
+ * 这是写磁盘操作（删凭据），插件侧必须走审批门禁。
+ */
+async function logoutAccountHandler(ctx: RouteContext): Promise<void> {
+  const logout = ctx.logoutAccount ?? fail('UNSUPPORTED', 'daemon 未注入退出登录能力')
+  const accountId = ctx.params[0] ?? fail('VALIDATION', '缺少账号 id')
+  const result = await logout({ accountId })
+  await sendJson(ctx.res, 200, ok(result), ctx.redact)
 }
 
 async function listTasksHandler(ctx: RouteContext): Promise<void> {

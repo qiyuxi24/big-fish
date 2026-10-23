@@ -16,8 +16,10 @@ import { DaemonClient } from '../src/client.ts'
 import { startDaemon } from '../src/server.ts'
 import type { Daemon } from '../src/server.ts'
 import type {
+  ActivateAccountHandler,
   ImportAccountHandler,
   LoginAccountHandler,
+  LogoutAccountHandler,
   ReferenceCollectHandler,
   RequestShutdown,
   RetryTaskHandler,
@@ -77,6 +79,10 @@ export interface HarnessOptions {
   loginAccount?: LoginAccountHandler
   /** 登录态校验能力（测试 POST /accounts/:id/verify）；缺省时不注入，路由应返回 UNSUPPORTED。 */
   verifyAccount?: VerifyAccountHandler
+  /** 切换当前账号能力（POST /accounts/activate）；缺省时不注入，路由应返回 UNSUPPORTED。 */
+  activateAccount?: ActivateAccountHandler
+  /** 退出登录能力（POST /accounts/:id/logout）；缺省时不注入，路由应返回 UNSUPPORTED。 */
+  logoutAccount?: LogoutAccountHandler
   /** 账号摘要能力（测试 GET /accounts）；缺省时不注入，路由应返回空数组。 */
   accountSummaries?: () => Promise<AccountSummary[]>
   /** 人工重新入队能力；缺省时接 FakeQueue.requeue，保证路由测试覆盖真实状态校验。 */
@@ -117,6 +123,8 @@ export async function createHarness(t: { after(fn: () => Promise<void>): void },
     ...(options.accountSummaries === undefined ? {} : { accountSummaries: options.accountSummaries }),
     ...(options.loginAccount === undefined ? {} : { loginAccount: options.loginAccount }),
     ...(options.verifyAccount === undefined ? {} : { verifyAccount: options.verifyAccount }),
+    ...(options.activateAccount === undefined ? {} : { activateAccount: options.activateAccount }),
+    ...(options.logoutAccount === undefined ? {} : { logoutAccount: options.logoutAccount }),
     // 默认接 FakeQueue 的真 requeue：路由测试覆盖「状态校验 → 记录变更 → 200」整条路径；
     // 需要断言注入是否被调用（例如唤醒 worker）时再用 options.retryTask 覆盖。
     retryTask: options.retryTask ?? ((id: string): TaskRecord => queue.requeue(id)),

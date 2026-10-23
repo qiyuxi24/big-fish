@@ -53,6 +53,8 @@ export function createFakeClient(overrides = {}) {
     listAccounts: record('listAccounts'),
     verifyAccount: record('verifyAccount'),
     importAccount: record('importAccount'),
+    activateAccount: record('activateAccount'),
+    logoutAccount: record('logoutAccount'),
     collectReferences: record('collectReferences'),
   }
 }

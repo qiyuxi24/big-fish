@@ -70,7 +70,7 @@ test('未知 endpoint 返回 UNSUPPORTED，不触发任何 daemon 调用', async
 
 test('写类端点缺 confirm 一律拒绝（面板误触/模型幻觉的第一道闸）', async () => {
   const { client, bridge } = bridgeWith({ request: { task: { id: 't1' } }, enqueue: { id: 't1' } })
-  for (const endpoint of ['tasks.retry', 'accounts.import', 'accounts.login', 'batch.enqueue', 'settings.put']) {
+  for (const endpoint of ['tasks.retry', 'accounts.import', 'accounts.login', 'accounts.logout', 'batch.enqueue', 'settings.put']) {
     assertError(await bridge.handle(endpoint, {}), 'VALIDATION', /需要 confirm:true/)
   }
   assert.equal(client.calls.length, 0)
@@ -107,6 +107,16 @@ test('accounts.verify 是只读端点：不需要 confirm，只转发 accountId�
   assert.deepEqual(client.calls, [{ method: 'verifyAccount', args: ['acc'] }])
 })
 
+test('copy.templates 是只读端点：下发品类模板，不碰 daemon', async () => {
+  const { client, bridge } = bridgeWith({})
+  assert.ok(bridge.endpoints.includes('copy.templates'))
+  const result = await bridge.handle('copy.templates', { evil: 'ignored' })
+  assert.equal(result.ok, true)
+  assert.ok(Array.isArray(result.value.categories) && result.value.categories.length > 0)
+  assert.ok(Array.isArray(result.value.common) && result.value.common.length > 0)
+  assert.equal(client.calls.length, 0)
+})
+
 test('accounts.verify 参数非法时 VALIDATION，且不调 daemon', async () => {
   const { client, bridge } = bridgeWith({ verifyAccount: { online: false } })
   assertError(await bridge.handle('accounts.verify', {}), 'VALIDATION', /accountId 必须/)
@@ -130,6 +140,47 @@ test('accounts.verify 回落通用 request（POST /accounts/:id/verify，超时�
 test('accounts.verify 失败信封保留稳定 code（AUTH_EXPIRED 不降级成 INTERNAL）', async () => {
   const { bridge } = bridgeWith({ verifyAccount: new DaemonError('AUTH_EXPIRED', '凭据已过期，请重新登录') })
   assertError(await bridge.handle('accounts.verify', { accountId: 'acc' }), 'AUTH_EXPIRED', /过期/)
+})
+
+test('accounts.activate 是本地状态写：不需要 confirm，只转发 accountId 并调用 activateAccount', async () => {
+  const { client, bridge } = bridgeWith({ activateAccount: { activeAccountId: 'acc' } })
+  assert.ok(bridge.endpoints.includes('accounts.activate'))
+  // 即使调用方多塞了 confirm/未知字段，也只转发白名单内的 accountId。
+  const result = await bridge.handle('accounts.activate', { accountId: 'acc', confirm: 'no', evil: true })
+  assert.deepEqual(result, { ok: true, value: { activeAccountId: 'acc' } })
+  assert.deepEqual(client.calls, [{ method: 'activateAccount', args: ['acc'] }])
+  assertError(await bridge.handle('accounts.activate', {}), 'VALIDATION', /accountId 必须/)
+  assertError(await bridge.handle('accounts.activate', { accountId: 'bad/id' }), 'VALIDATION', /accountId 格式非法/)
+})
+
+test('accounts.activate 回落通用 request（POST /accounts/activate）', async () => {
+  const base = createFakeClient({ request: { activeAccountId: 'acc' } })
+  const client = { ...base, activateAccount: undefined }
+  const bridge = createRpcBridge({ client })
+  const result = await bridge.handle('accounts.activate', { accountId: 'acc' })
+  assert.equal(result.ok, true)
+  assert.deepEqual(client.calls[0].args, ['/accounts/activate', { method: 'POST', body: { accountId: 'acc' } }])
+})
+
+test('accounts.logout 需要 confirm:true，带 confirm 后只调 logoutAccount（删本地凭据）', async () => {
+  const { client, bridge } = bridgeWith({ logoutAccount: { accountId: 'acc', activeAccountId: '' } })
+  assertError(await bridge.handle('accounts.logout', { accountId: 'acc' }), 'VALIDATION', /需要 confirm:true/)
+  assert.equal(client.calls.length, 0)
+  assert.deepEqual(await bridge.handle('accounts.logout', { accountId: 'acc', confirm: true }), {
+    ok: true,
+    value: { accountId: 'acc', activeAccountId: '' },
+  })
+  assert.deepEqual(client.calls, [{ method: 'logoutAccount', args: ['acc'] }])
+})
+
+test('accounts.logout 回落通用 request（POST /accounts/:id/logout）', async () => {
+  const base = createFakeClient({ request: { accountId: 'acc', activeAccountId: '' } })
+  const client = { ...base, logoutAccount: undefined }
+  const bridge = createRpcBridge({ client })
+  const result = await bridge.handle('accounts.logout', { accountId: 'acc', confirm: true })
+  assert.equal(result.ok, true)
+  assert.deepEqual(client.calls[0].args, ['/accounts/acc/logout', { method: 'POST', body: {} }])
+  assertError(await bridge.handle('accounts.logout', { accountId: 'bad/id', confirm: true }), 'VALIDATION', /accountId 格式非法/)
 })
 
 test('accounts.import 只转发 accountId/port，非法端口直接 VALIDATION', async () => {
@@ -196,6 +247,22 @@ test('settings.get/put 优先用注入的 settingsStore，字段白名单之外�
   assertError(await bridge.handle('settings.put', { patch: { evil: 1 }, confirm: true }), 'VALIDATION', /不支持字段/)
   assertError(await bridge.handle('settings.put', { patch: { publishMinIntervalMs: 1_000 }, confirm: true }), 'VALIDATION', /30000..3600000/)
   assert.equal(client.calls.length, 0)
+})
+
+test('settings.put 支持 activeAccountId / keepAliveEnabled / keepAliveIntervalMs，未知类型拒绝', async () => {
+  const writes = []
+  const settingsStore = { read: () => ({}), write: (patch) => { writes.push(patch); return patch } }
+  const { bridge } = bridgeWith({}, { settingsStore })
+  const patch = { activeAccountId: 'acc', keepAliveEnabled: true, keepAliveIntervalMs: 600_000 }
+  const result = await bridge.handle('settings.put', { patch, confirm: true })
+  assert.equal(result.ok, true)
+  assert.deepEqual(writes, [patch])
+  assertError(await bridge.handle('settings.put', { patch: { keepAliveEnabled: 'yes' }, confirm: true }), 'VALIDATION', /必须是布尔/)
+  assertError(await bridge.handle('settings.put', { patch: { keepAliveIntervalMs: 59_999 }, confirm: true }), 'VALIDATION', /60000..3600000/)
+  assertError(await bridge.handle('settings.put', { patch: { keepAliveIntervalMs: 3_600_001 }, confirm: true }), 'VALIDATION', /60000..3600000/)
+  assertError(await bridge.handle('settings.put', { patch: { activeAccountId: 'bad/id' }, confirm: true }), 'VALIDATION', /格式非法/)
+  // 空串表示「没有当前账号」，是合法值。
+  assert.equal((await bridge.handle('settings.put', { patch: { activeAccountId: '' }, confirm: true })).ok, true)
 })
 
 test('settings.get/put 没有 settingsStore 时退回 daemon 的 GET/PUT /settings', async () => {

@@ -153,6 +153,20 @@ test('planCopy 一次返回文本与归一化请求', () => {
   assert.equal(text.includes('场景氛围'), true)
 })
 
+test('出售原因 / 使用时长：给了进 facts，没给就不出现（不替用户编故事）', () => {
+  const { facts } = buildCopyRequest(baseInput({ reason: '换 16 后闲置', usedMonths: 18 }))
+  assert.equal(facts.reason, '换 16 后闲置')
+  assert.equal(facts.usedMonths, 18)
+
+  const bare = buildCopyRequest(baseInput())
+  assert.equal('reason' in bare.facts, false)
+  assert.equal('usedMonths' in bare.facts, false)
+
+  expectValidation(() => buildCopyRequest(baseInput({ usedMonths: 601 })), /usedMonths/)
+  expectValidation(() => buildCopyRequest(baseInput({ usedMonths: 1.5 })), /usedMonths/)
+  expectValidation(() => buildCopyRequest(baseInput({ reason: '   ' })), /出售原因/)
+})
+
 test('成色枚举与 skill 的 input-schema 保持同集合', () => {
   assert.deepEqual(CONDITIONS, ['new', 'like-new', 'light-wear', 'visible-wear', 'flawed'])
 })
