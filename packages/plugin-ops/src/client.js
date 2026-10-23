@@ -136,6 +136,8 @@ export function createDaemonClient(options) {
     listItems: () => request('/items'),
     // 只读摘要：账号 id / 更新时间 / 字段数 / 是否可用，不含任何 cookie 值。
     listAccounts: () => request('/accounts'),
+    // 登录态探测是只读动作（一次 mtop head），但可能触发 _m_h5_tk 刷新并回写凭据，故放宽超时。
+    verifyAccount: (accountId) => request('/accounts/' + encodeURIComponent(accountId) + '/verify', { method: 'POST', body: {}, timeoutMs: 40_000 }),
     // 登录态导入是写操作（落加密凭据），插件侧门禁会先拦一次人工确认。
     importAccount: (input = {}) => request('/accounts/import', { method: 'POST', body: input }),
     // 参考采集是只读统计（最坏 20 件串行，每件一次 mtop 调用），单独放宽超时。

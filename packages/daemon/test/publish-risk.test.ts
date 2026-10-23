@@ -42,6 +42,9 @@ function makePort(onPublish: (call: number) => Promise<{ itemId?: string }>): Op
     async sendReply() {
       return undefined
     },
+    async verifySession() {
+      return undefined
+    },
   }
   return port
 }

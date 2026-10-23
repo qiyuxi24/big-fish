@@ -18,6 +18,7 @@ import {
   openStore,
 } from '@bigfish/core'
 import type {
+  CredentialRecord,
   DaemonConfig,
   ItemRepository,
   Logger,
@@ -29,10 +30,11 @@ import { dirname, join } from 'node:path'
 
 import { importAccountFromChrome } from './accounts.ts'
 import { listAccountSummaries } from './account-list.ts'
+import { buildAccountSessionState, classifyVerifyError } from './account-verify.ts'
 import { loginAndSave } from './login.ts'
 import { createReferenceCollector } from './reference.ts'
 import { createExecutors } from './executors.ts'
-import type { OperationPort } from './executors.ts'
+import type { OperationPort, Session } from './executors.ts'
 import type { ExecutorDeps } from './executor.ts'
 import { createFetchTransport, createOperationPort } from './operations.ts'
 import type { PublishPortOptions } from './operations.ts'
@@ -223,6 +225,53 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
           )
           await refreshAccounts()
           return logged
+        },
+        // 登录态校验：只读探测，失败也回 200 + online:false——面板要的是「账号掉没掉线」，
+        // 而不是把 mtop 错误码当成 daemon 故障。只有账号不存在（VALIDATION）与能力未装配走错误信封。
+        verifyAccount: async (input) => {
+          const checkedAt = now === undefined ? Date.now() : now()
+          let record: CredentialRecord | undefined
+          try {
+            record = await credentials.load(input.accountId)
+          } catch (error) {
+            // 凭据库读失败是本地故障，但结论仍然只是「校验不出登录态」，不该变成 HTTP 500。
+            return buildAccountSessionState({
+              accountId: input.accountId,
+              checkedAt,
+              refreshed: false,
+              failure: classifyVerifyError(error),
+            })
+          }
+          if (record === undefined) fail('VALIDATION', '账号不存在：' + input.accountId)
+          const credential: CredentialRecord = record
+          let refreshed = false
+          const deviceId = credential.meta?.['deviceId']
+          const session: Session = {
+            accountId: credential.accountId,
+            cookies: credential.cookies,
+            ...(typeof deviceId === 'string' ? { deviceId } : {}),
+            // 与 executors 的 sessionWriter 同语义：save 成功才置 refreshed；meta 必须原样带回，
+            // 丢了 deviceId 会影响后续 IM 鉴权。
+            onSessionUpdate: async (cookies: Record<string, string>): Promise<void> => {
+              await credentials.save({
+                accountId: credential.accountId,
+                cookies,
+                ...(credential.meta === undefined ? {} : { meta: credential.meta }),
+              })
+              refreshed = true
+            },
+          }
+          try {
+            await ports.verifySession({ session })
+            return buildAccountSessionState({ accountId: credential.accountId, checkedAt, refreshed })
+          } catch (error) {
+            return buildAccountSessionState({
+              accountId: credential.accountId,
+              checkedAt,
+              refreshed,
+              failure: classifyVerifyError(error),
+            })
+          }
         },
         ...(options.version === undefined ? {} : { version: options.version }),
       })

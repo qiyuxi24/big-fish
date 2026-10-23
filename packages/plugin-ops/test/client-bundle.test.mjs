@@ -346,18 +346,168 @@ test('apply 只注册侧边栏栏位与主面板，不注册会话顶部 tab', (
   assert.equal(typeof mainPanel.component, 'function')
 })
 
-test('账号模块只读：讲清登录态来源与只读工具，不带任何 cookie 值', () => {
-  const { openTab } = mountPanel()
-  const text = toText(openTab('账号'))
-  // 说明「账号从哪里来」「用哪个工具看」
-  assert.match(text, /账号管理/)
-  assert.match(text, /导入登录态/)
-  assert.match(text, /npm run daemon:login/)
-  assert.match(text, /xy_accounts_list/)
-  assert.match(text, /xy_import_account/)
-  // 面板不读凭据：不出现「登录态/凭据明文」这类值
-  assert.match(text, /不读 cookie/)
-  assert.equal(/cookie=|unb=\d|_m_h5_tk=/i.test(text), false)
+/** 按 data-role 收集元素（任意标签，函数组件会展开后继续找）。 */
+function roleNodes(node, role, out = []) {
+  if (node === null || node === undefined || typeof node !== 'object') return out
+  if (Array.isArray(node)) {
+    for (const child of node) roleNodes(child, role, out)
+    return out
+  }
+  if (node.props !== undefined && node.props['data-role'] === role) out.push(node)
+  if (typeof node.type === 'function') roleNodes(callComponent(node), role, out)
+  else roleNodes(node.children ?? [], role, out)
+  return out
+}
+
+/** 切到「账号」tab，等首轮自动检测落定；返回渲染器与 rpc 调用记录。 */
+async function openAccountTab(replies) {
+  const { connection, calls } = createFakeConnection(replies)
+  const mounted = mountPanel({ connection })
+  mounted.openTab('账号')
+  const text = await snapshotText(mounted)
+  return { mounted, calls, text, tree: () => mounted.render() }
+}
+
+test('账号表：进入 tab 自动检测一次，在线徽标「在线」，账号/字段数/更新时间齐全', async () => {
+  const replies = daemonReplies()
+  replies['accounts.verify'] = (payload) => ({ ok: true, value: { accountId: payload.accountId, online: true, checkedAt: Date.now(), refreshed: false } })
+  const { calls, text, tree } = await openAccountTab(replies)
+
+  assert.equal(roleNodes(tree(), 'account-table').length, 1)
+  const rows = roleNodes(tree(), 'account-row')
+  assert.equal(rows.length, 1)
+  assert.match(toText(rows[0]), /2206569289277/)
+  assert.equal(toText(roleNodes(tree(), 'account-status')[0]), '在线')
+  assert.match(toText(roleNodes(tree(), 'account-checked')[0]), /^[0-9]{2}:[0-9]{2}:[0-9]{2}$/)
+  assert.match(toText(roleNodes(tree(), 'account-updated')[0]), /天前 · 字段齐备/)
+  assert.equal(toText(roleNodes(tree(), 'account-fields')[0]), '3')
+  for (const role of ['account-verify', 'account-import', 'account-login']) {
+    assert.equal(roleElements(tree(), role).length, 1, '缺少按钮：' + role)
+  }
+
+  const verifies = calls.filter((call) => call.endpoint === 'accounts.verify')
+  assert.equal(verifies.length, 1)
+  assert.equal(verifies[0].channel, '/bigfish')
+  assert.equal(verifies[0].payload.accountId, '2206569289277')
+  // 面板不读凭据：不出现 cookie 值。
+  assert.equal(/cookie=|unb=[0-9]|_m_h5_tk=/i.test(text), false)
+})
+
+test('账号表：在线与过期分列，AUTH_EXPIRED 只把该行标成「已过期」，不整页降级', async () => {
+  const replies = daemonReplies()
+  replies.accounts = { ok: true, value: [
+    { accountId: 'acc-online', updatedAt: Date.now(), savedFieldCount: 3, ready: true },
+    { accountId: 'acc-expired', updatedAt: Date.now() - 120000, savedFieldCount: 0, ready: false },
+  ] }
+  replies['accounts.verify'] = (payload) => payload.accountId === 'acc-online'
+    ? { ok: true, value: { online: true, checkedAt: Date.now() } }
+    : { ok: true, value: { online: false, code: 'AUTH_EXPIRED', checkedAt: Date.now() } }
+  const { text, tree } = await openAccountTab(replies)
+
+  assert.deepEqual(roleNodes(tree(), 'account-status').map((node) => toText(node)), ['在线', '已过期'])
+  assert.match(toText(roleNodes(tree(), 'account-updated')[1]), /分钟前 · 字段不齐/)
+  assert.equal(roleNodes(tree(), 'account-row').length, 2)
+  assert.equal(roleNodes(tree(), 'account-offline').length, 0)
+  assert.equal(text.includes('连不上 daemon'), false)
+})
+
+test('账号表：verify 回 NETWORK 显示「无法确认」，不会变成「已过期」', async () => {
+  const replies = daemonReplies()
+  replies['accounts.verify'] = { ok: true, value: { online: false, code: 'NETWORK', checkedAt: Date.now(), message: 'timeout' } }
+  const { text, tree } = await openAccountTab(replies)
+  assert.equal(toText(roleNodes(tree(), 'account-status')[0]), '无法确认 · 网络异常')
+  assert.equal(text.includes('已过期'), false)
+  assert.equal(roleNodes(tree(), 'account-offline').length, 0)
+})
+
+test('账号表：verify 请求本身失败只影响该行徽标', async () => {
+  const replies = daemonReplies()
+  replies['accounts.verify'] = { ok: false, error: { code: 'INTERNAL', message: 'boom' } }
+  const { text, tree } = await openAccountTab(replies)
+  assert.equal(toText(roleNodes(tree(), 'account-status')[0]), '无法确认 · 后台错误')
+  assert.equal(text.includes('连不上 daemon'), false)
+})
+
+test('账号表：点「检测」强制重打 accounts.verify', async () => {
+  const replies = daemonReplies()
+  replies['accounts.verify'] = (payload) => ({ ok: true, value: { accountId: payload.accountId, online: true, checkedAt: Date.now(), refreshed: true } })
+  const { calls, tree } = await openAccountTab(replies)
+  const count = () => calls.filter((call) => call.endpoint === 'accounts.verify').length
+  assert.equal(count(), 1)
+
+  roleElements(tree(), 'account-verify')[0].props.onClick()
+  assert.equal(roleElements(tree(), 'account-verify')[0].props.disabled, true)
+  await settle()
+  assert.equal(count(), 2)
+  assert.equal(toText(roleNodes(tree(), 'account-status')[0]), '在线')
+})
+
+test('账号表：重新导入要点两次，第二次才带 confirm:true 发 accounts.import', async () => {
+  const replies = daemonReplies()
+  replies['accounts.verify'] = { ok: true, value: { online: true, checkedAt: Date.now() } }
+  replies['accounts.import'] = (payload) => ({ ok: true, value: { accountId: payload.accountId } })
+  const { calls, tree } = await openAccountTab(replies)
+  const imports = () => calls.filter((call) => call.endpoint === 'accounts.import')
+
+  roleElements(tree(), 'account-import')[0].props.onClick()
+  assert.equal(imports().length, 0)
+  assert.match(toText(tree()), /确认导入/)
+  assert.match(toText(tree()), /再点一次「确认导入」/)
+
+  roleElements(tree(), 'account-import')[0].props.onClick()
+  await settle()
+  assert.equal(imports().length, 1)
+  assert.equal(imports()[0].channel, '/bigfish')
+  assert.equal(imports()[0].payload.confirm, true)
+  assert.equal(imports()[0].payload.accountId, '2206569289277')
+  assert.match(toText(tree()), /登录态已导入/)
+})
+
+test('账号表：扫码登录也要点两次，第二次带 confirm:true 发 accounts.login', async () => {
+  const replies = daemonReplies()
+  replies['accounts.verify'] = { ok: true, value: { online: true, checkedAt: Date.now() } }
+  replies['accounts.login'] = (payload) => ({ ok: true, value: { accountId: payload.accountId } })
+  const { calls, tree } = await openAccountTab(replies)
+  const logins = () => calls.filter((call) => call.endpoint === 'accounts.login')
+
+  roleElements(tree(), 'account-login')[0].props.onClick()
+  assert.equal(logins().length, 0)
+  assert.match(toText(tree()), /确认扫码/)
+  roleElements(tree(), 'account-login')[0].props.onClick()
+  assert.match(toText(tree()), /等待扫码…（最长 180s）/)
+  await settle()
+  assert.equal(logins().length, 1)
+  assert.equal(logins()[0].payload.confirm, true)
+  assert.equal(logins()[0].payload.accountId, '2206569289277')
+  assert.match(toText(tree()), /扫码登录成功/)
+})
+
+test('账号表：空列表显示「还没有导入账号」+ 导入/扫码入口', async () => {
+  const replies = daemonReplies()
+  replies.accounts = { ok: true, value: [] }
+  const { calls, text, tree } = await openAccountTab(replies)
+
+  assert.match(text, /还没有导入账号/)
+  assert.equal(roleNodes(tree(), 'account-empty').length, 1)
+  assert.equal(roleElements(tree(), 'account-import').length, 1)
+  assert.equal(roleElements(tree(), 'account-login').length, 1)
+  assert.equal(calls.filter((call) => call.endpoint === 'accounts.verify').length, 0)
+})
+
+test('账号表：来回切 tab 不重复自动检测（60 秒缓存）', async () => {
+  const replies = daemonReplies()
+  replies['accounts.verify'] = { ok: true, value: { online: true, checkedAt: Date.now() } }
+  const { mounted, calls } = await openAccountTab(replies)
+  const count = () => calls.filter((call) => call.endpoint === 'accounts.verify').length
+  assert.equal(count(), 1)
+
+  mounted.openTab('概览')
+  mounted.flush()
+  await settle()
+  mounted.openTab('账号')
+  mounted.flush()
+  await settle()
+  assert.equal(count(), 1)
 })
 
 test('侧边栏图标渲染 🐟，选中态与未选中态透明度不同', () => {
@@ -433,7 +583,7 @@ test('操作入口按钮存在但 disabled，并用 title 指向对应工具', (
   assert.equal(entryButtons[1].props.disabled, true)
   assert.match(entryButtons[0].props.title, /xy_import_account/)
   assert.match(entryButtons[1].props.title, /xy_publish_draft/)
-  assert.match(toText(tree), /按钮为什么是灰的/)
+  assert.match(entryButtons[0].props.title, /暂不可点/)
 })
 
 test('文案风格区：5 个风格可选，默认闲鱼口语，切换后选中态转移', () => {
@@ -502,7 +652,6 @@ test('「自动发布」模块（默认 tab）：流水线四步、草稿集与�
   const text = toText(tree)
   for (const expected of [
     '自动发布',
-    '批量入队 → daemon 串行执行；面板只组参数，不执行写操作',
     '流水线',
     '1 草稿集',
     '标题 / 文案 / 图片 / 价格 / 成色',
@@ -514,7 +663,6 @@ test('「自动发布」模块（默认 tab）：流水线四步、草稿集与�
     '草稿集',
     '发布前校验',
     '✅ 电子资料 / 学习笔记 / 课业本；❌ 教材教辅 / 语言与兴趣培训 / 学习资料定制 / 文学 / 考研咨询（网页端不支持发布）',
-    '面板不执行发布：命令由 agent 调 xy_publish_batch / CLI 执行 —— 执行与 UI 解耦',
   ]) {
     assert.ok(text.includes(expected), '自动发布视图缺少：' + expected)
   }
@@ -619,7 +767,6 @@ test('「采集」模块只读：讲清统计口径与红线，不出现图片�
     '不下载他人图片',
     '不照抄文案',
     '单件失败不影响整批',
-    '自有商品搬家',
   ]) {
     assert.ok(text.includes(expected), '采集视图缺少：' + expected)
   }

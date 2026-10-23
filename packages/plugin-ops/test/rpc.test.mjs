@@ -98,6 +98,40 @@ test('accounts.login 长轮询：HTTP 超时比 daemon 的扫码等待宽，参�
   assert.equal(client.calls[1].args[1].timeoutMs, 50_000)
 })
 
+test('accounts.verify 是只读端点：不需要 confirm，只转发 accountId，直接调客户端 verifyAccount', async () => {
+  const state = { accountId: 'acc', online: true, checkedAt: 1_700_000_000_000, refreshed: false }
+  const { client, bridge } = bridgeWith({ verifyAccount: state })
+  assert.ok(bridge.endpoints.includes('accounts.verify'))
+  const result = await bridge.handle('accounts.verify', { accountId: 'acc', confirm: 'yes', evil: true })
+  assert.deepEqual(result, { ok: true, value: state })
+  assert.deepEqual(client.calls, [{ method: 'verifyAccount', args: ['acc'] }])
+})
+
+test('accounts.verify 参数非法时 VALIDATION，且不调 daemon', async () => {
+  const { client, bridge } = bridgeWith({ verifyAccount: { online: false } })
+  assertError(await bridge.handle('accounts.verify', {}), 'VALIDATION', /accountId 必须/)
+  assertError(await bridge.handle('accounts.verify', { accountId: 'bad/id' }), 'VALIDATION', /accountId 格式非法/)
+  assert.equal(client.calls.length, 0)
+})
+
+test('accounts.verify 回落通用 request（POST /accounts/:id/verify，超时比 15s 宽）', async () => {
+  const base = createFakeClient({ request: { accountId: 'acc', online: true, checkedAt: 1, refreshed: true } })
+  const client = { ...base, verifyAccount: undefined }
+  const bridge = createRpcBridge({ client })
+  const result = await bridge.handle('accounts.verify', { accountId: 'acc' })
+  assert.equal(result.ok, true)
+  const [pathname, init] = client.calls[0].args
+  assert.equal(pathname, '/accounts/acc/verify')
+  assert.equal(init.method, 'POST')
+  assert.deepEqual(init.body, {})
+  assert.ok(init.timeoutMs >= 30_000, '校验会真调 mtop，HTTP 超时必须比默认 15s 宽')
+})
+
+test('accounts.verify 失败信封保留稳定 code（AUTH_EXPIRED 不降级成 INTERNAL）', async () => {
+  const { bridge } = bridgeWith({ verifyAccount: new DaemonError('AUTH_EXPIRED', '凭据已过期，请重新登录') })
+  assertError(await bridge.handle('accounts.verify', { accountId: 'acc' }), 'AUTH_EXPIRED', /过期/)
+})
+
 test('accounts.import 只转发 accountId/port，非法端口直接 VALIDATION', async () => {
   const { client, bridge } = bridgeWith({ importAccount: { accountId: 'acc', fields: 3 } })
   const result = await bridge.handle('accounts.import', { accountId: 'acc', confirm: true, extra: 'x' })

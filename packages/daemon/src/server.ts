@@ -23,6 +23,7 @@ import type {
   ImportAccountHandler,
   LoginAccountHandler,
   ReferenceCollectHandler,
+  VerifyAccountHandler,
   RequestShutdown,
   RetryTaskHandler,
   WorkerCounts,
@@ -51,6 +52,8 @@ export interface StartDaemonOptions {
   importAccount?: ImportAccountHandler
   /** 扫码登录能力；缺省时 POST /accounts/login 返回 UNSUPPORTED。 */
   loginAccount?: LoginAccountHandler
+  /** 登录态校验能力；缺省时 POST /accounts/:id/verify 返回 UNSUPPORTED。 */
+  verifyAccount?: VerifyAccountHandler
   /** 账号摘要能力；缺省时 GET /accounts 返回空数组。 */
   accountSummaries?: () => Promise<AccountSummary[]>
   /** 人工重新入队能力；缺省时 POST /tasks/:id/retry 返回 UNSUPPORTED。 */
@@ -86,6 +89,7 @@ interface ServerContext {
   worker: (() => WorkerCounts) | undefined
   importAccount: ImportAccountHandler | undefined
   loginAccount: LoginAccountHandler | undefined
+  verifyAccount: VerifyAccountHandler | undefined
   accountSummaries: (() => Promise<AccountSummary[]>) | undefined
   retryTask: RetryTaskHandler | undefined
   referenceCollect: ReferenceCollectHandler | undefined
@@ -119,6 +123,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
     worker: options.worker,
     importAccount: options.importAccount,
     loginAccount: options.loginAccount,
+    verifyAccount: options.verifyAccount,
     accountSummaries: options.accountSummaries,
     retryTask: options.retryTask,
     referenceCollect: options.referenceCollect,
@@ -192,6 +197,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, context:
       worker: context.worker,
       importAccount: context.importAccount,
       loginAccount: context.loginAccount,
+      verifyAccount: context.verifyAccount,
       accountSummaries: context.accountSummaries,
       retryTask: context.retryTask,
       referenceCollect: context.referenceCollect,

@@ -10,7 +10,7 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const h = React.createElement
     const ICON_STYLE = { display: 'block', lineHeight: '1' }
-    /** 面板上的按钮都只能看（原因见 BUTTON_NOTE）。 */
+    /** 面板上的按钮都只能看：要执行请让模型调对应工具或复制下面的命令。 */
     const BUTTONS = [{ label: '导入登录态', tool: 'xy_import_account' }, { label: '发布 dry-run', tool: 'xy_publish_draft' }]
     /** 面板内模块 tab：全部在侧边栏面板里切换（不注册 conversation.view）。 */
     const PANEL_TABS = [
@@ -27,7 +27,6 @@ window.__ModuleLoader__.load({
       diagnose: [{ label: '起 daemon', command: 'npm run daemon' }, { label: '隔离 dev 实例', command: 'npm run dsh:dev -- --fresh' }],
     }
     const PUBLISH_MODES = [['dry-run', 'dry-run（只填表）', '只填表、不点提交'], ['enqueue', 'enqueue（入队，走审批）', '入队后由 daemon 执行，需要审批门禁']]
-    const BUTTON_NOTE = '按钮为什么是灰的：宿主没有公开「面板直接调用工具」的 API，工具调用要经过 host 侧审批门禁，入口仍在对话里；也可以复制下面的命令。'
     /** 语言风格展示副本；权威定义在 src/copy.js 的 COPY_STYLES，漂移由单测守护。 */
     const COPY_STYLE_OPTIONS = [
       { id: 'plain', label: '闲鱼口语', summary: '短句直给，像老买家聊天，不客套' },
@@ -310,8 +309,7 @@ window.__ModuleLoader__.load({
         h('div', { style: S.buttonRow }, ...BUTTONS.map(button => h('button', {
           key: button.tool, type: 'button', disabled: true, style: S.button,
           title: '暂不可点：请在对话里让模型调用 ' + button.tool + '，或复制下面的命令。',
-        }, button.label))),
-        h('div', { style: S.sectionHint }, BUTTON_NOTE))
+        }, button.label))))
     }
     function CommandList({ items, title }) {
       return h('div', { style: S.section },
@@ -363,14 +361,9 @@ window.__ModuleLoader__.load({
       const { styleId, onStyle, ready, submitted, request } = props
       return h('div', { style: S.section },
         h('div', { style: S.sectionTitle }, '文案风格（skill 注入）'),
-        h(StylePicker, { styleId, onStyle }),
-        h(CopyInputs, props),
+        h(StylePicker, { styleId, onStyle }), h(CopyInputs, props),
         h('div', { style: S.buttonRow },
-          h('button', {
-            type: 'button', 'data-role': 'copy-submit', disabled: !ready,
-            title: ready ? '按当前风格组装 xy_copy_plan 请求' : '先填商品名与价格（元）',
-            onClick: () => props.onSubmit(), style: ready ? S.primary : S.button,
-          }, '生成文案请求'),
+          h('button', { type: 'button', 'data-role': 'copy-submit', disabled: !ready, title: ready ? '按当前风格组装 xy_copy_plan 请求' : '先填商品名与价格（元）', onClick: () => props.onSubmit(), style: ready ? S.primary : S.button }, '生成文案请求'),
           h('span', { style: S.sectionHint }, ready ? '' : '商品名与价格都填了才能生成（价格用于校验，不写进标题）。')),
         submitted ? h(CopyPlanPreview, { request }) : null)
     }
@@ -395,19 +388,17 @@ window.__ModuleLoader__.load({
       '单件失败不影响整批：失败条目进 skipped 列表，AUTH_EXPIRED / RISK_CONTROL / UNAUTHORIZED 会中止整批。',
     ]
 
-    /** 「采集」模块：讲清参考分析能给什么、怎么调工具。纯 UI，不联网、不执行写操作。 */
+    /** 「采集」模块：只读统计给定价 / 文案找参照；面板不联网，采集由 agent 调工具。 */
     function ReferenceView() {
+      const tools = [['xy_reference_collect', '按商品 id / 商家 id 采集只读统计（最坏 20 件串行）'], ['xy_items_list', '本地商品快照（自己已上架的，不是参考）']]
       return h('div', null,
-        h('div', { style: S.sectionHint }, '读他人商品做统计分析 → 给自己的定价与文案找参照；面板不联网，采集由 agent 调工具'),
         h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '能拿到什么'),
           h('div', { style: S.grid }, ...REFERENCE_CARDS.map(card => h(Card, { key: card.title, ...card })))),
         h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '怎么调（让模型执行）'),
-          h(ToolRow, { name: 'xy_reference_collect', desc: '按商品 id / 商家 id 采集只读统计（最坏 20 件串行）' }),
-          h(ToolRow, { name: 'xy_items_list', desc: '本地商品快照（自己已上架的，不是参考）' }),
+          ...tools.map(([name, desc]) => h(ToolRow, { key: name, name, desc })),
           h('div', { style: S.sectionHint }, '示例参数：{"accountId":"2206569289277","itemIds":["1091933071728"]} 或 {"accountId":"…","sellerId":"…"}')),
         h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '已知边界'),
-          ...REFERENCE_NOTES.map((note, index) => h('div', { key: String(index), style: S.sectionHint }, '· ' + note))),
-        h('div', { style: S.note }, '下一步（未做）：自有商品搬家（R2）要先拍板范围——只搬自己名下商品才不碰搬运红线；采用前写进 docs/repost-feature-parity.md 并补真机记录。'))
+          ...REFERENCE_NOTES.map((note, index) => h('div', { key: String(index), style: S.sectionHint }, '· ' + note))))
     }
 
     /** daemon 实时状态 + 进程管理：health / 账号就绪 / 队列计数 / 最近批次 / 设置摘要 + 启停按钮。 */
@@ -417,107 +408,70 @@ window.__ModuleLoader__.load({
       const actions = useDaemonAction(connection)
       const online = snapshot.phase === 'ok' && snapshot.data !== null
       const action = actions.state
-      // 进程管理：两个分支都渲染，用户离线时点「启动」、在线时点「停止」。
       const manage = h('div', { style: S.section, 'data-role': 'daemon-manage' },
         h('div', { style: S.sectionTitle }, '进程管理（daemon 是常驻后台监听进程）'),
-        h('div', { style: S.sectionHint },
-          'daemon 在后台常驻监听：worker 按固定间隔轮询本地队列，执行发布 / 擦亮 / 探针等任务；面板只是看板，关掉它 daemon 照旧运行。'
-          + '停止后队列不再执行、面板转为离线；下次打开面板宿主会自动拉起，也可以在这里手动启动。'),
+        h('div', { style: S.sectionHint }, 'daemon 常驻后台：worker 按固定间隔轮询本地队列，执行发布 / 擦亮 / 探针等任务；面板只是看板，停止后队列暂停，下次打开面板宿主会自动拉起。'),
         h('div', { style: S.buttonRow },
-          h('button', {
-            type: 'button', 'data-role': 'daemon-start', disabled: online || action.busy !== '',
-            title: online ? 'daemon 已在线' : '让宿主拉起本地 daemon（跳过 30 秒冷却）',
-            onClick: actions.start, style: !online && action.busy === '' ? S.primary : S.button,
-          }, action.busy === 'daemon.start' ? '正在启动…' : '启动 daemon'),
-          h('button', {
-            type: 'button', 'data-role': 'daemon-stop', disabled: !online || action.busy !== '',
-            title: online ? '停止常驻 daemon（会中断在飞任务）' : 'daemon 未运行',
-            onClick: actions.stop, style: online && action.busy === '' ? S.primary : S.button,
-          }, action.stopArmed ? '确认停止 daemon' : action.busy === 'daemon.stop' ? '正在停止…' : '停止 daemon')),
-        action.notice === null ? null : h('div', {
-          style: action.notice.kind === 'bad' ? S.badText : S.okText, 'data-role': 'daemon-manage-notice',
-        }, action.notice.text))
+          h('button', { type: 'button', 'data-role': 'daemon-start', disabled: online || action.busy !== '', title: online ? 'daemon 已在线' : '让宿主拉起本地 daemon（跳过 30 秒冷却）', onClick: actions.start, style: !online && action.busy === '' ? S.primary : S.button }, action.busy === 'daemon.start' ? '正在启动…' : '启动 daemon'),
+          h('button', { type: 'button', 'data-role': 'daemon-stop', disabled: !online || action.busy !== '', title: online ? '停止常驻 daemon（会中断在飞任务）' : 'daemon 未运行', onClick: actions.stop, style: online && action.busy === '' ? S.primary : S.button }, action.stopArmed ? '确认停止 daemon' : action.busy === 'daemon.stop' ? '正在停止…' : '停止 daemon')),
+        action.notice === null ? null : h('div', { style: action.notice.kind === 'bad' ? S.badText : S.okText, 'data-role': 'daemon-manage-notice' }, action.notice.text))
       if (snapshot.phase === 'loading') return h('div', { style: S.sectionHint, 'data-role': 'daemon-state' }, '正在连接 daemon…')
       const data = snapshot.data
       // 降级时给一句可执行的下一步：宿主会自己拉起 daemon，失败后 30 秒冷却，仍不行再看日志。
       if (snapshot.phase !== 'ok' || data === null) return h('div', { 'data-role': 'daemon-state' },
         h('div', { style: S.badText }, OFFLINE_TEXT),
-        h('div', { style: S.sectionHint, 'data-role': 'daemon-hint' },
-          '宿主已尝试自动拉起 daemon（失败后 30 秒冷却；日志在数据目录的 plugin.log / daemon.log）。仍连不上就手动执行 pnpm daemon:start。'),
+        h('div', { style: S.sectionHint, 'data-role': 'daemon-hint' }, '宿主已尝试自动拉起 daemon（失败后 30 秒冷却；日志在数据目录的 plugin.log / daemon.log）。仍连不上就手动执行 pnpm daemon:start。'),
         manage)
       const health = data.health ?? {}
-      const queue = data.status?.queue ?? {}
       const accounts = Array.isArray(data.accounts) ? data.accounts : []
       const readyCount = accounts.filter(account => account !== null && typeof account === 'object' && account.ready === true).length
-      const line = (role, label, value) => h('div', { style: S.cmdRow, 'data-role': role },
-        h('span', { style: S.cmdLabel }, label), h('span', null, value))
+      const line = (role, label, value) => h('div', { style: S.cmdRow, 'data-role': role }, h('span', { style: S.cmdLabel }, label), h('span', null, value))
       return h('div', { style: S.section, 'data-role': 'daemon-state' },
         h('div', { style: S.sectionTitle }, 'daemon 实时状态（每 3 秒轮询）'),
         line('daemon-health', 'daemon', '在线 · v' + String(health.version ?? '?') + ' · 已运行 ' + formatUptime(health.uptimeMs)),
         line('daemon-accounts', '账号就绪', String(accounts.length) + ' 个账号 · ' + String(readyCount) + ' 个可写' + (accounts.length === 0 ? '（先导入登录态）' : '')),
-        line('daemon-queue', '队列', describeQueue(queue)),
+        line('daemon-queue', '队列', describeQueue(data.status?.queue ?? {})),
         line('daemon-batch', '最近批次', describeBatch(data.batch)),
         line('daemon-settings', '设置摘要', describeSettings(data.settings ?? {})),
         manage)
     }
 
-    /**
-     * 工作流树：把 /events 的增量事件渲染成「任务 → 步骤」，回答「现在在干嘛」。
-     * 只显示最近 6 个任务 × 每个任务最近 6 步：面板是看板不是日志浏览器。
-     */
+    /** 工作流树：把 /events 的增量事件渲染成「任务 → 步骤」，只显示最近 6 个任务 × 最近 6 步。 */
     function WorkflowTree({ connection }) {
       const stream = useWorkflowEvents(connection)
       const tasks = groupEventsByTask(stream.events).slice(-6).reverse()
-      // UNSUPPORTED 只可能来自「宿主里加载的是重启前的旧插件」：宿主的 handler 表里没有这个 endpoint。
-      // 这时 daemon 状态块照常在线，用户不该去重启 daemon，而该重启 DSH 桌面应用。
+      // UNSUPPORTED 只可能来自「宿主加载的是重启前的旧插件」：该重启 DSH 桌面应用，不是重启 daemon。
       const hint = stream.phase === 'loading' ? '正在读取步骤事件…'
-        : stream.phase === 'offline' ? (stream.code === 'UNSUPPORTED'
-          ? '这一版面板需要宿主里加载新版插件，但现在跑的是重启前的旧代码（没有 events.list 这个 rpc）：重启 DSH 桌面应用后自动恢复；上面的 daemon 状态不受影响'
-          : '事件流拉取失败（daemon 离线，或旧 daemon 没有 /events）；启动 daemon 后自动恢复')
-          : tasks.length === 0 ? '还没有步骤事件：daemon 执行任务时才会写（发布 / 擦亮 / 探针都会产生）'
-            : '最近 ' + String(tasks.length) + ' 个任务，事件每 3 秒增量追加'
-      const stateLabel = value => {
-        const hit = TASK_STATE_LABELS.find(([state]) => state === value)
-        return hit === undefined ? (value === '' ? '状态未知' : value) : hit[1]
-      }
+        : stream.phase === 'offline' ? (stream.code === 'UNSUPPORTED' ? '这一版面板需要宿主里加载新版插件，但现在跑的是重启前的旧代码（没有 events.list 这个 rpc）：重启 DSH 桌面应用后自动恢复；上面的 daemon 状态不受影响' : '事件流拉取失败（daemon 离线，或旧 daemon 没有 /events）；启动 daemon 后自动恢复')
+          : tasks.length === 0 ? '还没有步骤事件：daemon 执行任务时才会写（发布 / 擦亮 / 探针都会产生）' : '最近 ' + String(tasks.length) + ' 个任务，事件每 3 秒增量追加'
+      const stateLabel = value => { const hit = TASK_STATE_LABELS.find(([state]) => state === value); return hit === undefined ? (value === '' ? '状态未知' : value) : hit[1] }
       const stepLine = (task, step, index) => {
         const state = typeof step.state === 'string' ? step.state : ''
         const hit = STEP_STATE_LABELS.find(([value]) => value === state)
-        const text = String(step.step ?? '?') + ' · ' + (hit === undefined ? stateLabel(state) : hit[1])
-          + (typeof step.message === 'string' && step.message !== '' ? ' · ' + step.message : '')
-        return h('div', {
-          key: task.taskId + '-step-' + String(index), style: S.cmdRow,
-          'data-role': 'workflow-step', 'data-step-state': state,
-        }, h('span', { style: S.cmdLabel }, '步骤'), h('span', { style: state === 'failed' ? S.badText : S.okText }, text))
+        const text = String(step.step ?? '?') + ' · ' + (hit === undefined ? stateLabel(state) : hit[1]) + (typeof step.message === 'string' && step.message !== '' ? ' · ' + step.message : '')
+        return h('div', { key: task.taskId + '-step-' + String(index), style: S.cmdRow, 'data-role': 'workflow-step', 'data-step-state': state }, h('span', { style: S.cmdLabel }, '步骤'), h('span', { style: state === 'failed' ? S.badText : S.okText }, text))
       }
       return h('div', { style: S.section, 'data-role': 'workflow-tree' },
         h('div', { style: S.sectionTitle }, '工作流（现在在干嘛）'),
         h('div', { style: S.sectionHint }, hint),
         ...tasks.map(task => h('div', { key: task.taskId, 'data-role': 'workflow-task', 'data-task-id': task.taskId },
-          h('div', { style: S.cmdRow },
-            h('span', { style: S.cmdLabel },
-              '任务 ' + task.taskId.slice(0, 12) + (task.batchId === null ? '' : ' · 批次 ' + task.batchId)),
-            h('span', { style: S.okText }, '状态 ' + stateLabel(task.state))),
+          h('div', { style: S.cmdRow }, h('span', { style: S.cmdLabel }, '任务 ' + task.taskId.slice(0, 12) + (task.batchId === null ? '' : ' · 批次 ' + task.batchId)), h('span', { style: S.okText }, '状态 ' + stateLabel(task.state))),
           ...task.steps.slice(-6).map((step, index) => stepLine(task, step, index)))))
     }
 
     /** 诊断页：daemon 实时状态 + 只读工具与进程命令。 */
     function DiagnoseTab({ connection }) {
+      const tools = [['xy_status', '队列/账号/熔断/worker'], ['xy_tasks_list', '任务列表（可按状态/种类过滤）'], ['xy_items_list', '本地商品快照'], ['xy_ping', '插件 ↔ daemon ↔ 鉴权自检']]
       return h('div', null,
         h(DaemonView, { connection }),
-        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '读状态（让模型调）'),
-          h(ToolRow, { name: 'xy_status', desc: '队列/账号/熔断/worker' }),
-          h(ToolRow, { name: 'xy_tasks_list', desc: '任务列表（可按状态/种类过滤）' }),
-          h(ToolRow, { name: 'xy_items_list', desc: '本地商品快照' }),
-          h(ToolRow, { name: 'xy_ping', desc: '插件 ↔ daemon ↔ 鉴权自检' })),
-        h(CommandList, { items: COMMANDS.diagnose, title: '进程' }),
-        h('div', { style: S.note }, '面板不读凭据：实时状态经宿主 rpc 只读轮询，写操作仍走 host 侧审批。'))
+        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '读状态（让模型调）'), ...tools.map(([name, desc]) => h(ToolRow, { key: name, name, desc }))),
+        h(CommandList, { items: COMMANDS.diagnose, title: '进程' }))
     }
 
     /** 当前 tab 的内容区；copy 页的状态留在 Panel 里（切走再切回不丢输入）。 */
     function PanelBody({ tab, copyProps, connection }) {
       if (tab === 'publish-batch') return h(PublishBatchView, { connection })
-      if (tab === 'account') return h(AccountView)
+      if (tab === 'account') return h(AccountView, { connection })
       if (tab === 'copy') return h(CopyStudio, copyProps)
       if (tab === 'reference') return h(ReferenceView)
       if (tab === 'diagnose') return h(DiagnoseTab, { connection })
@@ -550,9 +504,7 @@ window.__ModuleLoader__.load({
             h('div', { style: S.title }, 'BigFish 闲鱼运营'),
             h('div', { style: S.subtitle }, '发布 / 账号 / 文案 / 采集 · 面板只组参数，执行交给 agent 与 daemon'))),
         h(TabBar, { active: tab, onSelect: setTab }),
-        h(PanelBody, { tab, copyProps, connection: panelConnection }),
-        h('div', { style: S.note },
-          '写操作门禁：导入登录态、入队发布走 ask；dry-run 与 xy_copy_plan 只读放行。实时状态在「诊断」页。真机校准通过前，任何路径都不会声称「发布成功」。'))
+        h(PanelBody, { tab, copyProps, connection: panelConnection }))
     }
 
     /** 「自动发布」模块：daemon 实时状态 + 草稿集 → 校验 → 组 xy_publish_batch 参数。 */
@@ -565,72 +517,41 @@ window.__ModuleLoader__.load({
       const valid = results.filter(result => result.ok)
       const invalid = results.filter(result => !result.ok)
       const ready = valid.length >= 2 && invalid.length === 0
-      const blocked = results.length === 0 ? '先粘贴至少 2 条合法草稿'
-        : invalid.length > 0 ? '有 ' + String(invalid.length) + ' 行校验不通过，先修好再生成'
-          : '至少 2 条合法草稿才能生成（现在 ' + String(valid.length) + ' 条）'
+      const blocked = results.length === 0 ? '先粘贴至少 2 条合法草稿' : invalid.length > 0 ? '有 ' + String(invalid.length) + ' 行校验不通过，先修好再生成' : '至少 2 条合法草稿才能生成（现在 ' + String(valid.length) + ' 条）'
       const request = buildPublishBatchArguments(mode, results, accountId)
       const update = setter => value => { setter(value); setGenerated(null) }
-      const modeButtons = PUBLISH_MODES.map(([value, label, hint]) => h('button', {
-        key: value, type: 'button', 'data-role': 'publish-mode', 'aria-pressed': value === mode, title: hint,
-        onClick: () => update(setMode)(value), style: value === mode ? { ...S.chip, ...S.chipActive } : S.chip,
-      }, label))
+      const modeButtons = PUBLISH_MODES.map(([value, label, hint]) => h('button', { key: value, type: 'button', 'data-role': 'publish-mode', 'aria-pressed': value === mode, title: hint, onClick: () => update(setMode)(value), style: value === mode ? { ...S.chip, ...S.chipActive } : S.chip }, label))
       return h('div', null,
-        h('div', { style: S.sectionHint }, '批量入队 → daemon 串行执行；面板只组参数，不执行写操作'),
         h(DaemonView, { connection }),
         h(WorkflowTree, { connection }),
-        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '流水线'),
-          h('div', { style: S.grid }, ...PIPELINE_STEPS.map(step => h(Card, { key: step.title, title: step.title, value: step.value })))),
+        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '流水线'), h('div', { style: S.grid }, ...PIPELINE_STEPS.map(step => h(Card, { key: step.title, title: step.title, value: step.value })))),
         h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '草稿集'),
-          h('div', { style: S.sectionHint }, '每行一条：内联 JSON 对象，或草稿 .json 文件路径（由 host 侧读取）。price 单位是分。'),
-          h('textarea', {
-            value: draftText, rows: 6, 'data-role': 'draft-input',
-            placeholder: '每行一条草稿：{"title":"...","price":990,"images":["D:/pics/1.jpg"]} 或 D:/drafts/note.json',
-            onChange: event => update(setDraftText)(event.target.value),
-            style: { ...S.input, ...S.textarea },
-          }),
-          h('div', { style: S.sectionHint }, '示例：' + DRAFT_EXAMPLE)),
+          h('div', { style: S.sectionHint }, '每行一条：内联 JSON 对象或 .json 路径（host 侧读取）；price 单位是分。示例：' + DRAFT_EXAMPLE),
+          h('textarea', { value: draftText, rows: 6, 'data-role': 'draft-input', placeholder: '每行一条草稿：{"title":"...","price":990,"images":["D:/pics/1.jpg"]} 或 D:/drafts/note.json', onChange: event => update(setDraftText)(event.target.value), style: { ...S.input, ...S.textarea } })),
         h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '发布前校验'),
           h('div', { style: S.sectionHint }, '类目矩阵：' + CATEGORY_MATRIX),
-          ...results.map(result => h('div', { key: String(result.index), style: S.cmdRow, 'data-role': 'draft-check', 'data-ok': result.ok },
-            h('span', { style: S.cmdLabel }, '第 ' + String(result.index + 1) + ' 行'),
-            h('span', { style: result.ok ? S.okText : S.badText }, result.message))),
+          ...results.map(result => h('div', { key: String(result.index), style: S.cmdRow, 'data-role': 'draft-check', 'data-ok': result.ok }, h('span', { style: S.cmdLabel }, '第 ' + String(result.index + 1) + ' 行'), h('span', { style: result.ok ? S.okText : S.badText }, result.message))),
           h('div', { style: S.sectionHint }, '已通过 ' + String(valid.length) + ' 条 / 未通过 ' + String(invalid.length) + ' 条；至少 2 条合法草稿才能生成。')),
         h('div', { style: S.section },
-          h('div', { style: S.fieldRow }, h('div', { style: S.field }, h('span', { style: S.fieldLabel }, '模式'),
-            h('div', { style: S.chipRow }, ...modeButtons))),
-          h(Field, { label: '账号（可选）', control: h('input', {
-            type: 'text', value: accountId, placeholder: 'daemon 账号 id，默认唯一账号',
-            onChange: event => update(setAccountId)(event.target.value), style: S.input,
-          }) }),
-          h('div', { style: S.buttonRow },
-            h('button', {
-              type: 'button', 'data-role': 'publish-batch-submit', disabled: !ready,
-              title: ready ? '组装 xy_publish_batch 参数 JSON' : blocked,
-              onClick: () => setGenerated(request), style: ready ? S.primary : S.button,
-            }, '生成批量发布请求'),
-            h('span', { style: S.sectionHint }, '生成的 JSON 交给 agent 调 xy_publish_batch。'))),
-        generated === null ? null : h('div', { style: S.preview },
-          h('div', { style: S.sectionTitle }, 'xy_publish_batch 参数已就绪'),
-          h('pre', { style: S.pre, 'data-role': 'publish-request' }, JSON.stringify(generated, null, 2))),
-        h(CommandList, { items: COMMANDS.publish, title: '发布命令' }),
-        h('div', { style: S.note }, '面板不执行发布：命令由 agent 调 xy_publish_batch / CLI 执行 —— 执行与 UI 解耦'))
+          h('div', { style: S.fieldRow }, h('div', { style: S.field }, h('span', { style: S.fieldLabel }, '模式'), h('div', { style: S.chipRow }, ...modeButtons))),
+          h(Field, { label: '账号（可选）', control: h('input', { type: 'text', value: accountId, placeholder: 'daemon 账号 id，默认唯一账号', onChange: event => update(setAccountId)(event.target.value), style: S.input }) }),
+          h('div', { style: S.buttonRow }, h('button', { type: 'button', 'data-role': 'publish-batch-submit', disabled: !ready, title: ready ? '组装 xy_publish_batch 参数 JSON' : blocked, onClick: () => setGenerated(request), style: ready ? S.primary : S.button }, '生成批量发布请求'))),
+        generated === null ? null : h('div', { style: S.preview }, h('div', { style: S.sectionTitle }, 'xy_publish_batch 参数已就绪'), h('pre', { style: S.pre, 'data-role': 'publish-request' }, JSON.stringify(generated, null, 2))),
+        h(CommandList, { items: COMMANDS.publish, title: '发布命令' }))
     }
     /** 行内样式表：跟随 DSH 主题变量，不引入样式文件。 */
     const S = {
       page: { padding: '32px', maxWidth: '860px', margin: '0 auto', color: 'var(--dsw-alias-label-primary)' },
       header: { display: 'flex', gap: '14px', alignItems: 'center', marginBottom: '24px' },
-      logo: { fontSize: '34px', lineHeight: '1' }, title: { fontSize: '20px', fontWeight: 600, lineHeight: '28px' },
-      subtitle: { fontSize: '13px', color: 'var(--dsw-alias-label-secondary)' },
+      logo: { fontSize: '34px', lineHeight: '1' }, title: { fontSize: '20px', fontWeight: 600, lineHeight: '28px' }, subtitle: { fontSize: '13px', color: 'var(--dsw-alias-label-secondary)' },
       tabBar: { display: 'flex', gap: '2px', borderBottom: '1px solid var(--dsw-alias-border-l2)', marginBottom: '4px' },
       tab: { fontSize: '13px', padding: '8px 14px', cursor: 'pointer', border: 'none', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', borderBottom: '2px solid transparent', marginBottom: '-1px' },
       tabActive: { color: 'var(--dsw-alias-label-primary)', fontWeight: 600, borderBottom: '2px solid var(--dsw-alias-label-primary)' },
       grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' },
       card: { border: '1px solid var(--dsw-alias-border-l2)', borderRadius: '10px', padding: '16px' },
-      cardTitle: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginBottom: '6px' },
-      cardValue: { fontSize: '15px', fontWeight: 500, lineHeight: '22px' },
+      cardTitle: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginBottom: '6px' }, cardValue: { fontSize: '15px', fontWeight: 500, lineHeight: '22px' },
       cardHint: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginTop: '6px', lineHeight: '18px' },
-      section: { marginTop: '24px' },
-      sectionTitle: { fontSize: '13px', fontWeight: 600, marginBottom: '10px' },
+      section: { marginTop: '24px' }, sectionTitle: { fontSize: '13px', fontWeight: 600, marginBottom: '10px' },
       sectionHint: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', marginTop: '10px', lineHeight: '18px' },
       buttonRow: { display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center', marginTop: '12px' },
       button: { fontSize: '13px', padding: '6px 14px', borderRadius: '8px', cursor: 'not-allowed', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-l2)', color: 'var(--dsw-alias-label-secondary)' },
@@ -638,47 +559,109 @@ window.__ModuleLoader__.load({
       chipRow: { display: 'flex', gap: '8px', flexWrap: 'wrap' },
       chip: { fontSize: '12px', padding: '5px 12px', borderRadius: '999px', cursor: 'pointer', border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)' },
       chipActive: { background: 'var(--dsw-alias-bg-l3)', color: 'var(--dsw-alias-label-primary)', borderColor: 'var(--dsw-alias-label-secondary)', fontWeight: 600 },
-      fieldRow: { display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '12px' },
-      field: { display: 'flex', flexDirection: 'column', gap: '6px', minWidth: '180px', flex: '1 1 180px' },
+      fieldRow: { display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '12px' }, field: { display: 'flex', flexDirection: 'column', gap: '6px', minWidth: '180px', flex: '1 1 180px' },
       fieldLabel: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' },
       input: { fontSize: '13px', padding: '6px 10px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-primary)' },
       preview: { marginTop: '16px' },
       pre: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '12px', background: 'var(--dsw-alias-bg-l2)', borderRadius: '8px', padding: '12px', whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: '10px 0 0' },
-      cmdRow: { display: 'flex', gap: '10px', alignItems: 'baseline', padding: '5px 0', flexWrap: 'wrap' },
-      cmdLabel: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', minWidth: '150px' },
+      cmdRow: { display: 'flex', gap: '10px', alignItems: 'baseline', padding: '5px 0', flexWrap: 'wrap' }, cmdLabel: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', minWidth: '150px' },
       cmdCode: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '12px', background: 'var(--dsw-alias-bg-l2)', borderRadius: '4px', padding: '2px 6px', wordBreak: 'break-all' },
-      note: { marginTop: '24px', fontSize: '13px', lineHeight: '22px', color: 'var(--dsw-alias-label-secondary)' },
-      textarea: { width: '100%', boxSizing: 'border-box', resize: 'vertical', marginTop: '8px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
-      okText: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' }, badText: { fontSize: '12px', color: 'var(--dsw-alias-label-danger, #c0392b)' },
+      note: { marginTop: '24px', fontSize: '13px', lineHeight: '22px', color: 'var(--dsw-alias-label-secondary)' }, textarea: { width: '100%', boxSizing: 'border-box', resize: 'vertical', marginTop: '8px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+      okText: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' }, badText: { fontSize: '12px', color: 'var(--dsw-alias-label-danger, #c0392b)' }, goodText: { fontSize: '12px', color: 'var(--dsw-alias-label-success, #1a7f37)' }, warnText: { fontSize: '12px', color: 'var(--dsw-alias-label-warning, #9a6700)' },
+      small: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' }, actions: { display: 'flex', gap: '6px', flexWrap: 'wrap' },
     }
-    /** 账号模块的三张来源卡：都是 daemon/host 侧动作，面板只解释怎么触发。 */
-    const ACCOUNT_SOURCES = [
-      { title: '导入登录态', value: '从本机 Chrome 读 cookie', hint: 'Chrome 需带 --remote-debugging-port 启动；会加密写凭据，工具执行前要人工确认。' },
-      { title: '扫码登录', value: 'npm run daemon:login', hint: '打开闲鱼登录页等扫码；unb 与 _m_h5_tk 齐备才算成功（默认等 180s）。' },
-      { title: '凭据存储', value: '加密落盘', hint: 'Windows 走 DPAPI；daemon 只在执行时解密，插件与 UI 都拿不到 cookie 明文。' },
-    ]
-    /** 账号模块的已知边界：写清「面板看到的是什么、过期怎么处理」。 */
-    const ACCOUNT_NOTES = [
-      '摘要字段只有 id / 最后更新 / 登录态字段数 / 是否可写（unb + _m_h5_tk 齐备）；任何 cookie 值都不出 daemon 进程。',
-      '_m_h5_tk 约 2 小时过期：过期后写操作报 AUTH_EXPIRED；重新导入或扫码即可刷新（mtop 响应带新 token 时 daemon 也会自动续期）。',
-      '导入与扫码都是写操作（写加密凭据），走 ask 门禁；本面板只读，实时状态从 host rpc 轮询。',
-    ]
-    function AccountView() {
-      return h('div', null,
-        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '账号管理'),
-          h('div', { style: S.sectionHint }, '登录态来源、只读摘要与刷新方式；面板不读 cookie、不联网')),
-        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '登录态怎么进来'),
-          h('div', { style: S.grid }, ...ACCOUNT_SOURCES.map(source => h(Card, { key: source.title, title: source.title, value: source.value, hint: source.hint })))),
-        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '看当前账号'),
-          h('div', { style: S.sectionHint }, '面板不执行工具：下面这些交给 agent 调，摘要在对话里返回。'),
-          h('div', { style: S.cmdRow }, h('span', { style: S.cmdLabel }, '只读摘要'), h('code', { style: S.cmdCode }, 'xy_accounts_list'),
-            h('span', { style: S.sectionHint }, '账号 id / 更新于 / 字段数 / 是否可写')),
-          h('div', { style: S.cmdRow }, h('span', { style: S.cmdLabel }, '导入登录态（需确认）'), h('code', { style: S.cmdCode }, 'xy_import_account')),
-          h('div', { style: S.cmdRow }, h('span', { style: S.cmdLabel }, '队列概览里也能看到'), h('code', { style: S.cmdCode }, 'xy_status'),
-            h('span', { style: S.sectionHint }, 'accounts 是启动时快照，导入/扫码后 daemon 会刷新'))),
-        h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '已知边界'),
-          ...ACCOUNT_NOTES.map(note => h('div', { key: note, style: S.sectionHint }, '· ' + note))),
-        h('div', { style: S.note }, '下一步（未做）：面板里直接点「导入 / 扫码」需要写类 rpc 端点 + 二次确认 UI，留到下一轮；在那之前写操作入口只在工具审批里。'))
+    // —— 账号管理：账号表 + 进入即检测（60 秒内不重复）+ 重新导入 / 扫码登录（写类点两次）——
+    const VERIFY_TTL_MS = 60_000
+    const ACCOUNT_COLUMNS = ['账号', '登录状态', '最近检测', '凭据更新', '字段数', '操作']
+    const ACCOUNT_GRID = 'minmax(120px, 1.2fr) 150px 92px 160px 60px 250px'
+    const ACCOUNT_CODE_LABELS = { AUTH_EXPIRED: '登录态过期', RISK_CONTROL: '风控拦截', RATE_LIMITED: '被限流', NETWORK: '网络异常', VALIDATION: '参数不合法', INTERNAL: '后台错误' }
+    /** 自动检测的 60 秒缓存：同一账号在缓存期内重开面板不重复打 mtop。 */
+    const verifyCache = new Map()
+    function formatClock(ms) { const value = Number(ms); return Number.isFinite(value) && value > 0 ? new Date(value).toTimeString().slice(0, 8) : '—' }
+    function formatAgo(ms) { const value = Number(ms); if (!Number.isFinite(value) || value <= 0) return '—'; const minutes = Math.floor((Date.now() - value) / 60_000); if (minutes < 1) return '刚刚'; if (minutes < 60) return String(minutes) + ' 分钟前'; const hours = Math.floor(minutes / 60); return hours < 24 ? String(hours) + ' 小时前' : String(Math.floor(hours / 24)) + ' 天前' }
+    /** 状态徽标：未检测 / 检测中 / 在线 / 已过期 / 无法确认（网络、限流、风控只影响这一行）。 */
+    function accountBadge(entry) {
+      if (entry === undefined) return ['未检测', S.small]
+      if (entry.phase === 'checking') return ['检测中', S.small]
+      if (entry.phase === 'failed') return ['无法确认 · ' + (ACCOUNT_CODE_LABELS[entry.code] ?? '检测请求失败'), S.badText]
+      if (entry.online === true) return ['在线', S.goodText]
+      if (entry.code === 'AUTH_EXPIRED') return ['已过期', S.badText]
+      return ['无法确认 · ' + (ACCOUNT_CODE_LABELS[entry.code] ?? '未返回原因'), S.warnText]
+    }
+    function truncateText(text) { const value = typeof text === 'string' && text !== '' ? text : '操作失败'; return value.length > 120 ? value.slice(0, 118) + '…' : value }
+    /** 账号表：进入 tab 自动检测（60 秒缓存），导入 / 扫码是写操作，点两次才发 confirm。 */
+    function AccountView({ connection }) {
+      const [board, setBoard] = React.useState({ phase: 'loading', accounts: [], verifies: {}, busy: '', armed: '', result: null })
+      const update = patch => setBoard(previous => ({ ...previous, ...patch }))
+      const loadAccounts = async () => {
+        const reply = await callRead(connection, 'accounts'), list = reply.ok && Array.isArray(reply.value) ? reply.value : []
+        update({ phase: reply.ok ? 'ok' : 'offline', accounts: list }); return list
+      }
+      /** 只改这一行的状态：检测失败（网络/限流/风控）不降级整页。 */
+      const verifyOne = async accountId => {
+        setBoard(previous => ({ ...previous, busy: 'verify:' + accountId, verifies: { ...previous.verifies, [accountId]: { phase: 'checking' } } }))
+        const reply = await callRead(connection, 'accounts.verify', { accountId })
+        const value = reply.ok && reply.value !== null && typeof reply.value === 'object' ? reply.value : null
+        const entry = value === null ? { phase: 'failed', code: reply.code } : { phase: 'done', online: value.online === true, code: typeof value.code === 'string' ? value.code : '', checkedAt: Number(value.checkedAt) || Date.now() }
+        verifyCache.set(accountId, { at: Date.now(), entry })
+        setBoard(previous => ({ ...previous, busy: '', verifies: { ...previous.verifies, [accountId]: entry } }))
+      }
+      React.useEffect(() => {
+        let alive = true
+        void loadAccounts().then(async list => {
+          for (const account of list) {
+            const accountId = String(account !== null && typeof account === 'object' ? account.accountId ?? '' : '')
+            if (!alive || accountId === '') continue
+            const cached = verifyCache.get(accountId)
+            if (cached !== undefined && Date.now() - cached.at < VERIFY_TTL_MS) setBoard(previous => ({ ...previous, verifies: { ...previous.verifies, [accountId]: cached.entry } }))
+            else await verifyOne(accountId)
+          }
+        })
+        return () => { alive = false }
+      }, [connection])
+      /** 第一次点只上膛；第二次才带 confirm:true 发出（写类 rpc 的 host 门禁要求）。 */
+      const runWrite = async (kind, accountId) => {
+        const key = kind + ':' + accountId
+        const wording = kind === 'import'
+          ? { hint: '再点一次「确认导入」：从本机 Chrome 读 cookie 并加密写凭据', busy: '正在导入登录态…', done: '登录态已导入' }
+          : { hint: '再点一次「确认扫码」：打开闲鱼登录页等你扫码，最长 180s', busy: '等待扫码…（最长 180s）', done: '扫码登录成功' }
+        if (board.armed !== key) { update({ armed: key, result: { kind: 'hint', text: wording.hint } }); return }
+        update({ armed: '', busy: kind, result: { kind: 'hint', text: wording.busy } })
+        const reply = await callAction(connection, kind === 'import' ? 'accounts.import' : 'accounts.login', accountId === '' ? { confirm: true } : { confirm: true, accountId })
+        update({ busy: '', result: reply.ok ? { kind: 'ok', text: wording.done } : { kind: 'bad', text: truncateText(reply.message) } })
+        if (reply.ok) await loadAccounts()
+      }
+      const actionButton = (role, label, onClick) => h('button', { key: role, type: 'button', 'data-role': role, disabled: board.busy !== '', onClick, style: board.busy !== '' ? S.button : S.primary }, label)
+      const rowActions = accountId => [
+        actionButton('account-verify', board.busy === 'verify:' + accountId ? '检测中…' : '检测', () => void verifyOne(accountId)),
+        actionButton('account-import', board.busy === 'import' ? '导入中…' : board.armed === 'import:' + accountId ? '确认导入' : '重新导入', () => void runWrite('import', accountId)),
+        actionButton('account-login', board.busy === 'login' ? '等待扫码…' : board.armed === 'login:' + accountId ? '确认扫码' : '扫码登录', () => void runWrite('login', accountId)),
+      ]
+      const rowStyle = head => ({ display: 'grid', gridTemplateColumns: ACCOUNT_GRID, gap: '8px', alignItems: 'center', padding: '7px 0', borderBottom: '1px solid var(--dsw-alias-border-l2)', fontSize: head ? '12px' : '13px', color: head ? 'var(--dsw-alias-label-secondary)' : 'var(--dsw-alias-label-primary)' })
+      const rowOf = account => {
+        const accountId = String(account.accountId ?? ''), entry = board.verifies[accountId], badge = accountBadge(entry)
+        return h('div', { key: accountId, style: rowStyle(false), 'data-role': 'account-row', 'data-account-id': accountId },
+          h('span', null, accountId),
+          h('span', { style: badge[1], 'data-role': 'account-status' }, badge[0]),
+          h('span', { style: S.small, 'data-role': 'account-checked' }, entry === undefined || entry.checkedAt === undefined ? '—' : formatClock(entry.checkedAt)),
+          h('span', { style: S.small, 'data-role': 'account-updated' }, formatAgo(account.updatedAt) + ' · ' + (account.ready === true ? '字段齐备' : '字段不齐')),
+          h('span', { style: S.small, 'data-role': 'account-fields' }, String(account.savedFieldCount ?? '?')),
+          h('div', { style: S.actions }, ...rowActions(accountId)))
+      }
+      const emptyRow = h('div', { style: rowStyle(false), 'data-role': 'account-empty' },
+        h('span', { style: { ...S.small, gridColumn: 'span 5' } }, '还没有导入账号'),
+        h('div', { style: S.actions },
+          actionButton('account-import', board.busy === 'import' ? '导入中…' : board.armed === 'import:' ? '确认导入' : '导入登录态', () => void runWrite('import', '')),
+          actionButton('account-login', board.busy === 'login' ? '等待扫码…' : board.armed === 'login:' ? '确认扫码' : '扫码登录', () => void runWrite('login', ''))))
+      const resultLine = board.result === null ? null : h('div', { style: board.result.kind === 'bad' ? S.badText : S.small, 'data-role': 'account-result' }, board.result.text)
+      return h('div', { style: S.section },
+        h('div', { style: S.sectionTitle }, '账号管理'),
+        board.phase === 'loading' ? h('div', { style: S.small }, '正在读取账号…') : null,
+        board.phase === 'offline' ? h('div', { style: S.badText, 'data-role': 'account-offline' }, '连不上 daemon：启动 daemon 后重开本页') : null,
+        h('div', { 'data-role': 'account-table' },
+          h('div', { style: rowStyle(true) }, ...ACCOUNT_COLUMNS.map(label => h('span', { key: label }, label))),
+          ...board.accounts.map(rowOf), board.accounts.length === 0 && board.phase !== 'loading' ? emptyRow : null),
+        resultLine)
     }
     /** 当前连接句柄：apply 时从 ctx 取一次（服务由宿主注入；缺失则 null → 面板降级）。 */
     let panelConnection = null

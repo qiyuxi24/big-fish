@@ -42,6 +42,7 @@ import type { RedactFn } from './http.ts'
 import type { ImportAccountInput, ImportedAccount } from './accounts.ts'
 import type { LoginInput, LoginResult } from './login.ts'
 import type { AccountSummary } from './account-list.ts'
+import type { AccountSessionState } from './account-verify.ts'
 import { lifecycleRoutes } from './lifecycle.ts'
 import { parseReferenceRequest } from './reference.ts'
 import type { ReferenceReport, ReferenceRequest } from './reference.ts'
@@ -52,6 +53,12 @@ export type ImportAccountHandler = (input: ImportAccountInput) => Promise<Import
 
 /** 扫码登录能力的注入签名；未注入时 POST /accounts/login 返回 UNSUPPORTED。 */
 export type LoginAccountHandler = (input: LoginInput) => Promise<LoginResult>
+
+/**
+ * 登录态校验能力的注入签名；未注入时 POST /accounts/:id/verify 返回 UNSUPPORTED。
+ * 返回 200 的 value（online=false 也是成功响应），账号不存在才抛 VALIDATION。
+ */
+export type VerifyAccountHandler = (input: { accountId: string }) => Promise<AccountSessionState>
 
 /**
  * 人工重新入队能力的注入签名；未注入时 POST /tasks/:id/retry 返回 UNSUPPORTED。
@@ -83,6 +90,8 @@ export interface RouteContext {
   importAccount: ImportAccountHandler | undefined
   /** 扫码登录能力；未注入时 POST /accounts/login 返回 UNSUPPORTED。 */
   loginAccount: LoginAccountHandler | undefined
+  /** 登录态校验能力；未注入时 POST /accounts/:id/verify 返回 UNSUPPORTED。 */
+  verifyAccount: VerifyAccountHandler | undefined
   /** 账号摘要能力；未注入时 GET /accounts 返回空数组（不是错误，开发态也能渲染面板）。 */
   accountSummaries: (() => Promise<AccountSummary[]>) | undefined
   /** 人工重新入队能力；未注入时 POST /tasks/:id/retry 返回 UNSUPPORTED。 */
@@ -142,6 +151,8 @@ const ROUTES: readonly Route[] = [
   { method: 'GET', pattern: /^\/accounts\/?$/, handler: listAccountsHandler },
   { method: 'POST', pattern: /^\/accounts\/import\/?$/, handler: importAccountHandler },
   { method: 'POST', pattern: /^\/accounts\/login\/?$/, handler: loginAccountHandler },
+  // 放在 login 之后：两条都是精确/带参路径，顺序只影响可读性；带参路由不要抢在精确路由前。
+  { method: 'POST', pattern: /^\/accounts\/([^/]+)\/verify\/?$/, handler: verifyAccountHandler },
   { method: 'GET', pattern: /^\/tasks\/?$/, handler: listTasksHandler },
   { method: 'POST', pattern: /^\/tasks\/?$/, handler: enqueueHandler },
   // 批次视图只是 tasks.batch_id 的聚合，放在 /tasks 之后、/tasks/:id 之前读起来最顺。
@@ -291,6 +302,17 @@ async function importAccountHandler(ctx: RouteContext): Promise<void> {
   if (port !== undefined) input.port = port
   const result = await importer(input)
   await sendJson(ctx.res, 200, ok(result), ctx.redact)
+}
+
+/**
+ * 校验账号登录态：掉线/风控/网络失败都回 200 + online:false，面板据此展示原因，不用解析 mtop 错误码。
+ * 只有「账号不存在」（VALIDATION → 400）与「能力未装配」（UNSUPPORTED → 500）走错误信封。
+ */
+async function verifyAccountHandler(ctx: RouteContext): Promise<void> {
+  const verify = ctx.verifyAccount ?? fail('UNSUPPORTED', 'daemon 未注入登录态校验能力')
+  const accountId = ctx.params[0] ?? fail('VALIDATION', '缺少账号 id')
+  const state = await verify({ accountId })
+  await sendJson(ctx.res, 200, ok(state), ctx.redact)
 }
 
 async function listTasksHandler(ctx: RouteContext): Promise<void> {

@@ -105,6 +105,9 @@ function makePort(overrides: Partial<OperationPort> = {}): OperationPort & { cal
       calls.push('deliver:' + input.deliver.orderId)
       return { delivered: true }
     },
+    async verifySession() {
+      // 本文件只测执行器分派，登录态校验不在覆盖范围。
+    },
     async sendReply(input) {
       calls.push('reply:' + input.reply.cid)
     },

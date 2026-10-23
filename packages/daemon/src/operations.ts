@@ -20,8 +20,10 @@
 import {
   MTOP_APIS,
   MTOP_API_VERSIONS,
+  USER_MTOP_APIS,
   buildItemDetailData,
   buildPolishData,
+  buildUserHeadData,
   callMtop,
   parseItemDetail,
 } from '@bigfish/channel-mtop'
@@ -166,6 +168,20 @@ export function createOperationPort(options: OperationPortOptions = {}): Operati
       })
       if (submit && result.itemId === undefined) fail('INTERNAL', 'CDP 发布返回成功但没有 itemId，按失败处理')
       return result.itemId === undefined ? {} : { itemId: result.itemId }
+    },
+
+    async verifySession(input: { session: Session }): Promise<void> {
+      // 缺 unb 时 head 接口即使成功也证明不了「人已登录」：账号摘要同样把无 unb 视为不可用。
+      const unb = input.session.cookies['unb']
+      if (typeof unb !== 'string' || unb.trim().length === 0) {
+        fail('VALIDATION', '凭据里没有 unb，无法校验登录态')
+      }
+      // head 接口不产生业务副作用，适合作为登录态探针；令牌过期由 callMtop 统一刷新回写。
+      await callMtop(transport, {
+        api: USER_MTOP_APIS.head,
+        data: buildUserHeadData({ userId: unb }),
+        ...mtopSession(input.session),
+      })
     },
 
     async deliverOrder(): Promise<{ delivered: boolean }> {

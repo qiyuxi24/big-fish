@@ -39,6 +39,7 @@ DSH 宿主给插件的客户端能力只有两类入口：
 | `reference.collect` | 读（会写抓取结果） | `client.collectReferences(input)` | `accountId` 必填；`itemIds`(≤20, 去重) 或 `sellerId` 至少一个 |
 | `settings.get` | 读 | `settingsStore.read()`，缺失时 `GET /settings` | 无 |
 | `settings.put` | 写 | `settingsStore.write(patch)`，缺失时 `PUT /settings` | 白名单字段：`copyStyle`/`defaultCategory`/`defaultAddress`/`shipping`/`publishMinIntervalMs`(30000..3600000)/`maxBatchItems`(1..20)/`imageProvider{endpointUrl?,model?,enabled}` |
+| `accounts.verify` | 读（真调一次 mtop，可能触发 `_m_h5_tk` 刷新并回写凭据） | `client.verifyAccount(accountId)`，缺失时 `POST /accounts/:id/verify` | `accountId` 必填；返回 `{accountId, online, checkedAt, refreshed, code?, message?}` |
 | `accounts.import` | 写 | `client.importAccount({accountId?,port?})` | `accountId`/`port` |
 | `accounts.login` | 写 | `client.loginAccount({accountId?,port?})`，缺失时 `POST /accounts/login` | `accountId`/`port`/`timeoutMs(1..180000)` |
 | `batch.enqueue` | 写 | 逐条 `client.enqueue(task)`（串行） | `batchId`、`items[]`(1..20)，每条 `kind`/`payload`/`dedupeKey`/`availableAt?`/`maxAttempts(1..10)` |

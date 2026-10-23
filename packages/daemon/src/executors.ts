@@ -76,6 +76,11 @@ export interface OperationPort {
   }): Promise<{ itemId?: string }>
   deliverOrder(input: { session: Session; deliver: DeliverRequest; signal: AbortSignal }): Promise<{ delivered: boolean }>
   sendReply(input: { session: Session; reply: ReplyRequest; signal: AbortSignal }): Promise<void>
+  /**
+   * 只读探测登录态是否有效（head 接口）。
+   * 不占限流桶、不写库：这是面板的即时查询，不是队列任务；刷新回写仍走 session.onSessionUpdate。
+   */
+  verifySession(input: { session: Session }): Promise<void>
 }
 
 /** 执行器装配参数：只需要通道能力；凭据/限流/熔断/items 都从 ExecuteContext 取。 */

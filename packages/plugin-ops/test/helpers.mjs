@@ -51,6 +51,7 @@ export function createFakeClient(overrides = {}) {
     request: record('request'),
     listItems: record('listItems'),
     listAccounts: record('listAccounts'),
+    verifyAccount: record('verifyAccount'),
     importAccount: record('importAccount'),
     collectReferences: record('collectReferences'),
   }

@@ -77,6 +77,9 @@ function makePort(onStepRun: (onStep: (step: string, message: string) => void) =
     async sendReply() {
       throw new Error('不该被调用')
     },
+    async verifySession() {
+      throw new Error('不该被调用')
+    },
   }
 }
 

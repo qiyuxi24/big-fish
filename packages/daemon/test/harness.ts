@@ -21,6 +21,7 @@ import type {
   ReferenceCollectHandler,
   RequestShutdown,
   RetryTaskHandler,
+  VerifyAccountHandler,
 } from '../src/routes.ts'
 import type { SettingsStore } from '../src/settings.ts'
 import type { AccountSummary } from '../src/account-list.ts'
@@ -74,6 +75,8 @@ export interface HarnessOptions {
   importAccount?: ImportAccountHandler
   /** 扫码登录能力（测试 POST /accounts/login）；缺省时不注入，路由应返回 UNSUPPORTED。 */
   loginAccount?: LoginAccountHandler
+  /** 登录态校验能力（测试 POST /accounts/:id/verify）；缺省时不注入，路由应返回 UNSUPPORTED。 */
+  verifyAccount?: VerifyAccountHandler
   /** 账号摘要能力（测试 GET /accounts）；缺省时不注入，路由应返回空数组。 */
   accountSummaries?: () => Promise<AccountSummary[]>
   /** 人工重新入队能力；缺省时接 FakeQueue.requeue，保证路由测试覆盖真实状态校验。 */
@@ -113,6 +116,7 @@ export async function createHarness(t: { after(fn: () => Promise<void>): void },
     ...(options.importAccount === undefined ? {} : { importAccount: options.importAccount }),
     ...(options.accountSummaries === undefined ? {} : { accountSummaries: options.accountSummaries }),
     ...(options.loginAccount === undefined ? {} : { loginAccount: options.loginAccount }),
+    ...(options.verifyAccount === undefined ? {} : { verifyAccount: options.verifyAccount }),
     // 默认接 FakeQueue 的真 requeue：路由测试覆盖「状态校验 → 记录变更 → 200」整条路径；
     // 需要断言注入是否被调用（例如唤醒 worker）时再用 options.retryTask 覆盖。
     retryTask: options.retryTask ?? ((id: string): TaskRecord => queue.requeue(id)),

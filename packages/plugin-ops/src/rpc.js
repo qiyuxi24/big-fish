@@ -47,6 +47,8 @@ const STOP_HEALTH_TIMEOUT_MS = 800
 /** 扫码登录是长轮询（daemon 等到 180s），HTTP 超时必须比它再宽一点。 */
 const LOGIN_REQUEST_MARGIN_MS = 20_000
 const IMPORT_TIMEOUT_MS = 120_000
+/** 校验登录态会真调一次 mtop（可能含一次令牌刷新重试），HTTP 超时要比 daemon 客户端默认 15s 宽。 */
+const VERIFY_REQUEST_TIMEOUT_MS = 40_000
 /** settings 的可写字段；不在这张表里的键一律拒绝（未知字段不转发）。 */
 const SETTINGS_FIELDS = new Set([
   'copyStyle', 'defaultCategory', 'defaultAddress', 'shipping',
@@ -330,6 +332,17 @@ function loginAccountEndpoint(client, body) {
   return client.request('/accounts/login', { method: 'POST', body: input, timeoutMs })
 }
 
+/**
+ * 登录态校验：accountId 必填，daemon 返回 AccountSessionState
+ * （online / checkedAt / refreshed / code+message），面板据此显示「在线 / 已过期 / 无法确认」。
+ */
+function verifyAccountEndpoint(client, body) {
+  const accountId = readRequiredString(body, 'accountId', ACCOUNT_ID_RE)
+  if (typeof client.verifyAccount === 'function') return client.verifyAccount(accountId)
+  const path = '/accounts/' + encodeURIComponent(accountId) + '/verify'
+  return client.request(path, { method: 'POST', body: {}, timeoutMs: VERIFY_REQUEST_TIMEOUT_MS })
+}
+
 function enqueueBatchEndpoint(client, body) {
   const batchId = readOptionalString(body, 'batchId', 64)
   if (batchId !== undefined && !BATCH_ID_RE.test(batchId)) bad('batchId 格式非法：' + batchId.slice(0, 40))
@@ -356,6 +369,8 @@ function createDefaultHandlers(options) {
     'settings.put': (body) => writeSettingsEndpoint(settingsStore, client, readSettingsPatch(body.patch)),
     'accounts.import': (body) => importAccountEndpoint(client, body),
     'accounts.login': (body) => loginAccountEndpoint(client, body),
+    // 只读探测（不写闲鱼、不写磁盘外的状态）：不挂 confirm，面板进 tab 可自动调用。
+    'accounts.verify': (body) => verifyAccountEndpoint(client, body),
     'batch.enqueue': (body) => enqueueBatchEndpoint(client, body),
     // 面板「进程管理」按钮：start 让宿主拉起 daemon（跳过冷却，人点了就要试），
     // stop 是写操作（会打断在飞任务），因此挂在 WRITE_ENDPOINTS 后面等 confirm。
