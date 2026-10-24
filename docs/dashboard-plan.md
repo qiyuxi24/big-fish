@@ -1,6 +1,21 @@
 # 看板（数据可视化）实施计划
 
-> 状态：**方案待拍板，未动工**（2026-10-23 起草）；本文件是支线计划，**不是主线路线图**。主线排期看 [`docs/STATUS.md`](STATUS.md) §4.4 施工队列，验收口径看 [`docs/auto-publish.md`](auto-publish.md)。
+> 状态：**图表与 `/metrics` 仍未动工**（2026-10-23 起草，同日面板 tab 重排落地，见 §0.1）；本文件是支线计划，**不是主线路线图**。主线排期看 [`docs/STATUS.md`](STATUS.md) §4.4 施工队列，验收口径看 [`docs/auto-publish.md`](auto-publish.md)。
+
+## 0.1 已落地（2026-10-23 面板重排，不含图表）
+
+面板从「6 个扁平 tab（自动发布/账号/文案/采集/概览/诊断）」重排为**按功能的 6 个 tab、三组**，`概览` 不再是占位：
+
+| 组 | tab | 内容 | 用到的 rpc（全部已存在） |
+| --- | --- | --- | --- |
+| 监控 | 概览（默认） | daemon 状态卡（health/账号/队列/**worker 计数**/最近批次）+ 待办提醒（失败·待审·凭据不全·**熔断**）+ 工作流树 + 系统区（进程管理 / 设置 / 工具与命令） | `health` `status` `accounts` `settings.get` `tasks.list` `batches.get` `events.list` `daemon.start` `daemon.stop` `settings.put` |
+| 准备 | 账号 | 账号表 + 导入/扫码/退出/切换/校验 + 保活 + 托管浏览器 | `accounts.*` `browser.status` |
+| 准备 | 采集 | 链接解析 → 入库 → 商家/商品表 + **行情简报**（价格带/建议价/结构/高频词） | `reference.parseLink` `seller.collect` `sellers.list` `seller.items` **`market.brief`** |
+| 准备 | 文案 | 品类 + 字段勾选 + 风格 → `xy_copy_plan` 参数 | `copy.templates` |
+| 作业 | 发布 | 草稿集 → 校验 → 入队 → **任务表（state/kind 筛选，参数交给 daemon）+ 重试**；发货/客服置灰占位 | `batch.enqueue` `tasks.list` `tasks.retry` |
+| 作业 | 商品 | 自有商品快照 + 勾选后入队 **polish（擦亮）/ probe（探测）** | **`items.list`** `batch.enqueue` |
+
+概览的「待办提醒」**只用现有字段**（`/status` 的 `queue`、`accounts`、`circuits`）算，没有趋势、没有失败原因 Top、没有成功率 —— 因为 daemon 还没有聚合端点。**不要在面板里编造这些数字**。
 
 ## 0. 一句话结论
 
@@ -10,7 +25,7 @@
 
 | 缺口 | 位置 | 现状 |
 | --- | --- | --- |
-| 概览 tab 是占位 | `packages/plugin-ops/client.js:451-461` `PanelBody` 没有 `overview` 分支 | 落到默认登录说明（`xy_import_account` / `127.0.0.1:47001` / `npm run daemon:import-account`） |
+| 概览 tab 只有驾驶舱、没有图表 | `packages/plugin-ops/src/client-bundle/08-panel.part.js`（`overview` 分支已存在，2026-10-23 重排） | 只有状态卡 + 待办提醒 + 工作流；没有趋势 / 状态占比 / 失败 Top，数据来自 `/status` + `/tasks` 的当前态 |
 | 没有批次进度可视化 | `docs/STATUS.md:108` 明写「没做 ④ 批次进度可视化（`batches.get` 已能读）」 | 任务表只有单条任务 |
 | 没有聚合数据端点 | daemon 只有 `GET /status`、`/accounts`、`/batches/:id`、`/events`、`/tasks` | `/tasks` 是原样列表（limit≤200、带完整 payload），不适合在面板里做聚合 |
 | 没有推送 | 无 SSE/WS | 面板只能轮询（`POLL_MS=3000`） |
@@ -120,5 +135,31 @@
 
 1. 路线：**1（面板内 SSR 图 + 批次进度）** 是否够；要不要现在就排 M4 全屏页？
 2. 1MB vendor 入库可以吗？（不允许 → 走路线 0：手绘 SVG，零依赖，效果朴素）
-3. 概览 tab **直接替换**占位登录说明（登录入口账号 tab 已有）还是保留一行入口？
+3. ~~概览 tab 直接替换占位登录说明还是保留一行入口~~ → **已定：直接替换**（2026-10-23 重排，概览 = 驾驶舱 + 系统区）。
 4. 是否接受为此补一份 ADR（按 AGENTS §2 必须补）并把它排在主线之后——**看板是支线，不抢发布主线的工期**。
+
+## 10. 下一步技术方案（TODO，2026-10-23 重排后更新）
+
+面板已经把 daemon **现有**能力全接完了，剩下的是「daemon 还没有的能力」。按依赖顺序排：
+
+### 10.1 补齐 3 个 rpc 端点（0.5d，daemon 侧不用改，路由都已存在）
+
+面板够不着、但 daemon 已实现的能力，只差 host `src/rpc.js` 端点表一行 + client 调用：
+
+| endpoint | 转发到 | 性质 | 面板归属 |
+| --- | --- | --- | --- |
+| `circuits.reset` | `POST /circuits/reset` | **写**（进 `WRITE_ENDPOINTS`，两次确认） | 账号 tab 熔断行 / 概览待办提醒的「重置」按钮 |
+| `task.action` | `POST /tasks/:id/{ack\|fail\|release}` | 本地队列流转，**不挂审批门禁**（2026-10-21 裁决），但面板仍点两次 | 发布 tab 任务行（处理 `needs_review` 卡死） |
+| `tasks.get` | `GET /tasks/:id` | 只读 | 发布 tab 任务详情展开（payload / attempts / lastError） |
+
+验收：`packages/plugin-ops/test/rpc.test.mjs` 加白名单与 confirm 断言 + `client-bundle.test.mjs` 加渲染断言；**不改 daemon**。
+
+### 10.2 `GET /metrics` + 概览图表（M1→M2，见 §4 / §6）
+
+前置：`tasks` 表加 `kind`+`state`+`createdAt` 的聚合查询（SQL 里 GROUP BY，不要把全表拉进内存）；入队时把 `{dryRun, submit}` 快照写进 payload（§4.2），否则 `done` 分不清「真发」与「dry-run」。
+
+### 10.3 明确的「不做」
+
+- **不做客户端图表库**：client bundle 只能 require 宿主 9 个静态模块，塞 echarts 要引入 esbuild 构建链（路线 2），优先级低于发布主线。
+- **不做全屏看板页**：卡在 token 进 query 的鉴权问题（路线 3）。
+- **不在面板里编数字**：概览的提醒只来自 `/status` 的 `queue` / `accounts` / `circuits`；没有 `/metrics` 之前不显示趋势、成功率、失败 Top。

@@ -1,6 +1,6 @@
 # 项目状态 — 单一事实源
 
-> **最后更新 2026-10-23 傍晚（账号模块 v2：多账号切换 / 退出登录 / 添加账户 / cookie 生命周期 / 定时保活（**已按用户要求真机开启**，300s 间隔，观测到 `source=keepalive`）/ verify 5s 冷却；面板账号表 7 列 26 个 data-role、保活改成一个开关按钮；1086 基线）· 代码基线 `main @ 2c95868` + 本次提交。**
+> **最后更新 2026-10-24 凌晨（账号模块 v3：**托管浏览器**——扫码/导入/发布共用同一个调试端口 Chrome，扫码登录不再关窗口；新增 `GET /browser` + 面板「托管浏览器」状态行（账号 tab data-role 27 个）；账号模块 v2：切换 / 退出 / 添加账户 / cookie 生命周期 / 定时保活（**已按用户要求真机开启**，300s 间隔，观测到 `source=keepalive`）/ verify 5s 冷却；采集 v3 结构特征 + 市场简报/成色建议价（§4.1.4）；1151 基线）· 代码基线 `main @ 218fd05`（含本节全部改动）。**
 > 本文是仓库**唯一**的「现在到哪了 / 下一步做什么」入口。其他文档里的测试数字、工具数量、阶段状态一律以本文为准；
 > 若发现别处与本文冲突，以本文为真、并把冲突处改成指向本文。规则看 [AGENTS.md](../AGENTS.md)，实现形态看 [architecture.md](architecture.md)。
 
@@ -8,7 +8,7 @@
 
 ## 1. 一句话
 
-**能登录、能取品、能单件全自动发布（真机真提交 3 次：2 次 CLI 直发 + 1 次队列路径，都是填表 → 选类目 → 地址 → 提交 → 拿到 itemId → 已下架）；队列批量发布（≥2 条）的 dry-run 已真机跑通（2/2 done，含一次 RATE_LIMITED 退避后成功），**批量真提交还没做过**（要用户点头）；账号只有只读摘要；采集参考只到「只读统计」（R1，真机跑通一次单件解析）；不能自动发货、IM 未接进 daemon。**
+**能登录、能取品、能单件全自动发布（真机真提交 3 次：2 次 CLI 直发 + 1 次队列路径，都是填表 → 选类目 → 地址 → 提交 → 拿到 itemId → 已下架）；队列批量发布（≥2 条）的 dry-run 已真机跑通（2/2 done，含一次 RATE_LIMITED 退避后成功），**批量真提交还没做过**（要用户点头）；账号只有只读摘要；采集参考到「只读统计 + 市场简报/成色建议价」（真机跑通单件解析 + 自己店 3 件 + 他人店铺 3 件整批采集入库；简报链路真机样本走通）；不能自动发货、IM 未接进 daemon。**
 P0 → P1.2 全部完成并提交。**当前按四模块重构**（用户 2026-10-21 拍板：一个插件、模块 tab 在侧边栏面板内切换、一个一个做）：发布 → 账号 → 发布前处理 → 采集参考，见 §4.1。
 P2 自动发货押后到发布这条线跑顺再切。
 
@@ -19,16 +19,18 @@ P2 自动发货押后到发布这条线跑顺再切。
 | 能力 | 状态 | 证据与限制 |
 | --- | --- | --- |
 | 登录态导入（CLI / `POST /accounts/import` / `xy_import_account`） | ✅ 真机 | 从带 `--remote-debugging-port` 的 Chrome 读 goofish cookie，AES-256-GCM 加密落盘；Cookie 读取按 `Storage.getCookies` → `Network.getAllCookies` 降级 |
-| 扫码登录（`npm run daemon:login` / `POST /accounts/login`） | ✅ 已实现，单测通过 | 轮询 cookie，`unb` + `_m_h5_tk` 齐备才算成功（默认超时 180s）。**未见真机扫码成功留档**。2026-10-23 修：原来只 attach 已开调试端口的 Chrome（没有就报「连不上 DevTools」，面板上表现为「没办法登陆」），现在端口没人听时由 daemon **自起一个带窗口的 Chrome**（独立 profile `<dataDir>/chrome-profile`，登录成功/超时/取消都会关掉），能 attach 时仍复用真人浏览器。**自起浏览器这条真机未验** |
+| 扫码登录（`npm run daemon:login` / `POST /accounts/login`） | ✅ 真机（拉起/保留已验证；**扫码成功本身仍未见留档**） | 轮询 cookie，`unb` + `_m_h5_tk` 齐备才算成功（默认超时 180s）。2026-10-23 v3：daemon 有**托管浏览器**（`managed-browser.ts`）——端口没人听就拉起一个 headful Chrome（profile `<dataDir>/chrome-profile`，端口 `BF_CHROME_PORT`/9222），**登录结束后不再关它**（会话要靠这个真浏览器续期）；端口上已有 DevTools 就复用、且不接管生命周期。真机证据：`GET /browser` 初始 `running:false` → `POST /accounts/login`（不扫码，8s 超时）→ `GET /browser` 变 `running:true, owned:true`，窗口保留、进程不残留（daemon 退出时才 `stop()`）；日志只出现一次「拉起托管浏览器」，重复点不重复开窗。**真实人工扫码成功仍未留档** |
 | 令牌自动刷新 | ✅ 真机 | `_m_h5_tk` 约 2h 过期；`FAIL_SYS_TOKEN_EXOIRED` 时合并响应 Set-Cookie、重签重试**一次**并回写凭据 |
 | 取商家 ID + 全量商品 | ✅ 真机 | `user.page.head` + `xyh.item.list` 分页（每页 ≤20）；CDP 抓包与 mtop 直读双验证 |
 | `probe` 商品详情落库 | ✅ 真机 | mtop 详情 → `items.upsert` |
 | `polish` 擦亮 | ✅ 真机 | mtop 擦亮 2.0 |
 | 采集他人商品做参考（R1 只读统计） | ✅ 单测 + 真机（单件） | `channel-mtop/src/reference.ts`（`parseItemReference` / `extractTitleKeywords` / `summarizeReferences`）+ `daemon/src/reference.ts` + `POST /reference` + 工具 `xy_reference_collect` + 面板「采集」分区。只出统计（价格带 / 标题长度 / 类目分布 / 卖点词 / 商家量级），**绝不返回图片直链、不落他人商品图**。真机 2026-10-21：真实凭据目录起 daemon，`POST /reference` 200/241ms，单件「AI工作流咨询」priceCents 10000 / categoryId 50023914 / seller 西安·在售 7 件。限制：卖点词要求出现 ≥2 次，只采 1 件时为空；**多件/商家主页整批、面板点击都未真机**；「自有商品搬家」（R2）未实现、待拍板（§4.3） |
-| `publish` 单件发布（CDP 步骤机，真提交） | ✅ 真机（3 次） | CLI 直发 2 次：`1093817229436`（2026-10-21 首次）、`1091938715735`（分类修复后，14.5s 拿到 itemId）；队列路径 1 次：`1091940243200`（`POST /tasks` → worker → `operations.publish`，落 items 表）。**3 次都是单件、都是「学习笔记」类目、都已下架留档**。真提交需 `--submit` / `BF_PUBLISH_SUBMIT=1`；类目受网页端支持矩阵限制（电子资料/学习笔记/课业本 ✅；教材教辅/语言培训/学习资料定制/文学/考研咨询 ❌）。itemId 是人工试验的产物，仓库代码里没有痕迹 |
+| 市场简报 + 定价建议（`POST /market/brief` / 工具 `xy_market_brief` / `xy_copy_plan` 注入） | ✅ 单测 + 隔离端到端（24 件种子数据）+ 真机采集自己店 3 件 + **他人店铺 3 件（2026-10-23，卖家 2221178314956）** 各出简报 | `core/src/market-brief.ts`：`summarizeMarketBrief(items)`（价格带 p25/p50/p75/min/max、标题长度、标题均段数、描述均句数、带标签占比、行动号召占比、平均图片数、主图构成分布）+ `suggestPriceCents(brief, condition)`（`suggested = p50 × 成色系数`，系数 new 12000 / like-new 10000 / light-wear 8500 / visible-wear 7000 / flawed 5000 万分比，整数分；分位用最近秩不插值；`basis` 给出可复核的算式）。daemon `routes-market.ts` 的 `POST /market/brief`：`{categoryId | sellerId, limit 1..500, condition}`（两者不能同时给）→ 从 `seller_items` 取数（`listItemsByCategory` / `listItems` / `listAllItems`，默认 200 上限 500）→ `{brief, priceSuggestion, sampleSize, keywords}`；空样本 200 + `brief:null`（不是错误）。插件：第 15 个工具 `xy_market_brief`（只读）+ `xy_copy_plan` 新增 `marketCategoryId`/`marketSellerId`（先取简报再注入提示词，失败直接抛不静默降级）+ rpc `market.brief` + 面板「文案」tab 传入。隔离 e2e（2026-10-23）：隔离数据目录 + 24 条 `seller_items` 种子 → 真 HTTP `POST /market/brief` 200（p50 ¥28.00、建议价 `light-wear` ¥23.80、主图 24/24 方图）→ 简报注入 `xy_copy_plan` 提示词（45 行，含「不得照抄原句/原图」）→ 草稿 → CLI dry-run 发布 6.7s（分类「学习笔记」、¥28、包邮、地址回填、未点提交）。真机 2026-10-23（自己店 3 件）：真 mtop `POST /sellers/collect` → 3 件入库（只标题/价格/类目/计数/结构特征）→ `POST /market/brief` 200（p50 ¥100.00、`light-wear` 建议 ¥85.00、主图 portrait 1/mixed 2）→ 提示词注入 → CLI dry-run 5.7s。**红线**：只给统计与建议价，不返回任何他人原文/图片地址 |
+| `publish` 单件发布（CDP 步骤机，真提交） | ✅ 真机（4 次） | CLI 直发 3 次：`1093817229436`（2026-10-21 首次）、`1091938715735`（分类修复后，14.5s 拿到 itemId）、`1095534136427`（2026-10-23，CSAPP 旧书 ¥39，用户要求**先不下架**，当前 live）；队列路径 1 次：`1091940243200`（`POST /tasks` → worker → `operations.publish`，落 items 表）。前 3 次已下架留档。**4 次都是单件、都是「学习笔记」类目**。第 4 次暴露一个误判：提交成功后商品页被风控弹层盖住，终态步骤的 post-风控检查把成功翻成 `RISK_CONTROL`（CLI exit 1），已用 `PublishStep.postRiskCheck` 修掉（`packages/channel-cdp/src/steps.ts` + `risk.ts`，`test/risk.test.ts` 覆盖）。真提交需 `--submit` / `BF_PUBLISH_SUBMIT=1`；类目受网页端支持矩阵限制（电子资料/学习笔记/课业本 ✅；教材教辅/语言培训/学习资料定制/文学/考研咨询 ❌）。itemId 是人工试验的产物，仓库代码里没有痕迹 |
 | `publish` dry-run（填表不提交） | ✅ 真机 | 发布页 → 传 2 图 → 文案 → 选类目 → 价格/包邮 → 地址 → 必填预检 → 收尾，每步截图。**不带 category/address 时能填表但过不了提交前预检**。两条路径都真机过：CLI `publish`（单件）+ **daemon 队列批量**（2026-10-22，批次 `b-e2e-mvj3aedp`，2 条同批 → 2/2 `done`，第 2 条先 `RATE_LIMITED`（写桶满）退避后成功，两轮各 7 张截图在 `.scratch/e2e3/shots/`） |
 | 草稿指定类目 + 不支持即失败 | ✅ 真机 | **网页端分类不是全量类目树**：候选来自 `mtop.taobao.idle.kgraph.property.recommend`（入参标题/描述/图片，一次约 10 个），**不可搜索、不可手输**，文案与图片会重新触发推荐。`channel-cdp/src/category.ts`（+ `category-page.ts`）：按 `aria-controls` 绑定当前下拉、点前 `elementFromPoint` 命中测试、**不对 portal 选项 scrollIntoView**（会滚主页面导致点击落空）、候选在可视区外时只滚下拉内部 `.rc-virtual-list-holder`、连续 2 次回读一致才算选中；目标不在候选里时关下拉等推荐刷新再重开（`REFRESH_WAIT_MS`，受步骤预算约束），仍不在就 fail-closed 并在报错里列出当前候选；命中「网页版暂不支持」立即 `VALIDATION`。真机：上传图片 → 填文案 → 分类从「电子资料」按文案刷新出「学习笔记」并选中（`86ca47e`） |
-| 面板内模块 tab（切换） | ✅ 真机（桌面端 GUI 实拍；实时数据改用兼容路由后待重启桌面验证） | 插件只注册 `sidebar.panellist` + `main`；面板内 `PANEL_TABS` 切 6 个分区：自动发布（默认）/ 账号 / 文案 / 采集 / 概览 / 诊断，`PanelBody` 分发。面板本身不联网、不执行写操作，但 daemon 状态是**真实数据**：`ctx.connection.rpc.call('/bigfish', endpoint)` 每 3 秒轮询 6 个只读端点（`health`/`status`/`accounts`/`settings.get`/`tasks.list`/`batches.get`）、另用 `events.list` 增量拉工作流树（失败单独降级，不拖垮 daemon 状态行），daemon 状态任一失败整块降级成「未连接后台」一行（降级时宿主会**自动拉起 daemon**，见 §5 与 `plugin-ops/src/daemon-supervisor.js`）；账号 tab 是动态表格（7 列：当前/账号/登录状态/登录态剩余/最近检测/凭据更新/操作；进 tab 自动 `accounts.verify`、10 分钟缓存（自动检测真调 mtop head，风控敏感）、行内「检测」强制重打；切换 / 退出登录 / 添加账户（导入+扫码，可填端口）/ 保活开关全部两次确认，共 26 个 `data-role`；保活是**一个开关按钮** + 状态行，间隔 60–3600s）；**发布页写操作本轮接上**：草稿集下方「校验并入队」→ `batch.enqueue`、任务表 `failed`/`needs_review` 行「重试」→ `tasks.retry`、设置摘要改成可保存表单 → `settings.put`（全部两次点击，第二次才带 `confirm:true`），任务表按 3 秒轮询跟随 daemon 推进的状态（`docs/client-plugin-sidebar.md` §1.1）。**宿主 bug 已由插件侧绕过（2026-10-22）**：DSH 0.1.5-rc.2 的 `connection` 插件用自己 ctx 注册 `webServer`（`rpc-host.ts:80`/`:178-181`），外部插件的 `rpc.handle` 必抛 `cannot get property "webServer" without inject`；插件现在「官方通道优先 → 失败自动回退到自建 `webServer` prefix 路由 `/bigfish`」（`plugin-ops/src/host-route.js`，信封/状态码/fail-closed 鉴权 1:1 复刻宿主，ADR 0004）。dev host 真机探针已 200；**桌面端需重启 DSH 才加载新代码，重启后应显示「在线」而非「未连接后台」**（§5 风险表）。面板底部新增「进程管理」区（`data-role=daemon-manage`）：**启动 daemon / 停止 daemon 两个按钮**，并写明「daemon 是常驻后台监听进程——worker 按固定间隔轮询本地队列执行发布/擦亮/探针，面板只是看板，关掉面板 daemon 照旧运行」；`daemon.start` 走 supervisor 的 `force` 拉起（跳过 30s 冷却），`daemon.stop` 是写端点（要求 `confirm:true`，面板第一次点只上膛、第二次点才发），停止后 daemon 收到 `POST /shutdown` 走优雅退出（先停 worker 释放租约再关 HTTP/SQLite）。**不回退到会话顶部 tab**（`conversation.view`：点侧边栏后 main 换成 bigfish，会话与 tab 条一起离开 DOM） |
+| 面板内模块 tab（切换） | ✅ 真机（桌面端 GUI 实拍；实时数据改用兼容路由后待重启桌面验证） | 插件只注册 `sidebar.panellist` + `main`；面板内 `PANEL_TABS` 切 6 个分区（2026-10-23 按功能重排为三组：监控=概览（默认）；准备=账号/采集/文案；作业=发布/商品），`PanelBody` 分发；概览是驾驶舱（状态卡 + 待办提醒 + 工作流）＋系统区，不再是占位。新面板入口**只有单测**（未真机重跑）。面板本身不联网、不执行写操作，但 daemon 状态是**真实数据**：`ctx.connection.rpc.call('/bigfish', endpoint)` 每 3 秒轮询 7 个只读端点（多一个是托管浏览器状态 `browser.status`）（`health`/`status`/`accounts`/`settings.get`/`tasks.list`/`batches.get`）、另用 `events.list` 增量拉工作流树（失败单独降级，不拖垮 daemon 状态行），daemon 状态任一失败整块降级成「未连接后台」一行（降级时宿主会**自动拉起 daemon**，见 §5 与 `plugin-ops/src/daemon-supervisor.js`）；账号 tab 是动态表格（7 列：当前/账号/登录状态/登录态剩余/最近检测/凭据更新/操作；进 tab 自动 `accounts.verify`、10 分钟缓存（自动检测真调 mtop head，风控敏感）、行内「检测」强制重打；切换 / 退出登录 / 添加账户（导入+扫码，端口只对导入生效）/ 保活开关全部两次确认，共 27 个 `data-role`（新增托管浏览器状态行 `account-browser`）；保活是**一个开关按钮** + 状态行，间隔 60–3600s）；**发布页写操作本轮接上**：草稿集下方「校验并入队」→ `batch.enqueue`、任务表 `failed`/`needs_review` 行「重试」→ `tasks.retry`、设置摘要改成可保存表单 → `settings.put`（全部两次点击，第二次才带 `confirm:true`），任务表按 3 秒轮询跟随 daemon 推进的状态（`docs/client-plugin-sidebar.md` §1.1）。**宿主 bug 已由插件侧绕过（2026-10-22）**：DSH 0.1.5-rc.2 的 `connection` 插件用自己 ctx 注册 `webServer`（`rpc-host.ts:80`/`:178-181`），外部插件的 `rpc.handle` 必抛 `cannot get property "webServer" without inject`；插件现在「官方通道优先 → 失败自动回退到自建 `webServer` prefix 路由 `/bigfish`」（`plugin-ops/src/host-route.js`，信封/状态码/fail-closed 鉴权 1:1 复刻宿主，ADR 0004）。dev host 真机探针已 200；**桌面端需重启 DSH 才加载新代码，重启后应显示「在线」而非「未连接后台」**（§5 风险表）。面板底部新增「进程管理」区（`data-role=daemon-manage`）：**启动 daemon / 停止 daemon 两个按钮**，并写明「daemon 是常驻后台监听进程——worker 按固定间隔轮询本地队列执行发布/擦亮/探针，面板只是看板，关掉面板 daemon 照旧运行」；`daemon.start` 走 supervisor 的 `force` 拉起（跳过 30s 冷却），`daemon.stop` 是写端点（要求 `confirm:true`，面板第一次点只上膛、第二次点才发），停止后 daemon 收到 `POST /shutdown` 走优雅退出（先停 worker 释放租约再关 HTTP/SQLite）。**不回退到会话顶部 tab**（`conversation.view`：点侧边栏后 main 换成 bigfish，会话与 tab 条一起离开 DOM） |
+| 自有商品快照 + 擦亮/探测入口（面板「商品」tab） | ⚠️ 只单测（2026-10-23 新增） | `items.list` 读本地快照（probe 探测或发布成功后落库）+ 勾选后经 `batch.enqueue` 入队 `polish`（擦亮，写）/ `probe`（详情探测，读）；幂等键 `polish:<itemId>:<日期>`（同一天不重复入队，第二天可再擦）。执行器本身此前已真机跑通，**但「面板 → 入队 → 执行」这条路径没真机跑过** |
 | 账号列表摘要（`GET /accounts` / `xy_accounts_list`） | ✅ 真机 | daemon 只读摘要：accountId / updatedAt / savedFieldCount / ready（`unb`+`_m_h5_tk` 齐备）/ ageMs / `active`（设置里的当前账号，必填）/ `loginExpiresAt` + `source`（`browser` = 导入时 CDP 给的 `_m_h5_tk` 过期时间；`estimated` = 最近真刷新时间 + 2h；都没有则缺省，面板显示「—」）/ `lastCheckedAt` / `lastOnline` / `lastCode`（最近一次检测结果，落 `<data>/account-state.json`）；单个凭据损坏标 `broken` 不拖垮整表；不带任何 cookie 值。工具只读、不挂门禁。真机：真实数据目录起 daemon（pid 30436），`GET /accounts` 200 = 1 个账号（`ready:true`、savedFieldCount 23、`active`、`loginExpiresAt`/`source`、`lastCheckedAt`/`lastOnline`/`lastCode`）；`xy_accounts_list` 仍只有单测 |
 | 登录态校验（`POST /accounts/:id/verify` / rpc `accounts.verify` / 面板「检测」） | ✅ 真机（单账号） | 真调一次 `user.page.head`：成功 → `{accountId, online:true, checkedAt, refreshed}`；`_m_h5_tk` 过期会合并 Set-Cookie 重签重试**一次并回写凭据**，回写成功才置 `refreshed:true`；失败仍 200 + `online:false` + `code`（AUTH_EXPIRED / RISK_CONTROL / RATE_LIMITED / NETWORK / VALIDATION / INTERNAL）+ 固定中文短句；账号不存在 → 400 VALIDATION；缺失登录态 → 200 `VALIDATION`。真机 2026-10-23：隔离副本凭据目录起 daemon，`POST /accounts/2206569289277/verify` → 200 `online:true, refreshed:true`（过期 token 确实被刷新并回写副本），`does-not-exist` → 400。**限制**：不占限流桶/熔断（连点会直接打 `head`，靠 5s 冷却兜）；同账号单飞 + 5s 冷却（命中返回上次结果 + `cached:true`，失败不缓存）；检测来源 `manual`/`keepalive` 记进 `account-state.json` |
 | 多账号切换（`POST /accounts/activate` / rpc `accounts.activate`） | ✅ 真机 | 只改本地 `settings.activeAccountId`（不碰闲鱼、免 `confirm`）：空串/空白 → 400 VALIDATION「切换账号请求体 缺少非空字符串字段 accountId」，账号不存在 → 400「账号不存在：<id>」，成功 → 200 `{activeAccountId}`；主导入/登录成功后为空时自动选中。真机：`{accountId:'2206569289277'}` → 200，`GET /settings` 回读到同一值 |
@@ -46,45 +48,45 @@ P2 自动发货押后到发布这条线跑顺再切。
 | 地址库 / 别名匹配 | ❌ 未做 | CDP 下地址搜索候选不回显，只能匹配「常用地址/附近地址」；匹配不到就失败回显候选 |
 | 闲管家开放平台 | 📝 客户端在 | `channel-guanjia`（MIT 移植）无消费者、缺凭证 |
 | daemon 异常唤醒会话 | ✅ 单测（host 侧） | 发布任务落到 `failed`/`needs_review` 时，插件 10s 轮询 `/events` 并用 `agent.followup` 往当前会话推一条 notice（任务 id / 批次 / 错误码 / 下一步建议），同一事件不重复推、连续离线只记一条 warn；配置 `enableAlerts: false` 可关。**面板未读角标、真机 failed 场景验证未做** |
-| Web GUI 侧边栏面板 | ✅ 真机（隔离 dev host + 真实浏览器） | 侧边栏面板内 6 个 tab（自动发布 / 账号 / 文案 / 采集 / 概览 / 诊断）；自动发布页读 daemon 实时状态（3 秒轮询）+ 工作流树（`events.list` 增量）+ 写操作按钮（批量入队 / 任务重试 / 设置保存 / daemon 启停，均两次确认）；账号表进 tab 自动 `verify` |
+| Web GUI 侧边栏面板 | ✅ 真机（隔离 dev host + 真实浏览器） | 侧边栏面板内 6 个 tab（概览 / 账号 / 采集 / 文案 / 发布 / 商品，分监控·准备·作业三组）；概览页（默认）读 daemon 实时状态（3 秒轮询）+ 工作流树（`events.list` 增量）+ 写操作按钮（批量入队 / 任务重试 / 设置保存 / daemon 启停，均两次确认）；账号表进 tab 自动 `verify` |
 
 ## 3. 质量基线（可复现）
 
 ```
-node scripts/test-all.mjs     # 1086 tests / 1086 pass / 54 suites / 98 个测试文件 / ~20s
+node scripts/test-all.mjs     # 1151 tests / 1151 pass / 56 suites / 104 个测试文件 / ~22s
 ```
 
 | 范围 | 用例数 | 备注 |
 | --- | --- | --- |
-| core | 179 | 队列（含 batchId/批次统计/requeue）、仓储、策略、限流熔断、账号级发布间隔、凭据、脱敏、配置、settings 存储、发货规则引擎 |
-| daemon | 318 | HTTP、CLI、执行器、worker、路由、账号导入、账号摘要、**登录态校验（`online` 判定 / 错误分类 / 固定中文文案 / cookie 线索脱敏）**、**账号生命周期（`account-state.ts` 状态文件 / `account-session.ts` 单飞+5s 冷却 / `account-lifecycle.ts` 切换与退出 / `account-keepalive.ts` 定时器与 picker / 导入时写 `meta.expires`）**、参考采集、settings 路由、批次统计、CDP 发布、dry-run 开关、发布侧风控、任务事件流 |
-| channel-mtop | 101 | 纯函数（含参考解析与卖点词） |
-| channel-cdp | 104 | 假连接与假页面回放（分类下拉按 AI 推荐刷新/虚拟列表滚动、风控探测） |
+| core | 190 | 队列（含 batchId/批次统计/requeue）、仓储、策略、限流熔断、账号级发布间隔、凭据、脱敏、配置、settings 存储、发货规则引擎、**商家行情快照（含结构特征列 v5）** |
+| daemon | 335 | HTTP、CLI、执行器、worker、路由、账号导入、账号摘要、**登录态校验（`online` 判定 / 错误分类 / 固定中文文案 / cookie 线索脱敏）**、**账号生命周期（`account-state.ts` 状态文件 / `account-session.ts` 单飞+5s 冷却 / `account-lifecycle.ts` 切换与退出 / `account-keepalive.ts` 定时器与 picker / 导入时写 `meta.expires`）**、参考采集、settings 路由、批次统计、CDP 发布、dry-run 开关、发布侧风控、任务事件流 |
+| channel-mtop | 110 | 纯函数（含参考解析、卖点词、**文案结构 / 主图构成特征**） |
+| channel-cdp | 108 | 假连接与假页面回放（分类下拉按 AI 推荐刷新/虚拟列表滚动、风控探测） |
 | channel-guanjia | 62 | 纯函数 |
 | channel-im | 32 | 帧解析 / 归一化 / 状态机 |
-| plugin-ops | 257 | 插件契约、**工具注册中间件（spec 校验 / read-confirm 分桶 / 按参数判定写 / 统一 ask 门禁）**、草稿校验、批量入队与 pacing、文案风格注入、账号摘要、**账号表 7 列（切换 / 退出 / 添加 / 登录态剩余 / 保活；verify 徽标、10 分钟缓存、5s 冷却 cached）**、参考报告渲染、host rpc 桥（19 端点，含 `accounts.activate` / `accounts.logout`）、**webServer 兼容路由回退**、**daemon 自动拉起（冷却/单飞/回环守卫）+ 面板内启停（停止需二次确认）**、**异常唤醒（事件去重/合并/提示语、游标定基线、无 agent 不轮询、失败不刷屏）**、client bundle（面板内 6 个模块 tab、**工作流树 `events.list` 增量轮询**、**发布页写操作（入队/重试/设置保存，两次确认）+ 任务表 3 秒轮询**、**账号表 7 列 + 切换/退出/添加/保活（26 个 data-role：保活一个开关按钮 + 状态行；自动检测 10 分钟缓存）**） |
+| plugin-ops | 280 | 插件契约、**工具注册中间件（spec 校验 / read-confirm 分桶 / 按参数判定写 / 统一 ask 门禁）**、草稿校验、批量入队与 pacing、文案风格注入、账号摘要、**账号表 7 列（切换 / 退出 / 添加 / 登录态剩余 / 保活；verify 徽标、10 分钟缓存、5s 冷却 cached）**、参考报告渲染、host rpc 桥（19 端点，含 `accounts.activate` / `accounts.logout`）、**webServer 兼容路由回退**、**daemon 自动拉起（冷却/单飞/回环守卫）+ 面板内启停（停止需二次确认）**、**异常唤醒（事件去重/合并/提示语、游标定基线、无 agent 不轮询、失败不刷屏）**、client bundle（面板内 6 个模块 tab、**工作流树 `events.list` 增量轮询**、**发布页写操作（入队/重试/设置保存，两次确认）+ 任务表 3 秒轮询**、**账号表 7 列 + 切换/退出/添加/保活（27 个 data-role：保活一个开关按钮 + 状态行 + 托管浏览器状态行；自动检测 10 分钟缓存）**） |
 | scripts | 31 | daemon 常驻服务（参数/状态机/日志尾）16 + 发布真机验收脚本（参数/草稿/批次判定/PNG 生成）15 |
-| integration | 2 | 插件 client ↔ 真 daemon 端到端 |
-| **合计** | **1086** | ops-bundle 无测试（只声明组合） |
+| integration | 3 | 插件 client ↔ 真 daemon 端到端；**采集链路（解析 → confirm 门禁 → 入库 → 读回）** |
+| **合计** | **1151** | ops-bundle 无测试（只声明组合） |
 
 - 类型检查：**6 个 TS 包** tsc 0 错误（core / daemon / channel-mtop / channel-cdp / channel-guanjia / channel-im）。
   **plugin-ops 与 ops-bundle 是纯 ESM JS，无 tsconfig，不在类型检查覆盖内**——改这两个包只能靠测试。
-- 运行时零第三方依赖；全仓 `TODO/FIXME/HACK` 0 条。
-- 仓库 8 个包、daemon 21 条 HTTP 路由（含 `POST /shutdown`、`GET /events`、`POST /accounts/:id/verify`、`POST /accounts/activate`、`POST /accounts/:id/logout`）、插件 14 个 `xy_*` 工具（由 `src/tool-middleware.js` 统一校验注册并挂审批门禁，`src/gate.js` 已删）、5 个 TaskKind（probe/polish/publish/deliver/reply）、面板内 6 个模块 tab。
-- 账号登录态：**能登录、能自动续期、能按需校验、能切换/退出/添加、有 cookie 生命周期展示，保活已真机开启（5 分钟一档）**；缺的是开机自启与保活频率调优。
+- 运行时零第三方依赖；`TODO/FIXME/HACK` 只剩 1 处（`src/client-bundle/07-daemon.part.js` 的 `TODO(metrics)`：面板只能报当前态、没有 7 日趋势——生成产物 `client.js` 里是同一处，不算新增）。
+- 仓库 8 个包、daemon 22 条 HTTP 路由（含 `POST /shutdown`、`GET /events`、`POST /accounts/:id/verify`、`POST /accounts/activate`、`POST /accounts/:id/logout`）、插件 15 个 `xy_*` 工具（由 `src/tool-middleware.js` 统一校验注册并挂审批门禁，`src/gate.js` 已删）、5 个 TaskKind（probe/polish/publish/deliver/reply）、面板内 6 个模块 tab。
+- 账号登录态：**能登录、能自动续期、能按需校验、能切换/退出/添加、有 cookie 生命周期展示，保活已真机开启（5 分钟一档），扫码/导入/发布已统一到同一个托管浏览器**；缺的是失效推送、保活降频（现在每档都真打 `head`）、密钥绑 DPAPI/Keychain。
 
 ## 4. 下一步
 
 ### 4.1 主线：拆成四个模块，一个一个做（用户 2026-10-21 拍板）
 
-**产品结构（2026-10-21 纠正）**：仍然是**一个插件**；插件入口只在侧边栏（`sidebar.panellist` + `main`），**四个模块是侧边栏面板内部的 tab**（`client.js` 的 `PANEL_TABS` + `PanelBody` 分发），不占会话顶部；加模块 = `PANEL_TABS` 追加一项 + `PanelBody` 补一行分支（模块组件之间互不依赖）。
+**产品结构（2026-10-21 纠正）**：仍然是**一个插件**；插件入口只在侧边栏（`sidebar.panellist` + `main`），**六个模块 tab 在侧边栏面板内部、按功能分三组**（`client-bundle/01-head.part.js` 的 `PANEL_TABS` + `08-panel.part.js` 的 `PanelBody` 分发），不占会话顶部；加模块 = `PANEL_TABS` 追加一项（带 `group`）+ `PanelBody` 补一行分支 + 新片段（模块组件之间互不依赖）。**2026-10-23 重排为**：概览（默认）/ 账号 / 采集 / 文案 / 发布 / 商品。
 
 | 模块 | 模块 tab（面板内） | 现在到哪 | 下一步 |
 | --- | --- | --- | --- |
-| **发布** | 自动发布（`PANEL_TABS[0]`） | 单件真提交真机 3 次（均已下架）；**队列批量 dry-run 真机 2/2 done**（批次层 + `GET /batches/:id` 已落地）；失败收尾（retry）、发布侧风控识别、账号级 pacing 仍只有单测；**daemon 常驻化已落地**（`pnpm daemon:start/stop/restart/status/logs`）；**真机验收已脚本化**（`pnpm accept:publish`，含同批混不支持类目）；**面板写操作已接**（草稿集「校验并入队」→ 任务表「重试」→ 设置保存，均两次确认；隔离 daemon + 真实浏览器 e2e 通过，见 §4.1.2 验收） | 在普通终端跑一次 `pnpm accept:publish`（dry-run，无需授权，补上「同批混不支持类目」真机证据）→ 用户点头后跑批量真提交（1 条，发完立即下架） |
-| **账号** | 「账号」tab | **v2 做完并真机验证**：只读摘要 `GET /accounts`（含 `active` / `loginExpiresAt`+`source` / `lastCheckedAt`+`lastOnline`+`lastCode`）+ 登录态校验 `POST /accounts/:id/verify`（真机 `online:true, refreshed:true`，5s 冷却 `cached:true`）+ 多账号切换 `POST /accounts/activate` + 退出登录 `POST /accounts/:id/logout`（只删本地凭据）+ 添加账户（导入/扫码带端口）+ cookie 生命周期（导入存 `meta.expires`，面板倒计时）+ 保活（`keepAlive*` settings，**2026-10-23 真机开启 5 分钟一档**）；rpc 19 端点；面板账号表 7 列、26 个 data-role、保活一个开关按钮；隔离 daemon + 真实浏览器 e2e 20/20 + 真实 daemon 保活 tick | 多账号并发检测与绑定发布；凭据备份恢复；保活失效推送 |
+| **发布** | 发布（`PANEL_TABS[4]`）+ 商品（`PANEL_TABS[5]`，自有商品快照/擦亮/探测） | 单件真提交真机 3 次（均已下架）；**队列批量 dry-run 真机 2/2 done**（批次层 + `GET /batches/:id` 已落地）；失败收尾（retry）、发布侧风控识别、账号级 pacing 仍只有单测；**daemon 常驻化已落地**（`pnpm daemon:start/stop/restart/status/logs`）；**真机验收已脚本化**（`pnpm accept:publish`，含同批混不支持类目）；**面板写操作已接**（草稿集「校验并入队」→ 任务表「重试」→ 设置保存，均两次确认；隔离 daemon + 真实浏览器 e2e 通过，见 §4.1.2 验收） | 在普通终端跑一次 `pnpm accept:publish`（dry-run，无需授权，补上「同批混不支持类目」真机证据）→ 用户点头后跑批量真提交（1 条，发完立即下架） |
+| **账号** | 「账号」tab | **v2 做完并真机验证**：只读摘要 `GET /accounts`（含 `active` / `loginExpiresAt`+`source` / `lastCheckedAt`+`lastOnline`+`lastCode`）+ 登录态校验 `POST /accounts/:id/verify`（真机 `online:true, refreshed:true`，5s 冷却 `cached:true`）+ 多账号切换 `POST /accounts/activate` + 退出登录 `POST /accounts/:id/logout`（只删本地凭据）+ 添加账户（导入/扫码带端口）+ cookie 生命周期（导入存 `meta.expires`，面板倒计时）+ 保活（`keepAlive*` settings，**2026-10-23 真机开启 5 分钟一档**）；rpc 20 端点；面板账号表 7 列、27 个 data-role、保活一个开关按钮、托管浏览器状态行（扫码/导入/发布共用同一个调试端口 Chrome，扫码后窗口保留）；隔离 daemon + 真实浏览器 e2e 20/20 + 真实 daemon 保活 tick | 多账号并发检测与绑定发布；凭据备份恢复；保活失效推送 |
 | **发布前处理** | 「文案」tab（部分） | 文案 skill 2 个（`.agents/skills/`，**已被宿主自动发现**）+ `xy_copy_plan` 风格注入（只产提示词）；**P1 打印机面板已落地**：6 个品类模板 + 字段勾选 + `reason`/`usedMonths` 契约扩展（rpc `copy.templates`，纯前端/纯常量，单测 250 项通过）；core settings 存储已有（`settings.ts`）；面板设置表单已接读写（保存两次确认）；无生图实现、无素材库 | P2 素材库（v4 迁移 `products`/`product_images`/`product_copy_versions` + 只读面板）→ P3 图片与文案入库（门禁）→ P4 草稿导出接 `xy_publish_draft`；生图选型 |
-| **采集参考** | 「采集」tab（`PANEL_TABS[3]`） | **R1 已落地**：只读统计（价格带/标题长度/类目/卖点词/商家量级）+ `POST /reference` + `xy_reference_collect` + 面板「采集」分区；真机跑通一次单件解析 | R2「自有商品搬家」范围待拍板（§4.3）；多件/商家主页整批真机；R3 自摄图片处理 |
+| **采集参考** | 「采集」tab（`PANEL_TABS[2]`，id `research`；含行情简报） | **R1 已落地**：只读统计（价格带/标题长度/类目/卖点词/商家量级）+ `POST /reference` + `xy_reference_collect` + 面板「采集」分区；真机跑通一次单件解析。**市场简报/成色建议价已打通**（`POST /market/brief` + `xy_market_brief` + `xy_copy_plan` 注入，§4.1.4）：隔离端到端 ✅；真机采集自己店 3 件 + 他人店铺 3 件 ✅（2026-10-23） | R2「自有商品搬家」范围待拍板（§4.3）；多件/商家主页整批真机；R3 自摄图片处理 |
 
 ### 4.1.1 发布模块（先做，单件已通）
 
@@ -143,11 +145,42 @@ node scripts/test-all.mjs     # 1086 tests / 1086 pass / 54 suites / 98 个测�
 - 采集器 `packages/daemon/src/seller-collect.ts`：`parseSellerCollectRequest`（maxItems 1..60）+ `createSellerCollector`（head → 翻页 ≤3 页 → 逐件详情 → upsert）；`isOwnShop` 用 `sellerId === accountId || unb` 判定（`page.head` 的 `self` 抓包固定 false，不能用），**他人店铺必须 `acknowledgeOther:true`**，否则 `UNAUTHORIZED` 且一个请求都不发。
 - 路由 `POST /sellers/collect`、`GET /sellers`、`GET /sellers/:id/items`（`packages/daemon/src/seller-routes.ts`）+ rpc `reference.parseLink` / `seller.collect`（写端点，须 `confirm:true`）/ `sellers.list` / `seller.items` + 面板「采集」tab 重做（贴链接 → 解析 → 选账号/件数/他人店铺确认 → 两次确认采集 → 商品表）。
 - daemon `requestTimeout` 从 30s 调到 180s：采集最多 60 件串行，原来的 30s 会先掐断连接（扫码登录同样受益）。
-- **没真机验证**：整条链路只跑过 fake transport 单测；真实账号 + 真实商家主页的 `/sellers/collect` 一次都没跑过，别声称「已支持采集全店」。
+- **端到端已由集成测试覆盖**（2026-10-23 补）：`integration/collect-chain.test.mjs` 走真实 daemon HTTP + 真实 SQLite 文件 + 真实 rpc 桥，只把 mtop 网络换成假 transport，断言「解析 → 无 confirm 被拒且不调接口 → 采集入库 2 件 → `sellers.list`/`seller.items` 读回 → 换连接查库仍是 2 行 → 他人店铺未勾确认 `UNAUTHORIZED` 且零请求」。
+- **仍没真机验证**：真实账号 + 真实商家主页的 `/sellers/collect` 一次都没跑过（沙箱不能直连闲鱼，见 AGENTS §5），别声称「已支持采集全店」。
 
-**没做**：①多件 / 商家主页整批只有单测（真机只跑过 1 件）；②卖点词要求出现 ≥2 次，样本 <2 件时为空（符合预期，不是 bug）；③**R2「自有商品搬家」**（把自己商品从 A 号搬到 B 号 / 多店铺同步）——技术上就是同一条采集+发布链路，但属「跨账号复制」灰区，**必须你拍板**（§4.3）；④R3 自摄图片处理（缩放/水印/白底）、R4 多账号并行（要先解 `assertSameAccount` 的单 Chrome 单账号约束）。
+**v3「结构特征」（2026-10-23，用户在「要原图和全文给 LLM 学」被拒后改为只学结构）**：
+- 提取层 `packages/channel-mtop/src/features.ts`（新文件，纯函数）：`analyzeCopyStructure(title, desc)` 产出 `SellerItemCopyFeatures`（标题段数/字符数/数字组、描述段落/句数/平均句长/清单行数、有无标签符、emoji 数、行动号召词命中数）；`analyzeImageFeatures(imageInfos)` 产出 `SellerItemImageFeatures`（张数、方/竖/横/混排/未测比例、拿到宽高的张数）。**两者都只返回数字与开关**——不返回标题/描述原文，不返回任何图片地址或文件。
+- 落库：`core/src/store.ts` v5 迁移给 `seller_items` 加 `copy_features` / `image_features` 两列（JSON 文本，ALTER 前先探测列，幂等）；类型与窄化在 `core/src/seller-features.ts`（外部输入走 VALIDATION，库里列被改坏走 STORAGE）；采集器逐件 upsert 时带上。
+- 统计与展示：`ReferenceSummary` 新增 `imageAspect` 分布与 `copyStructure`（标题均段数 / 描述均句数 / 带标签占比 / 有行动号召占比）；`xy_reference_collect` 文本输出多一行「结构：主图 方/竖/横/混/未测…」；面板采集表新增「结构」列（`方图 · 3 段 · 2 句`，老数据退化显示 —）。
+- 为什么是这套：平台图片**不是**写进库的素材，只记「几张、什么比例」；文案只记「多少段/多少句/有没有标签」。LLM 拿到这些能学「怎么写、怎么拍」，但库里没有任何可直接复用的原件——不给搬运留接口。
+
+**没做**：①多件 / 商家主页整批只有单测（真机只跑过 1 件）；②卖点词要求出现 ≥2 次，样本 <2 件时为空（符合预期，不是 bug）；③**R2「自有商品搬家」**（把自己商品从 A 号搬到 B 号 / 多店铺同步）——技术上就是同一条采集+发布链路，但属「跨账号复制」灰区，**必须你拍板**（§4.3）；④R3 自摄图片处理（缩放/水印/白底）、R4 多账号并行（要先解 `assertSameAccount` 的单 Chrome 单账号约束）；⑤**主图内容分类**（白底/场景/手持/文字贴纸）需要看像素，当前不下载图片所以只到「比例 + 张数」；⑥P2 自有素材库（`products` / `product_images`）仍未做——那才是「能让 LLM 看真实图片」的合法来源。
 
 **红线（写进代码注释与测试）**：只做统计参考；不下载他人图片、不照抄文案、不跨账号复制他人商品。
+
+### 4.1.4 「参考采集 → 市场简报 → 文案/定价 → 发布」链路（2026-10-23 打通；自己店 + 他人店铺真机采集 → 简报 → dry-run 已验）
+
+这是用户 2026-10-23 指定的**唯一本轮链路**（自动发货 + 面板押后）。三步走：
+
+1. **看同行**（已有，R1 只读统计）：`xy_reference_collect` / `POST /reference` / 面板「采集」tab 取他人商品的**统计**（价格带、标题长度、类目、卖点词、商家量级、主图构成、文案结构）。落库的是 `seller_items` 的数值特征，**不存他人原文、不下载他人图片**。
+2. **形成知识与定价**（本轮新增）：`POST /market/brief` 把 `seller_items` 聚合成市场简报 + 成色修正后的建议价；`xy_market_brief` 直接读，`xy_copy_plan` 传 `marketCategoryId`/`marketSellerId` 时自动把简报注入文案提示词（价格带/建议价/结构/图片规格/高频词 + 一行「只学结构与价格带，不得照抄原句/原图」+ 一条「偏离建议价 >30% 要写 warnings，不许偷偷改价」的硬约束）。
+3. **自动发布**（已有）：草稿 → `xy_publish_draft`（默认 dry-run）→ 入队 → daemon CDP 步骤机。同一轮修掉了**标题与描述粘连**的真机 bug（`pressEnter` 不带 `text` 时 Lexical 不插换行；现在 `Input.dispatchKeyEvent` 带 `text: '\r'`，并且 `fillRichText` 回读不到换行就 fail-closed 抛 INTERNAL）。
+
+**本轮一起修的五个问题**（端到端 / 真机跑出来才看见）：
+- 卖点词里混进「研数 / 学笔 / 数笔」这类跨词边界的 2-gram（来自「考研数学笔记」「高数笔记」片段内部）。`extractTitleKeywords` 现在只保留出现在**片段首尾**的 2-gram，片段内部的当噪声丢弃；整段片段与英文/数字串不受影响。
+- 市场参考段最后一行「定价：…」原本直接粘在【输入契约】前面，现在补一个空行。
+- **主图构成真机永远是「未测」**：mtop 详情里的字段是 `imageInfos[*].widthSize/heightSize`（实测主图 512×512），而 `analyzeImageFeatures` 只认 `width/height` → 三件真实商品全 unknown。现在两种字段都认（`readDimension(record.widthSize) ?? readDimension(record.width)`），真机重采后变成 `portrait 1 / mixed 2 / unknown 0`。
+- **真提交成功后又被判失败**：2026-10-23 真发 CSAPP 旧书（itemId `1095534136427`）时，提交已跳转到商品页、商品也确实上架了，但页面立刻被滑块/punish 弹层盖住，`withRiskGuards` 的**终态 post 检查**把成功翻成 `RISK_CONTROL`（CLI exit 1、队列会标失败，人工以为没发出去）。现在 `PublishStep.postRiskCheck`（`packages/channel-cdp/src/steps.ts`）允许终态步骤关掉 post 检查：只记一条「提交已完成，页面出现风控弹层（不影响已生成的上架）」，执行前检查照旧（真被风控挡住的发布仍会被拦），`test/risk.test.ts` 有对应用例。
+- **类目简报把电子版和实体货混在一起算中位**：笔记类目里 ¥3.88 的 PDF 与 ¥150 的实体笔记同池，p50 被拉到 ¥4.88，建议价看着便宜但根本不是同类货的行情。现在 `priceSpreadNote`（`packages/plugin-ops/src/tool-format.js`）在「最高价 ≥ 最低价 × 3」时额外输出一行「样本价格跨度 N 倍（¥a ~ ¥b），可能混了不同形态/成色的货，建议价只当量级参考，落地前按同款再核一遍」，`xy_market_brief` 与 `xy_copy_plan` 提示词都会带上（`readMarketHints` 同步保留 min/max）。真机类目样本实测 38.7 倍（¥3.88 ~ ¥150.00）。
+
+**验收**（全部本机可复跑）：
+- 全量 `node scripts/test-all.mjs`：**1151 tests / 1151 pass / 0 fail / 56 suites / 104 个测试文件**（本轮 1115 → 1151，净增 36 条：市场简报聚合/建议价/`/market/brief` 路由/插件市场工具与提示词注入/主图宽高真机字段/价格跨度提示/截图重试；另外 `channel-cdp/test/richtext.test.ts` 把换行用例改成多行回读断言）；6 包 tsc 全绿（plugin-ops 无 tsconfig，靠单测与 `build-client --check` 兜）；`node scripts/build-client.mjs --check` 1465 行同步；`node scripts/dsh-dump.mjs` 装配正确。
+- 隔离端到端脚本（`.scratch/chain/run.sh` + `e2e.mjs`，不进仓库）：隔离数据目录复制真实凭据 → 种 24 条 `seller_items` → 起 daemon 于 47899 → 真 HTTP `POST /market/brief` → 简报注入提示词 → 落草稿 → CLI dry-run 6.7s，截图确认描述四段各自换行（`.scratch/chain/shots/03-text.png`）。
+- **真机采集（2026-10-23，自己店）**：隔离 daemon（47901 + 复制凭据）→ 真 mtop `POST /sellers/collect` `{accountId:2206569289277, sellerId:2206569289277, maxItems:10}` → 200，采到 3 件在售（价格 ¥30/¥100/¥150，类目 50023914，标题 7–30 字），全部 upsert 进 `seller_items`（只标题/价格/类目/计数/结构特征，无 desc 列、无图片地址列）→ `GET /sellers`、`GET /sellers/:id/items` 正常 → 真 HTTP `POST /market/brief` 200（p50 ¥100.00、建议价 `light-wear` ¥85.00、标题 3 段/描述 5 句、主图 mixed 2 + portrait 1）→ `.scratch/chain3/e2e-real.mjs` 注入提示词（47 行，含空行后的【输入契约】）→ 草稿 → CLI dry-run **5.7s**（分类「学习笔记」、¥28、包邮、地址回填、未点提交，截图 `.scratch/chain3/shots/`）。
+- **真机采集他人店铺（2026-10-23）**：`POST /reference` 先只读解析 3 个公开链接（笔记类目）拿到卖家 2221178314956 → `POST /sellers/collect {sellerId:2221178314956, maxItems:3, acknowledgeOther:true}` → 200（卖家「慕沐学姐」，itemCount 1114，`truncated:true` 符合 maxItems 截断语义），3 件入库（¥3.88/¥4.66/¥4.88，类目 50023914，标题 25–31 字，主图 square 1 + mixed 2，标题 4 段、描述 13 句、带标签/含 CTA 均 100%）→ `POST /market/brief {sellerId}` 200（p50 ¥4.66，`like-new` 建议 ¥4.66）→ 类目简报（6 件 = 自己店 3 + 他人 3）p50 ¥4.88 / min ¥3.88 / max ¥150 → `.scratch/chain4/e2e-other.mjs` 注入提示词（含新加的「价格跨度 38.7 倍」提醒）→ 草稿 → CLI dry-run **4.7s**（截图 `.scratch/chain4/shots2/`）。同轮还修了「截图偶发超时把整条 dry-run 判失败」的抖动：`shot()` 先重试一次，仍失败才抛「截图重试后仍失败（表单已填写，请人工确认页面）」。红线：只落数值特征列（无 desc、无图片地址），不下载图片、不照抄文案。
+- **真机真提交（2026-10-23，用户点名「发一本 CSAPP，先不下架」）**：草稿 title「深入理解计算机系统 第3版 华章 Pearson」/ ¥39 / 学习笔记 / 包邮 / 西北工业大学长安校区星天苑，封面用用户给的实物照（1773×2364，735KB）→ CLI `publish --submit` 提交后跳到 `item?id=1095534136427`，但账号紧接着进入滑块验证（mtop 读接口同时返回 `FAIL_SYS_USER_VALIDATE` / RGV587），CLI 因此误判失败（见第 5 个修复）→ 「我发布的」确认**商品 live**：「包邮 深入理解计算机系统 第3版 华章 Pearson ¥39」，封面已上传到 alicdn（`.scratch/live-csapp/card-zoom.png`）。按用户要求**未下架**；再次自动发布前需要人工过滑块 + 冷却。
+
+**没做 / 等拍板**：①建议价系数只有成色一维（无类目/品牌分档，无一档以上成色细修），偏保守；②分位用最近秩不插值，小样本会给库里真实出现过的价格，但可能不是最优点；③`titleLength` 用码点计数，与 channel-mtop 的 `titleChars`（UTF-16）在 emoji 上可能差 1；④高频词只来自标题（库里不存描述原文，这是红线决定的）；⑤真机样本量仍小（自己店 3 件 + 他人店 1 家 3 件），建议价锚点弱；要更稳就得多采几家/多件（每次 ≤60 件、串行，注意账号风控）；⑥`xy_copy_plan` 的市场简报目前靠调用方传 `marketCategoryId`，没有「按草稿类目自动找样本」的默认推断；⑦类目简报仍会把不同形态的货（PDF 电子版 vs 实体笔记）混在一个池子里——现在只在跨度 ≥3 倍时给提醒，没有自动按形态/价格分池（需要先有「形态」字段或价格区间参数）。
 
 ### 4.2 下一步备选：P2 自动发货（等发布线跑顺再切）
 
@@ -167,12 +200,12 @@ node scripts/test-all.mjs     # 1086 tests / 1086 pass / 54 suites / 98 个测�
 1. **发布主打哪些类目**：目前只有电子资料 / 学习笔记 / 课业本网页端可发。要不要花时间试「期刊杂志 / 生活百科」等旁支（见 4.1 B3），还是就锁定这三类做量？
 2. **目标商家形态**：纯个人号，还是要覆盖鱼小铺 / 闲管家（有企业资质）？后者才需要接 `channel-guanjia`。
 3. **发货接受「半自动」多久**：先人工确认跑一段，还是必须一步到全自动？（全自动要先逆向订单接口）
-4. （已落地）客户端→宿主 rpc 通道（ADR 0004，`/bigfish`，19 端点）；面板写操作全部接成按钮并挂两次确认（`accounts.import` / `accounts.login` / `accounts.activate` 免确认 / `accounts.logout` / `tasks.retry` / `batch.enqueue` / `settings.put` / `daemon.stop`）。
+4. （已落地）客户端→宿主 rpc 通道（ADR 0004，`/bigfish`，20 端点）；面板写操作全部接成按钮并挂两次确认（`accounts.import` / `accounts.login` / `accounts.activate` 免确认 / `accounts.logout` / `tasks.retry` / `batch.enqueue` / `settings.put` / `daemon.stop`）。
 5. **「自有商品搬家」做不做**：要不要支持「把自己 A 号的商品（含图片）发到 B 号」或「多店铺同步同一批货」？这是搬运助手最核心的能力，但踩 AGENTS §1.6「不跨账号复制他人商品」的边——如果只限**你自己名下**的账号之间，可以做成 R2；如果含他人商品，一律不做。
 6. **批量真提交用哪个账号**：现有凭据只有 `2206569289277`（你的大号，2026-10-21 已用它真发过 3 次并全部下架）。批量真提交第 1 条要你点头：用大号发 1 条「自动发布测试」并立刻下架，还是等你导入一个测试小号再跑？（AGENTS §5：真人验证优先测试小号）
 7. （已拍板，存档）首发主打：**自动发布**——用户 2026-10-21 决定「先做自动发布，其他功能一个一个来」。
 8. （已拍板，存档）**一个插件 + 四个模块**，模块 tab 在侧边栏面板内切换，插件入口只在侧边栏——用户 2026-10-21 定。
-9. **（需要你动手两件）** ①**重启 DSH 桌面应用**（关掉再开，会话不丢）让面板新插件代码生效（账号 v2 表格：切换 / 退出 / 添加账户 / 登录态剩余 / 保活，`accounts.activate` / `accounts.logout` rpc，工具注册中间件）。daemon **已经由我这轮重启**（pid 30436，含 activate/logout/verify 路由，不必再动）。②在**普通终端**（不是 DSH 沙箱）跑一次 `pnpm accept:publish` 补「同批混不支持类目」的真机证据；它自己起 dry-run daemon、跑完即停，**不会真发**。
+9. **（需要你动手两件）** ①**重启 DSH 桌面应用**（关掉再开，会话不丢）让面板新插件代码生效（账号 v3：托管浏览器状态行 + 扫码不传端口，`browser.status` rpc；以及 v2 的切换 / 退出 / 添加 / 登录态剩余 / 保活）。daemon **已经由我这轮重启**（pid 32616，`GET /browser` 可用、已拉起一个托管 Chrome 在 9222 等扫码；旧实例 30904 已优雅停掉）。②在**普通终端**（不是 DSH 沙箱）跑一次 `pnpm accept:publish` 补「同批混不支持类目」的真机证据；它自己起 dry-run daemon、跑完即停，**不会真发**。
 10. **（仍未答）批量真提交授权**：见第 6 条——等你点头才能动真格。
 11. （已按你的要求落地）**账号保活已开启**：daemon 定时器 + 面板一个开关按钮（2026-10-23 19:10 真机开启，间隔 5 分钟；真实 tick 已落到 `account-state.json` 的 `source=keepalive`）。还想请你定两件小事：①要不要把间隔调到 10–30 分钟（每次都是真调 `user.page.head`，账号级风控敏感）②要不要做「失效时面板标红 + 推 notice」。
 12. **老凭据 / 扫码登录的登录态剩余显示「—」**：要补齐有两个办法——①再导入一次（写 `meta.expires`）②daemon 启动时对当前账号自动 verify 一次（会真打一次 `head`）。选 ② 我可以做成启动预热，代价是每次开机多一次 mtop 调用。
@@ -211,7 +244,7 @@ node scripts/test-all.mjs     # 1086 tests / 1086 pass / 54 suites / 98 个测�
 - **发布侧风控识别只有单测**：`channel-cdp/src/risk.ts` 每步前/抛错/步后探测 URL、页面文案、验证组件，命中抛 `RISK_CONTROL`（带 `details.step`）→ daemon 熔断 600s。但**没有真机故意触发过**，页面特征清单是 best-effort，改版会失效；截图+人工过的流程仍靠人。
 - **daemon 常驻已补脚本、未做开机自启**：`pnpm daemon:start/stop/restart/status/logs`（`scripts/daemon-service.mjs`，detached + pid 文件 + 日志重定向 + `/health` 就绪等待），2026-10-22 全生命周期真机验证通过；**插件宿主侧已能自动拉起**（面板 rpc 拿到 NETWORK → detached spawn 同仓 `cli.ts`，20s 轮询 `/health`，30s 冷却、并发单飞、只认回环地址；真机 e2e 拉起 560ms 就绪、`/health` 200；实现在 `plugin-ops/src/daemon-supervisor.js` + `daemon-watch.js`，17 例单测）；**开机自启/崩溃后由系统级服务拉起仍未做**（需要服务管理器或计划任务，另开一题）。
 - **地址搜索在 CDP 下不可用**（候选不回显），只能匹配常用/附近地址。
-- **插件层没有类型门禁**：plugin-ops / ops-bundle 是纯 JS（无 tsconfig），改动只能靠 plugin-ops 的 257 个测试兜。
+- **插件层没有类型门禁**：plugin-ops / ops-bundle 是纯 JS（无 tsconfig），改动只能靠 plugin-ops 的 280 个测试兜。
 - **面板实时数据**：宿主 bug 仍在（DSH 0.1.5-rc.2 `connection` 插件用自己 ctx 注册 `webServer`，`rpc-host.ts:80`/`:178-181` → 外部插件 `rpc.handle` 必抛 `cannot get property "webServer" without inject`），但插件已自行绕过：官方通道失败即回退到自建 `/bigfish` prefix 路由（信封/状态码/fail-closed 鉴权与宿主一致，ADR 0004）。dev host 上真实 cookie 探针 `/bigfish/health`、`/bigfish/status` 均 200。**桌面端要重启 DSH 才生效**，重启后若仍降级看 server.log 是否出现「webServer 兼容路由」。daemon 没起不再需要手动 `pnpm daemon:start`：面板轮询第一次 NETWORK 时宿主会自动拉起（冷却 30s；日志 `<dataDir>/plugin.log` / `daemon.log`）。写类端点已接：`daemon.start` / `daemon.stop`（进程管理，停止两次确认）、`accounts.import` / `accounts.login` / `accounts.activate` / `accounts.logout`（账号 tab，除切换外都两次确认）、`tasks.retry` / `batch.enqueue` / `settings.put`（发布页）；**批次进度视图、多账号入队、面板未读角标仍未接**。
 - **pacing 未真机校准**：默认 180s 是推导值（同账号 15s 连发被真机风控拦过一次），单条 enqueue 与直接 `POST /tasks` 绕过它，只剩 daemon 写桶 1 次/60s 兜底。
 - **账号风控**：策略是「遇到 x5sec/滑块不硬刚，停队列 + 截图 + 人工过」；识别代码有了但未真机验证，真人验证只用用户自己的账号，且默认 dry-run（AGENTS §5 账号纪律）。

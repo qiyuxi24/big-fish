@@ -14,13 +14,13 @@
 ## 2. 分层与数据流
 
 ```
-[侧边栏面板]  packages/plugin-ops/client.js（PANEL_TABS 六个分区：自动发布/账号/文案/采集/概览/诊断，只组参数，不执行写）
+[侧边栏面板]  packages/plugin-ops/client.js（PANEL_TABS 六个分区，按功能分三组：监控=概览；准备=账号/采集/文案；作业=发布/商品）
       │  用户把面板生成的 JSON / 命令贴给 agent
       ▼
-[host 插件]   packages/plugin-ops/src/tools.js（14 个 xy_* 工具 specs：access read/confirm）+ tool-middleware.js（校验/注册/统一 ask 审批）
+[host 插件]   packages/plugin-ops/src/tools.js（15 个 xy_* 工具 specs：access read/confirm）+ tool-middleware.js（校验/注册/统一 ask 审批）
       │  HTTP + Bearer token（daemon.token）
       ▼
-[daemon]      routes.ts（21 条路由）→ queue.ts（SQLite，dedupe_key 幂等；`requeue` 支持人工重排）
+[daemon]      routes-*.ts（22 条路由）→ queue.ts（SQLite，dedupe_key 幂等；`requeue` 支持人工重排）
       │  worker.ts：concurrency 1、同账号最多一个在飞、lease 60s
       ▼
 [执行器]      executors.ts（probe / polish / publish / deliver / reply 五种 TaskKind）
@@ -139,7 +139,7 @@
 | 队列与 worker | `packages/daemon/src/{queue,worker}.ts` | 幂等入队、领租约、重试语义 | 所有写模块 |
 | 通道 | `packages/channel-*` | mtop / CDP / 闲管家 / IM 协议 | daemon 执行器 |
 | 工具与门禁 | `packages/plugin-ops/src/{tools,gate}.js` | 14 个 `xy_*` 工具、写操作审批 | 所有模块入口 |
-| 面板 | `packages/plugin-ops/client.js` | `PANEL_TABS` 六分区（自动发布/账号/文案/采集/概览/诊断） | 所有模块 UI |
+| 面板 | `packages/plugin-ops/client.js` | `PANEL_TABS` 六分区（概览/账号/采集/文案/发布/商品，分监控·准备·作业三组） | 所有模块 UI |
 
 ## 7. 完工标准与加模块步骤
 

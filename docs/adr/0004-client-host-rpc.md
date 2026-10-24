@@ -39,6 +39,8 @@ DSH 宿主给插件的客户端能力只有两类入口：
 | `reference.collect` | 读（会写抓取结果） | `client.collectReferences(input)` | `accountId` 必填；`itemIds`(≤20, 去重) 或 `sellerId` 至少一个 |
 | `reference.parseLink` | 读 | `client.resolveLink(link)` → `POST /resolve` | `link` 必填（≤2048 字符）；格式由 daemon 的 `parseXianyuLink` 判 |
 | `seller.collect` | **写**（落库 `seller_items`/`sellers`） | `client.collectSeller(input)` → `POST /sellers/collect` | `accountId`/`sellerId` 必填；`maxItems`(1..60)/`acknowledgeOther`；必须 `confirm:true` |
+| `market.brief` | 读 | `client.marketBrief(input)` → `POST /market/brief` | `categoryId`(≤64)/`sellerId`(纯数字)/`limit`(1..500)/`condition`(成色枚举)；返回已入库他人商品的价格带/结构/建议价统计 |
+| `browser.status` | 读（真探端口） | `client.browserStatus()` → `GET /browser` | 无 |
 | `sellers.list` | 读 | `client.listSellers()` → `GET /sellers` | 无 |
 | `seller.items` | 读 | `client.listSellerItems(sellerId, limit?)` → `GET /sellers/:id/items` | `sellerId` 纯数字必填；`limit`(1..500) |
 | `settings.get` | 读 | `settingsStore.read()`，缺失时 `GET /settings` | 无 |

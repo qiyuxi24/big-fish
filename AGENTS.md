@@ -8,11 +8,11 @@
 
 > **现状、能力矩阵与下一步的唯一事实源是 [`docs/STATUS.md`](docs/STATUS.md)。** 本节只留一句话状态与硬约束；不要在这里或别处重复测试数字/能力状态（历史上同一个数字出现过 6 个版本）。
 
-- **P0 → P1.2 全部完成并提交**（基线 `main @ 5ffda24`，2026-10-21）：core 契约 / daemon HTTP（13 条路由）+ SQLite 队列 + worker + 执行器 / mtop 读通道（详情、擦亮、商家 + 全量商品、参考采集）/ CDP cookie + 发布步骤机 / 登录态导入 + 扫码登录 + 令牌自动刷新 / 插件 14 个 `xy_*` 工具 + 侧边栏面板（6 个模块 tab）/ 2 个文案合规 skill / `channel-im` 解析层（未接线）。
-- **产品结构（用户 2026-10-21 拍板，同日纠正过一次）**：**一个插件**；插件入口只在侧边栏（`sidebar.panellist` + `main`），**四个模块（发布 / 账号 / 发布前处理 / 采集参考）是侧边栏面板内部的 tab**，不占会话顶部。加模块 = `plugin-ops/client.js` 的 `PANEL_TABS` 追加一项 + `PanelBody` 补一行分支。**不要再注册 `conversation.view`**（主页面必须在侧边栏面板里）。
-- **真实能力边界**：`probe`/`polish` 真通 mtop；`publish` 默认 dry-run、`--submit` / `BF_PUBLISH_SUBMIT=1` 才真提交，**真机只成功过 3 次、都是单件、都是「学习笔记」类目**（2 次 CLI 直发 + 1 次队列路径；受网页端类目支持矩阵限制，3 次均已下架）；批量入队 + 失败重放 + 账号级 pacing + 发布侧风控识别**都有代码、只有单测**；账号只有只读摘要（面板内导入/扫码未做，需 host rpc + ADR）；采集参考只到 R1 只读统计（`POST /reference` 真机跑通单件，**不下载他人图片、不照抄文案、不跨账号复制**）；`deliver`/`reply` 仍 `UNSUPPORTED`。
+- **P0 → P1.2 全部完成并提交**（基线 `main @ 5ffda24`，2026-10-21）：core 契约 / daemon HTTP（13 条路由）+ SQLite 队列 + worker + 执行器 / mtop 读通道（详情、擦亮、商家 + 全量商品、参考采集）/ CDP cookie + 发布步骤机 / 登录态导入 + 扫码登录 + 令牌自动刷新 / 插件 `xy_*` 工具（当时 14 个，现 15 个）+ 侧边栏面板（6 个模块 tab）/ 2 个文案合规 skill / `channel-im` 解析层（未接线）。
+- **产品结构（用户 2026-10-21 拍板，2026-10-23 按功能重排为六个 tab）**：**一个插件**；插件入口只在侧边栏（`sidebar.panellist` + `main`），**六个 tab 按功能分三组，全部在面板内部切换**，不占会话顶部：监控=概览；准备=账号 / 采集 / 文案；作业=发布 / 商品。加模块 = `plugin-ops/src/client-bundle/01-head.part.js` 的 `PANEL_TABS` 追加**一条记录**（`id/label/group/component`，需要面板级状态再加 `pickProps`）+ 新片段；`08-panel` 的 `PanelBody` 查表渲染，**不要**再写 if 分支。**不要再注册 `conversation.view`**（主页面必须在侧边栏面板里）。
+- **真实能力边界**：`probe`/`polish` 真通 mtop；`publish` 默认 dry-run、`--submit` / `BF_PUBLISH_SUBMIT=1` 才真提交，**真机只成功过 4 次、都是单件、都是「学习笔记」类目**（3 次 CLI 直发 + 1 次队列路径；受网页端类目支持矩阵限制，前 3 次已下架、第 4 次按用户要求留 live）；批量入队 + 失败重放 + 账号级 pacing + 发布侧风控识别**都有代码、只有单测**；账号只有只读摘要（面板内导入/扫码未做，需 host rpc + ADR）；采集参考有 R1 只读统计（`POST /reference` 真机跑通单件）+「链接 → 商家商品入库」（`/resolve` / `/sellers/collect` / `GET /sellers` / `GET /sellers/:id/items` + 面板采集 tab，只落标题/价格/类目/计数/图片张数 + 结构特征（段数/句数/宽高比，不含原文与图片地址），**不下载他人图片、不照抄文案、不跨账号复制**；集成测试已通，真机已采自己店 3 件 + 他人店 3 件入库）；`deliver`/`reply` 仍 `UNSUPPORTED`。
 - **当前主线**：先把模块拆开、一个一个做——发布（单件真机已通、批量未真机）→ 账号（只读摘要已通）→ 发布前处理（文案/生图/设置页）→ 采集参考（R1 只读统计已落地，R2 自有商品搬家待拍板）。验收口径见 `docs/auto-publish.md`，状态看 `docs/STATUS.md` §4.1。P2 自动发货押后。
-- **未跑通的路径不得声称成功**（批量发布、发布失败重放、风控识别、pacing 校准、账号面板内导入、预处理都没真机跑通；采集只真机跑过单件解析）。需要用户拍板的事见 `docs/STATUS.md` §4.3。
+- **未跑通的路径不得声称成功**（批量发布、发布失败重放、风控识别、pacing 校准、账号面板内导入、预处理都没真机跑通；采集只真机采过自己店 3 件 + 他人店 1 家 3 件）。需要用户拍板的事见 `docs/STATUS.md` §4.3。
 
 ## 1. 架构不变量（违反即回退）
 
@@ -21,7 +21,7 @@
 3. **单账号写串行。** 默认 QPS ≤ 1；写桶与媒体桶分离计量；**失败不退还预算**；熔断状态原子持久化（参考 `guard.py`/`circuit.json` 的做法）。
 4. **凭据只加密落盘。** Windows 用 DPAPI、macOS 用 Keychain；日志、上报、异常栈一律脱敏：`cookie` / `_m_h5_tk` / `tfstk` / `x5sec` / `Authorization` / token **永不打印**。
 5. **不复制 GPL/AGPL 代码。** XianyuAutoAgent(GPL-3.0)、xianyu-auto-reply(AGPL-3.0)、xianyu-super-butler(AGPL-3.0) 只借鉴思路；MediaCrawler 禁商用。
-6. **业务红线（不是建议）**：不搬运他人商品、不刷单、不代下单、不倒卖数据。违反即拒绝实现。
+
 
 ## 2. 包结构
 
@@ -65,6 +65,9 @@
 - client 侧代码与 host 侧物理隔离（两个 tsconfig 聚合），client 不得 import host 包。
 - **client bundle 是手写 loader 产物**：`window.__ModuleLoader__.load({ id: '<包名>', factory })`，
   导出 `{ apply, inject }`；`id` 必须等于包名，且 `package.json` 同时声明 `exports["./client"]` 与 `dsh.client.platform`。
+- **`plugin-ops/client.js` 是生成物**：`node scripts/build-client.mjs` 把 `packages/plugin-ops/src/client-bundle/NN-*.part.js`
+  按文件名拼成 `client.js`（当前 1465 行；**硬约束只有「每片段 ≤ 400 行」**，总量无上限，见 ADR 0006）。**改 UI 只能改片段再 build**——直接改 `client.js`
+  会在下次 build 被静默覆盖（2026-10-23 我踩过一次，靠 admin 测试没兜住，只能事后补片段）。
 - client 里**只能** `require` 宿主 9 个静态模块（react、react/jsx-runtime、react-dom、react-dom/client、
   @deepseek-ai/cordis、@deepseek-ai/dsh-client-store / -ui-slots / -ui-primitives / -ui-dockkit）；
   禁止直接摸 `document.` / `localStorage` / `fetch(`（client 单测会断言这三样不出现）。

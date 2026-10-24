@@ -61,12 +61,22 @@ window.__ModuleLoader__.load({
 
 | 事实 | 取值 |
 | --- | --- |
-| 模块清单 | `client.js` 的 `PANEL_TABS`：`publish-batch`（自动发布，默认）/ `account`（账号）/ `copy`（文案）/ `reference`（采集）/ `overview`（概览）/ `diagnose`（诊断） |
-| 分发 | `PanelBody({ tab, copyProps, connection })` 按 `tab` 返回对应模块组件；模块组件只返回 section 列表，**不自带页头**（页头 + tab 栏在 `BigFishPanel` 骨架里） |
+| 模块清单 | `01-head.part.js` 的 `PANEL_TABS`（2026-10-23 重排为六分区三组）：`overview`（概览，默认，监控）/ `account`（账号）/ `research`（采集）/ `copy`（文案）（以上准备）/ `publish`（发布）/ `items`（商品）（以上作业） |
+| 分发 | `08-panel.part.js` 的 `PanelBody` **查表**渲染：一条 `PANEL_TABS` 记录自带 `component`（需要面板级状态的加 `pickProps`），没有 if 分支、未知 id 回落默认页；模块组件只返回 section 列表，**不自带页头**（页头 + tab 栏在 `BigFishPanel` 骨架里） |
 | 注册项 | **只有** `sidebar.panellist`（id `bigfish`、order 30、label `BigFish 闲鱼运营`）与 `main`（key `bigfish`）。单测断言 `registered.length === 2` 且**没有** `conversation.view` |
-| 加模块 | `PANEL_TABS` 追加一项 + `PanelBody` 补一行分支 |
-| 「账号」分区（第 2 个 tab，2026-10-23 v2） | 动态账号表（`data-role='account-table'`）7 列：当前（`account-active` 徽标 + `account-switch` 切换）/ 账号 / 登录状态徽标（`account-status`）/ 登录态剩余（`account-lifetime`：真实过期时间或 `refreshedAt+2h` 标「估算」，都没有显示「—」）/ 最近检测（`account-checked`）/ 凭据更新（`account-updated`：相对时间 + 字段齐备）/ 操作（`account-verify` / `account-import` / `account-login` / `account-logout`）。进 tab 自动跑 `accounts.verify`（模块级 `verifyCache` **10 分钟**内不重打——每次都是真调 mtop head、账号级风控敏感；手动「检测」强制刷新）；失败只落该行徽标（`在线` / `已过期` / `无法确认 · 网络异常|风控拦截|被限流|后台错误` / `检测中` / `未检测`），不降级整页。写操作全部「点两次」：切换（`accounts.activate`，免 confirm，一次点完）/ 退出（第一次改文案「确认退出登录」并提示只删本地凭据、不注销网页会话）/ 导入 / 扫码（`confirm:true`、可填 Chrome 端口）。表格上方「添加账户」区（`account-add` / `-add-id` / `-add-port` / `-add-import` / `-add-login`）与「保活」区（`account-keepalive` / `keepalive-toggle` / `keepalive-interval` / `keepalive-save` / `keepalive-state`：**一个开关按钮**——关时「开启保活」、开时「关闭保活」，点一次只上膛变成「确认开启/确认关闭」，第二次带 `confirm:true` 写 `settings.put`；间隔 60–3600s（与 core 的 60s 下限对齐，默认 300s 合法）；状态行显示「已开启：每 300 秒校验一次当前账号登录态」/「未开启」）。空列表（仅在线时）显示「还没有导入账号」；daemon 离线整块降级 `account-offline`。共 26 个 `data-role` |
+| 加模块 | `PANEL_TABS` 追加一条记录（`id/label/group/component`，需要面板级状态再加 `pickProps`）+ 新 `NN-*.part.js` 片段（每片段 ≤ 400 行）+ `node scripts/build-client.mjs`；`PanelBody` 不用改 |
+| 「账号」分区（第 2 个 tab，2026-10-23 v2） | 动态账号表（`data-role='account-table'`）7 列：当前（`account-active` 徽标 + `account-switch` 切换）/ 账号 / 登录状态徽标（`account-status`）/ 登录态剩余（`account-lifetime`：真实过期时间或 `refreshedAt+2h` 标「估算」，都没有显示「—」）/ 最近检测（`account-checked`）/ 凭据更新（`account-updated`：相对时间 + 字段齐备）/ 操作（`account-verify` / `account-import` / `account-login` / `account-logout`）。进 tab 自动跑 `accounts.verify`（模块级 `verifyCache` **10 分钟**内不重打——每次都是真调 mtop head、账号级风控敏感；手动「检测」强制刷新）；失败只落该行徽标（`在线` / `已过期` / `无法确认 · 网络异常|风控拦截|被限流|后台错误` / `检测中` / `未检测`），不降级整页。写操作全部「点两次」：切换（`accounts.activate`，免 confirm，一次点完）/ 退出（第一次改文案「确认退出登录」并提示只删本地凭据、不注销网页会话）/ 导入 / 扫码（`confirm:true`、可填 Chrome 端口）。表格上方「添加账户」区（`account-add` / `-add-id` / `-add-port` / `-add-import` / `-add-login` / `-add-hint` + 托管浏览器状态行 `account-browser`：未启动时提示「点扫码会自动拉起、登录后窗口保留」；端口只对导入生效，扫码由 daemon 用托管端口决定）与「保活」区（`account-keepalive` / `keepalive-toggle` / `keepalive-interval` / `keepalive-save` / `keepalive-state`：**一个开关按钮**——关时「开启保活」、开时「关闭保活」，点一次只上膛变成「确认开启/确认关闭」，第二次带 `confirm:true` 写 `settings.put`；间隔 60–3600s（与 core 的 60s 下限对齐，默认 300s 合法）；状态行显示「已开启：每 300 秒校验一次当前账号登录态」/「未开启」）。空列表（仅在线时）显示「还没有导入账号」；daemon 离线整块降级 `account-offline`。共 26 个 `data-role` |
 | 「采集」分区（第 4 个 tab，2026-10-23 v2） | **贴链接 → 采集入库 → 看快照**：`reference-link` 输入（商品/商家链接或整段分享文案）+ `reference-parse` 解析 → `reference-parsed`（商家 id / 商品 id + 类目；商品链接额外给 `reference-item-hint` 提示改贴商家主页）→ 选 `reference-account`（账号下拉）与 `reference-max-items`（1–60）+ `reference-acknowledge`（他人店铺确认）→ `reference-collect` **两次确认**后发 `seller.collect`（写端点，`confirm:true`）→ 结果行 `reference-notice`（`已入库 N 件` / `跳过 N 件` / 未采完提示）。下方 `reference-sellers` 列出已采集商家（点按钮 `reference-seller` 切商家），`reference-items` 表格 8 列：标题 / 价格（分→元，整数运算）/ 类目 / 浏览 / 想要 / 收藏 / 图 / 发布（相对时间）。纯 rpc：不联网、不下载图片、不产出可发布草稿；缺失字段显示「—」不虚构 0 |
+
+**骨架与滚动（2026-10-23 用户实测「不能上下滑动」后定）**：宿主 `main` 插槽的占位组件直接落在
+`.centerCol`（`ui-layout/src/client/AppFrame.module.css`：`display:flex; flex-direction:column; overflow:hidden`），
+容器**自己不滚**（会话面板同样是 `height:100%` + 内部滚动）。所以 `BigFishPanel` 必须三层：
+`S.root`（`height:100%` / flex 列 / `overflow:hidden`）→ `S.header` + `TabBar`（`flex:0 0 auto`，**固定，不随内容滚**）→
+`S.scroll`（`flex:1 1 auto` / `min-height:0` / `overflow:auto`，唯一滚动容器，宽表格也能横向滚）。
+旧实现根节点只有 `padding:32px; maxWidth:860px`、没有高度约束 → 内容超出被父级裁掉、滚轮完全没反应。
+单测「面板骨架：根节点撑满高度、tab 栏在滚动区之外」守住这条。
+按钮样式约定：`S.button` = 可用的次要按钮（`cursor:pointer`），`S.offButton` = 置灰（`not-allowed` + 半透明）；
+旧 `S.button` 是 `not-allowed`，导致「全选 / 刷新快照 / 解析链接」这些能点的按钮看着像点不动。
 
 **为什么回退（历史存档，别再踩）**：`conversation.view` 是会话 header 的 list 插槽
 （声明于 `packages/client/ui-conversation/src/client/contract/slots.ts:156`，metadata `{ name, id, order, label }`，
@@ -76,7 +86,7 @@ window.__ModuleLoader__.load({
 
 ### 1.1 实时状态：client → host rpc（只读轮询）
 
-面板不再只放静态说明：「自动发布」与「诊断」两个分区顶部都渲染 `DaemonView`，数据来自
+面板不再只放静态说明：「概览」分区（默认落地页）渲染 `DaemonStatus` + 待办提醒 + 工作流树 + 系统区，**是全仓唯一一份 daemon 快照**（发布页只留一行后台状态，不再重复渲染状态卡），数据来自
 
 ```js
 ctx.connection.rpc.call('/bigfish', '<endpoint>', payload) // → { ok: true, value } | { ok: false, error }
@@ -215,7 +225,7 @@ node scripts/dsh-dev.mjs --stop    # 停实例
    （`if (typeof node.type === 'function') return toText(node.type(node.props))`）才能取文本。
 
 7. **模块 tab 只存在于 BigFish 面板内部。** 点侧边栏栏位 → `main` 换成 `bigfish` → 看到面板页头 + 6 个模块 tab
-   （自动发布默认 / 账号 / 文案 / 采集 / 概览 / 诊断）。**不要把模块注册到 `conversation.view`**：那条 tab 只在会话视图里，
+   （概览默认 / 账号 / 采集 / 文案 / 发布 / 商品，分监控·准备·作业三组）。**不要把模块注册到 `conversation.view`**：那条 tab 只在会话视图里，
    且与「点了侧边栏入口就进面板」互斥（详见上一节）。
 8. **list 插槽（如 `conversation.view`）注册项必须带 `id`。** 漏了会在 `register` 时直接抛错；
    `label` 缺了只是退化成用 `id` 当文案。当前实现不再用 list 插槽，保留这条备查。
@@ -256,14 +266,15 @@ stub `window.__ModuleLoader__.load` 捕获注册、假 `react`（`useState` **�
   `loginExpiresAt` 渲染成「1 小时 59 分」/「—」，并区分 browser / 估算来源；保活是一个开关按钮（回填「关闭保活」+ 状态行「已开启：每 300 秒」），点两次关闭 → `settings.put` 带 `{keepAliveEnabled:false, keepAliveIntervalMs:300000}` + `confirm:true` 并重新 `settings.get` 回填，再点两次开启、改间隔 900 保存；
   来回切 tab 10 分钟内不重复 verify；`updatedAt` 渲染成相对时间（`20749 天前 · 字段齐备`）；
 - 图标 `🐟`、active=true 时 opacity 1、否则 0.72、size 下限 12；
-- 面板内 6 个 tab（自动发布/账号/文案/采集/概览/诊断），默认选中「自动发布」，点击后内容与 `aria-selected` 同步切换；
+- 面板内 6 个 tab（概览/账号/采集/文案/发布/商品），分监控·准备·作业三组，默认选中「概览」，点击后内容与 `aria-selected` 同步切换；
+  分组标签是 `span`（`data-role='panel-tab-group'`、`data-group`），不占 tab 位；
 - 「采集」模块只读：讲清统计口径与红线，不出现图片直链、不产出可发布草稿；
 - 标题副标题在任意 tab 都在；
 - 入口按钮 disabled，并用 title 指向对应工具；
 - 文案风格区 5 个 chip、默认选中 `plain`、点击后 `aria-pressed` 转移；
 - 填完商品名 + 价格后「生成文案请求」可用，产出的是 `xy_copy_plan` 参数 JSON（面板不调模型）；
 - 面板内嵌风格表与 `src/copy.js` 的 `COPY_STYLES` 不漂移（id/label/summary 逐项比对）；
-- 「自动发布」模块（默认 tab）：流水线四步、草稿集输入框、类目矩阵、发布命令都在；
+- 「发布」tab（不再是默认 tab，用例先 `openTab('发布')`）：流水线四步、草稿集输入框、类目矩阵、任务表与筛选都在；
 - 草稿集逐行解析：内联 JSON 合法 / JSON 坏 / 缺 `images` / `.json` 路径 / 非法行，逐行给 `data-ok` 与提示；
 - 至少 2 条合法草稿才启用「生成批量发布请求」：禁用时用 title 说明原因；产出 `xy_publish_batch` 参数
   JSON（`mode` dry-run/enqueue、`draftPaths`/`drafts`、可选 `accountId`），任何输入变化都会撤销旧 JSON；
@@ -275,9 +286,9 @@ stub `window.__ModuleLoader__.load` 捕获注册、假 `react`（`useState` **�
   宿主没有 `connection` 服务 → 都只出现一行 `未连接后台（daemon 未启动）`，渲染不抛错；
 - **工作流树 4 条**：事件聚合成「任务 → 步骤」并断言 `data-role` / `data-step-state`、游标按 `nextSince` 推进不重拉、
   `events.list` 缺失时只降级工作流区（daemon 状态块仍在线）、空流给「执行任务时才会写」的解释；
-- **轮询生命周期**：`clock.period === 3000`、发布页三个定时器（daemon 快照 + 工作流事件流 + 任务表）；
+- **轮询生命周期**：`clock.period === 3000`、概览页两个定时器（daemon 快照 + 工作流事件流），打开「发布」后再起任务表那一个；
   推进时钟时 `tasks.list` 必须再次发起（只拉一次会把任务永远停在入队瞬间）；`__unmount()` 后 `clock.size === 0`，推进时钟不再新增 rpc 调用；
-- 「诊断」页同样显示实时状态，切 tab 不重复起轮询；
+- 概览页的待办提醒只认 `/status` 现成字段（失败/待审/凭据不全/熔断），一切正常时只给一行「没有待办」、不编造趋势；
 - bundle 里没有 `localStorage`、`document.`、`fetch(`，且确实出现 `RPC_CHANNEL = '/bigfish'` 与 `connection.rpc.call`
   （client 只能通过 ctx 拿能力，不直接摸 DOM/网络）。
 
@@ -290,14 +301,15 @@ stub `window.__ModuleLoader__.load` 捕获注册、假 `react`（`useState` **�
 - 没有 `settings` 卡片（daemonUrl / tokenPath 现在只能写 `cordis.patch.yml`）。
 - 「账号」模块的自动检测会真调一次 mtop `head`（`accounts.verify`）：60s 缓存 + 手动刷新，但**多账号同时进 tab 会挨个串行打**；
   还没有定时保活（只在打开面板/点检测时探测），也没有「凭据更新后自动重检测」的钩子。
-- 「自动发布」模块 = 实时 daemon 状态（只读轮询）+ 草稿集校验 + **「校验并入队」把内联草稿写进 daemon 队列**（两次确认）+ 任务表（`failed`/`needs_review` 可重试）+ 设置表单保存；
-  真正的发布由 daemon worker 执行，面板只组参数与发起入队（执行与 UI 解耦）。
+- 「发布」模块 = 草稿集校验 + **「校验并入队」把内联草稿写进 daemon 队列**（两次确认）+ 任务表（state/kind 筛选参数交给 daemon，`failed`/`needs_review` 可重试）；**发货/客服芯片置灰占位**（daemon 侧仍是 `UNSUPPORTED`）；
+  真正的发布由 daemon worker 执行，面板只组参数与发起入队（执行与 UI 解耦）。实时 daemon 状态与设置表单已挪到「概览」页，发布页只留一行后台状态。
+- 「商品」模块 = `items.list` 快照 + 勾选后入队 `polish`（擦亮，写）/ `probe`（探测，读）；幂等键按天去重。
 - 「采集」模块只到「生成 `xy_reference_collect` 参数 JSON」：真正采集由 agent 调工具（daemon `POST /reference`），
   面板不联网；真机只跑过单件 itemIds 路径，sellerId / 多件 / 面板点击调工具都没验证。
-- `scripts/dsh-shot.mjs` 现在覆盖 6 个 tab（自动发布 / 账号 / 文案 / 采集 / 概览 / 诊断）：
-  断言 tab 条与默认选中、自动发布页的 daemon 状态块与流水线、账号表徽标落定（在线/已过期/无法确认）、
-  文案风格芯片切换、概览与诊断的契约文案，daemon 离线时走降级断言。2026-10-23 13:05 在 danger-full-access
-  下用 headless Chrome 实跑 exit 0（截图 `.scratch/shots/bigfish-sidebar{,-account}.png`）。
+- `scripts/dsh-shot.mjs` 现在覆盖 6 个 tab（概览 / 账号 / 采集 / 文案 / 发布 / 商品）：
+  断言 tab 条与默认选中「概览」、概览的 daemon 状态块 + 待办提醒 + 工作流、发布页任务表与「发货·客服置灰」、
+  账号表徽标落定（在线/已过期/无法确认）、文案风格芯片切换、采集的行情简报表、商品的擦亮/探测入口，daemon 离线时走降级断言。
+  **2026-10-23 重排后尚未实跑**（上一次实跑是重排前的 6 tab 版本，截图 `.scratch/shots/bigfish-sidebar{,-account}.png`）。
 ## 6. 热调试：在真实 DSH 里看到自己改的效果
 
 两条路，按需选。

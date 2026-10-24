@@ -105,11 +105,13 @@
 | 立即下架 | 弹窗「确定要下架这个宝贝吗？」→ 确定 → reload 后页面显示「已下架」 | `.scratch/pubtest/shots-submit/11-item-page.png`、`12-delist-clicked.png`、`13-delist-verified.png`、`trial-result.json` |
 | 更早一次真发（人工留档） | itemId `1093817229436`，已下架 | 无 repo 内证据（当时未留脚本产物） |
 | 队列路径真发（`POST /tasks` → worker → `operations.publish`） | itemId `1091940243200` 落 items 表，已下架；同账号约 15s 内发第二件被风控（RATE_LIMITED → INTERNAL），由此定为需要账号级 pacing | `.scratch/pubtest/qdata/`、`.scratch/pubtest/queue-trial.mjs` |
+| **真提交（第 4 次，2026-10-23，CSAPP 旧书，¥39）** | CLI **exit 1 但商品实际已上架**：提交后跳到 `item?id=1095534136427`，商品页随即被滑块/punish 弹层盖住，终态步骤的 post-风控检查把成功翻成 `RISK_CONTROL`；「我发布的」里能看到「包邮 深入理解计算机系统 第3版 华章 Pearson ¥39」。已修：`PublishStep.postRiskCheck`（终态步骤关掉 post 检查，只记日志），单测见 `packages/channel-cdp/test/risk.test.ts` | `.scratch/live-csapp/shots-submit/`、`.scratch/live-csapp/personal.png`、`.scratch/live-csapp/card-zoom.png`、`.scratch/live-csapp/submit.log` |
+| **（用户要求）这一件先不下架** | itemId `1095534136427` 保持 live（与 AGENTS §5「发完 1 分钟内下架」不同，用户 2026-10-23 明确说「先不要下架」）；发布后账号进入滑块验证（mtop 读也返回 `FAIL_SYS_USER_VALIDATE` / RGV587），需人工过验证 + 冷却，期间不要再自动发 | 同上 |
 
 | **队列批量 dry-run**（`BF_PUBLISH_DRYRUN=1`，2 条同 `batchId`） | 2/2 `done`；第 2 条先 `RATE_LIMITED`（写桶满）退避后成功；批次终态 `{counts:{done:2,failed:0,needs_review:0}}` | `.scratch/e2e3/run.log`、`.scratch/e2e3/shots/`（两轮各 7 张）、`.scratch/e2e3/daemon.log` |
 | dry-run，队列批量（重复入队） | 相同 `dedupeKey` 第二次 enqueue 回 201 但不新建任务（无 `created` 标志可依） | 同上（`xy_publish_batch` 批内才有 `skipped-duplicate`） |
 
-**边界（别扩写）**：真发只跑过**单件**（3 次：2 次 CLI 直发 + 1 次队列路径）、只跑过**「学习笔记」**类目；**批量只跑过 dry-run**；批量真提交、同批混不支持类目、失败重放都还没真机验证。
+**边界（别扩写）**：真发只跑过**单件**（4 次：3 次 CLI 直发 + 1 次队列路径，其中 2026-10-23 那件由用户要求保持 live）、只跑过**「学习笔记」**类目；**批量只跑过 dry-run**；批量真提交、同批混不支持类目、失败重放都还没真机验证。
 
 
 ### 5.2 一条命令补真机验收（2026-10-22 起）

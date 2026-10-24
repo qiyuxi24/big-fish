@@ -56,7 +56,27 @@
 
 ### 7. 面板列与 `data-role` 契约
 
-7 列：当前 / 账号 / 登录状态 / 登录态剩余 / 最近检测 / 凭据更新 / 操作；26 个 `data-role`（`account-*` / `keepalive-*`，含保活状态行 `keepalive-state`）见 [client-plugin-sidebar.md](../client-plugin-sidebar.md) §1。切换（本地设置）一次点击；其余写操作两次确认。
+7 列：当前 / 账号 / 登录状态 / 登录态剩余 / 最近检测 / 凭据更新 / 操作；27 个 `data-role`（`account-*` / `keepalive-*`，含保活状态行 `keepalive-state`、托管浏览器状态行 `account-browser`）见 [client-plugin-sidebar.md](../client-plugin-sidebar.md) §1。切换（本地设置）一次点击；其余写操作两次确认。
+
+### 8. 托管浏览器：登录 / 导入 / 发布共用同一个调试端口 Chrome（2026-10-23 追加）
+
+**问题**：改之前有三个互不相干的浏览器上下文——用户手动开的（导入读 cookie）、扫码时临时起又立刻关掉的、发布用的（`BF_CHROME_PORT`）。后果有三个真事故：①扫码成功后 `finally` 把浏览器关了，会话失去唯一的续期载体；②发布侧 `assertSameAccount` 要求「浏览器里的账号 == 队列任务的账号」，用户在 A 导、用 B 发就必失败且看不出原因；③「扫码登录」文案说会自己开窗口，实际只 attach，没调试端口就必报错。
+
+**决策**：`packages/daemon/src/managed-browser.ts` 引入单实例托管浏览器（`createManagedBrowser`）：
+
+- 端口 = `BF_CHROME_PORT`（与发布同一个口径）→ 缺省 9222；profile 固定 `<dataDir>/chrome-profile`，与用户真实浏览器隔离、不抢 profile 锁。
+- `ensure()` 单飞：端口上已有 DevTools 就**复用**（可能是用户自己的工作窗口），没有才 `launchChrome` 拉起 headful 实例。
+- **只关自己拉起的**：`stop()` 对复用来的实例是 no-op；daemon 退出时收尾自己的浏览器。
+- 扫码登录不再关窗口：账号适配层注入的 `ensureBrowser` 返回空 disposer，`loginAndSave` 的 `finally` 于是不会杀掉它——cookie 读完后窗口保留，会话继续由这个真浏览器维持。
+- 导入默认端口 = 托管端口（`accounts.import` 不带 port 时），发布前 `await browser.ensure()`（只在发布通道真的启用时包装，避免 UNSUPPORTED 也弹窗口）。
+
+**代价与边界**：
+
+- 常驻一个 headful Chrome（100–300MB）；daemon 若跑在无桌面会话（计划任务/session 0）里，headful 起不来——这是将来做开机自启前必须先解决的。
+- 一个 profile 只能放一份登录态：多账号并行仍靠「导入别人的浏览器」，托管实例只服务主号。
+- 新增只读路由 `GET /browser`（与 `/status` 分开：它要真探一次端口，而 `/status` 每 3 秒轮询、必须同步无 IO）。
+
+**仍未做**：失效推送（`AUTH_EXPIRED` → notice）、把保活从「每档都打 head」降成「先同步浏览器 cookie、按需打 head」、DPAPI/Keychain 绑定机器密钥（AGENTS §1.4 仍未满足）。
 
 ## 后果
 
