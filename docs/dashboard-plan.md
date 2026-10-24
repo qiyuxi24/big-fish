@@ -85,7 +85,7 @@
 
 ### 4.3 插件 rpc 暴露
 
-- host `packages/plugin-ops/src/rpc.js:361-379` 端点表加 `metrics.get`（**只读，不进 `WRITE_ENDPOINTS`**），handler 转发 `client.request('/metrics?...')`。
+- host `packages/plugin-ops/src/rpc.js` 的 `createDefaultHandlers`（端点表）加 `metrics.get`（**只读，不进 `WRITE_ENDPOINTS`**），handler 转发 `client.request('/metrics?...')`。
 - client 侧通过 `ctx.connection.rpc.call('/bigfish', 'metrics.get', { days })` 拿数据（`client.js:98-123`）。
 
 ## 5. 面板 UI 设计（概览 tab 替换占位）

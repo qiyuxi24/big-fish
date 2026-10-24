@@ -2,7 +2,7 @@
 
 - 状态：已采纳（2026-10-21，C2「面板实时数据 + 写操作入口」落地前定稿）
 - 关联：[ADR 0001 基于 DSH](0001-base-on-dsh.md)、[ADR 0002 运行时契约](0002-p0-runtime-contract.md)
-- 实现：`packages/plugin-ops/src/rpc.js`（桥）、`packages/plugin-ops/index.js`（`apply` 里挂载 `/bigfish`）；消费方是侧边栏 client bundle（`packages/plugin-ops/client.js`）
+- 实现：`packages/plugin-ops/src/rpc.js`（端点表 + 桥）、`packages/plugin-ops/index.js`（`apply` 里挂载 `/bigfish`）；消费方是侧边栏 client bundle（`packages/plugin-ops/client.js`）。2026-10-24 起契约/校验在 `rpc-schema.js`、端点实现在 `rpc-endpoints.js`（拆分理由：文件 ≤400 行，对外契约不变）
 
 ## 背景
 
@@ -79,7 +79,7 @@ DSH 宿主给插件的客户端能力只有两类入口：
 | 新增面板能力 | 在 `createDefaultHandlers` 表里加一行 + client 侧加调用 | 端点超过 ~20 个且出现重复字段校验时，抽共享 schema |
 | 实时推送（任务进度、日志） | 轮询（面板可见时） | 宿主公开订阅/事件通道后，改为订阅 + 断线重连 |
 | 设置持久化 | 优先注入 `settingsStore`，否则退回 daemon `GET/PUT /settings` | daemon 侧设置落地后，面板不再直连磁盘 |
-| daemon 路由假设 | `GET/PUT /settings`、`GET /batches/:id`、`POST /tasks` 返回 `{task,created}`、`POST /tasks/:id/retry` | 路由改名时同步改 `rpc.js` 的 fallback 分支（都在同文件，便于 grep） |
+| daemon 路由假设 | `GET/PUT /settings`、`GET /batches/:id`、`POST /tasks` 返回 `{task,created}`、`POST /tasks/:id/retry` | 路由改名时同步改 `rpc-endpoints.js` 的 fallback 分支（端点实现都在该文件，便于 grep） |
 | 鉴权 | 复用 `src/client.js` 的 Bearer + token 文件 | 面板出现多用户/远程访问时，另立鉴权 ADR |
 
 ## 已知阻塞：宿主 0.1.5-rc.2 的 connection 插件不给自己 inject webServer（2026-10-22 实测）

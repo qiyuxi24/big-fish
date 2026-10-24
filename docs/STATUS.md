@@ -239,7 +239,7 @@ node scripts/test-all.mjs     # 1151 tests / 1151 pass / 56 suites / 104 个测�
 
 ## 5. 已知风险（别对外宣称）
 
-- **发布真机真提交只成功过 3 次，都是单件、都是「学习笔记」类目**（2 次 CLI 直发 + 1 次队列路径）；**批量只跑过 dry-run**（2026-10-22 队列路径 2/2 done，没点提交）。任何「已稳定支持批量发布」的说法都是假的。
+- **发布真机真提交只成功过 4 次，都是单件、都是「学习笔记」类目**（3 次 CLI 直发 + 1 次队列路径；前 3 次已下架，第 4 次按用户要求留着 live）；**批量只跑过 dry-run**（2026-10-22 队列路径 2/2 done，没点提交）。任何「已稳定支持批量发布」的说法都是假的。
 - **失败收尾已补代码、但未真机重放**：`core/src/queue.ts` 的 `requeue`（failed/needs_review → queued，attempts=0、清租约、保留 dedupeKey/payload）+ `POST /tasks/:id/retry` + 工具 `xy_task_retry`（写操作，走审批门禁）。仍是单测级证据；重放会真的再发一次，第一次用必须 `BF_PUBLISH_SUBMIT=1` + 人工盯着 + 发完立刻下架。
 - **发布侧风控识别只有单测**：`channel-cdp/src/risk.ts` 每步前/抛错/步后探测 URL、页面文案、验证组件，命中抛 `RISK_CONTROL`（带 `details.step`）→ daemon 熔断 600s。但**没有真机故意触发过**，页面特征清单是 best-effort，改版会失效；截图+人工过的流程仍靠人。
 - **daemon 常驻已补脚本、未做开机自启**：`pnpm daemon:start/stop/restart/status/logs`（`scripts/daemon-service.mjs`，detached + pid 文件 + 日志重定向 + `/health` 就绪等待），2026-10-22 全生命周期真机验证通过；**插件宿主侧已能自动拉起**（面板 rpc 拿到 NETWORK → detached spawn 同仓 `cli.ts`，20s 轮询 `/health`，30s 冷却、并发单飞、只认回环地址；真机 e2e 拉起 560ms 就绪、`/health` 200；实现在 `plugin-ops/src/daemon-supervisor.js` + `daemon-watch.js`，17 例单测）；**开机自启/崩溃后由系统级服务拉起仍未做**（需要服务管理器或计划任务，另开一题）。
@@ -249,7 +249,7 @@ node scripts/test-all.mjs     # 1151 tests / 1151 pass / 56 suites / 104 个测�
 - **pacing 未真机校准**：默认 180s 是推导值（同账号 15s 连发被真机风控拦过一次），单条 enqueue 与直接 `POST /tasks` 绕过它，只剩 daemon 写桶 1 次/60s 兜底。
 - **账号风控**：策略是「遇到 x5sec/滑块不硬刚，停队列 + 截图 + 人工过」；识别代码有了但未真机验证，真人验证只用用户自己的账号，且默认 dry-run（AGENTS §5 账号纪律）。
 - **账号在线状态是「按需校验」，不是「持续在线」**：`POST /accounts/:id/verify` 只在打开面板/手点检测（或保活开关打开时按间隔）时打一次，`ready:true` 只说明本地凭据字段齐备（过期 token 也算 ready）。**保活已真机开启**（5 分钟一档，观测到 `source=keepalive` 的真实 tick），但只有一轮 60s 的运行记录；失效没有推送/标红。verify **不占限流桶、不触发熔断**，靠「同账号单飞 + 5s 冷却」兜连点，冷却是进程内状态、重启即失效。
-- **账号 v2 的三处已知缺口**：①`packages/daemon/src/routes.ts` 546 行（超 AGENTS §3 的 400 行通规，历史遗留，拆文件另开一题）；②扫码登录路径不写 `meta.expires`，登录态剩余只能等一次 verify 真刷新；③`account-state.json` 与 `settings.json` 是两个文件，极端断电时可能不同步（都是本地展示态，不影响发布/凭据）。
+- **账号 v2 的三处已知缺口**：①超 400 行通规的 src 文件已清零（`daemon/src/routes.ts` 2026-10-23 拆成 `routes-*.ts`；`plugin-ops/src/rpc.js` 540 行、`batch.js` 417 行 2026-10-24 拆成 `rpc-schema.js` / `rpc-endpoints.js` / `batch-format.js`）；②扫码登录路径不写 `meta.expires`，登录态剩余只能等一次 verify 真刷新；③`account-state.json` 与 `settings.json` 是两个文件，极端断电时可能不同步（都是本地展示态，不影响发布/凭据）。
 - **面板只用隔离 dev host + headless Chrome 验过，用户桌面应用尚未重启**：2026-10-23 13:0x 用 `scripts/dsh-dev.mjs`（47080）+ headless Chrome（CDP，1680×1050）真实渲染了「自动发布」与「账号」两个 tab，daemon 状态行与账号表格都对（截图在 `.scratch/panel-account.png` / `.scratch/panel-after-click.png`）。用户桌面应用（64113）里加载的是 12:38 前的旧插件，重启后才会一致。
 - **分类只能选 AI 推荐的那 10 个左右**：候选由图片+文案决定、不可搜索，推荐接口偶发「目标不在候选里」→ fail-closed。批量时若某条文案把类目推荐带偏，那条会失败待审（不拖垮整批），但**覆盖面取决于文案质量**，这是产品级天花板，不是 bug 修补能绕过的。
 - **第三方材料删除流程**：`research/repos/` 仍在，删之前必须走 AGENTS §6（列清单 → 标靶点 → 等确认），不要「facts 已吸收」就删。
@@ -257,7 +257,7 @@ node scripts/test-all.mjs     # 1151 tests / 1151 pass / 56 suites / 104 个测�
 ## 6. 这两周踩过的坑（读代码前先看）
 
 - **风控码被丢掉两次（发布熔断一直不触发的根因）**：`channel-cdp/src/steps.ts` 原来只回 `{ok,step,error}`、`daemon/src/cdp-publish.ts` 又统一包 `INTERNAL`，worker 永远看不到 `RISK_CONTROL`。改通道错误码时要一路传到 worker，别在中间层吞掉 `code`。
-- **宿主 rpc 失败信封缺 `details` 会把真实原因整段吞掉（2026-10-23 导入/登录只剩「connection: invalid server-response failure」）**：宿主 client 的 `parseConnectionResponse` 要求 `error.details` 是对象，否则直接抛 TypeError，面板上看到的就只是这句话。`plugin-ops/src/rpc.js` 的 `failEnvelope`/`errorEnvelope` 现在恒带 `details`（无内容时 `{}`），改动 envelope 形状时先看这条。
+- **宿主 rpc 失败信封缺 `details` 会把真实原因整段吞掉（2026-10-23 导入/登录只剩「connection: invalid server-response failure」）**：宿主 client 的 `parseConnectionResponse` 要求 `error.details` 是对象，否则直接抛 TypeError，面板上看到的就只是这句话。`plugin-ops/src/rpc-schema.js` 的 `failEnvelope`/`errorEnvelope` 现在恒带 `details`（无内容时 `{}`），改动 envelope 形状时先看这条。
 - Edge 155 移除了 `Network.getAllCookies`，cookie 读取要按 `Storage.getCookies` 降级。
 - 发布页描述是 `div[contenteditable=true]`；分类是 antd Select，**`el.click()` 打不开，必须 `Input.dispatchMouseEvent`**；价格是 3 个同 placeholder 输入框取第 1 个。
 - **闲鱼发布页「分类」不可搜索、候选只有 ~10 个**（2026-10-22 真机）：候选来自 `mtop.taobao.idle.kgraph.property.recommend`，入参是标题/描述/图片；先把图传完、把文案写进描述区，推荐才会按文案刷新（实测「学习笔记」会在填完「高数笔记…」后出现）。顺序反了就只能拿到图片猜出来的类目（如「女士包」）。
