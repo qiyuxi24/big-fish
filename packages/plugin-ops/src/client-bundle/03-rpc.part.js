@@ -9,7 +9,7 @@
     /** daemon 默认监听地址（只用于文案提示；面板本身只走 rpc，不直连）。 */
     const DAEMON_ADDR = '127.0.0.1:47001'
     const OFFLINE_TEXT = '未连接后台（daemon 未启动）'
-    /** 队列状态的展示顺序与中文名；与 src/rpc.js 的 TASK_STATES 一致。 */
+    /** 队列状态的展示顺序与中文名；与 src/rpc-schema.js 的 TASK_STATES 一致。 */
     const TASK_STATE_LABELS = [['queued', '排队'], ['leased', '执行中'], ['done', '完成'], ['failed', '失败'], ['needs_review', '待审']]
     function taskStateLabel(value) { const hit = TASK_STATE_LABELS.find(([state]) => state === value); return hit === undefined ? (typeof value === 'string' && value !== '' ? value : '未知') : hit[1] }
     /** tasks.list 的回复 → 任务表状态（rpc 失败只降级成 offline，不把错误当空列表渲染）。 */

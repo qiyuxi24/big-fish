@@ -27,7 +27,7 @@ window.__ModuleLoader__.load({
     ]
     /** 默认落地页 = 清单第一项；不要在别处再写死 'overview'。 */
     const DEFAULT_TAB_ID = PANEL_TABS[0].id
-    /** 任务种类：与 src/rpc.js 的 TASK_KINDS 一致；deliver / reply 未接线，筛选里置灰只占位。 */
+    /** 任务种类：与 src/rpc-schema.js 的 TASK_KINDS 一致；deliver / reply 未接线，筛选里置灰只占位。 */
     const TASK_KINDS = [['publish', '发布'], ['polish', '擦亮'], ['probe', '探测'], ['deliver', '发货'], ['reply', '客服']]
     /** 未接线的任务种类：daemon 执行器直接抛 UNSUPPORTED，面板给出口径但不给入口。 */
     const UNSUPPORTED_KINDS = {
