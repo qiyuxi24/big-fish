@@ -28,6 +28,7 @@ import type {
 import type { SellerCollectHandler } from '../src/seller-routes.ts'
 import type { SettingsStore } from '../src/settings.ts'
 import type { AccountSummary } from '../src/account-list.ts'
+import type { BrowserStatus } from '../src/managed-browser.ts'
 import { FakeQueue } from './fake-queue.ts'
 
 /** 临时目录根：.scratch 已 gitignore，仓库根下便于排查残留。 */
@@ -100,6 +101,8 @@ export interface HarnessOptions {
   requestShutdown?: RequestShutdown
   /** 任务事件流（测试 GET /events）；缺省时不注入，路由应返回 UNSUPPORTED。 */
   events?: TaskEventSink
+  /** 托管浏览器状态（测试 GET /browser）；缺省时不注入，路由应返回 enabled:false。 */
+  browser?: () => Promise<BrowserStatus>
 }
 
 /** 建夹具；t.after 负责关服务与清理目录。 */
@@ -139,6 +142,7 @@ export async function createHarness(t: { after(fn: () => Promise<void>): void },
     ...(options.settings === undefined ? {} : { settings: options.settings }),
     ...(options.requestShutdown === undefined ? {} : { requestShutdown: options.requestShutdown }),
     ...(options.events === undefined ? {} : { events: options.events }),
+    ...(options.browser === undefined ? {} : { browser: options.browser }),
   })
   const client = new DaemonClient({ baseUrl: daemon.url, tokenPath: config.tokenPath })
   const baseUrl = daemon.url

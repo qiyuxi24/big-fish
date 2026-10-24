@@ -22,6 +22,8 @@ const REPORT: ReferenceReport = {
     descRatio: 0,
     categories: [],
     keywords: [],
+    imageAspect: { square: 0, portrait: 0, landscape: 0, mixed: 0, unknown: 0 },
+    copyStructure: { titleSegmentsAvg: 0, descSentencesAvg: 0, bracketTagRatio: 0, ctaRatio: 0 },
   },
   sellers: [],
   skipped: [],

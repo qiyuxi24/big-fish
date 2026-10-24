@@ -96,6 +96,45 @@ test('saveItem：红线——不落描述与图片地址，只留 imageCount', (
   assert.equal(row.image_count, 3)
 })
 
+test('saveItem：结构特征写入并读回，特征里不含原文与图片地址', (t) => {
+  const { repo, store } = setup(t)
+  const copyFeatures = {
+    titleChars: 9, descChars: 20, titleSegments: 3, descParagraphs: 1, descSentences: 2,
+    avgSentenceChars: 10, bulletLines: 0, hasBracketTag: true, emojiCount: 0, titleDigitGroups: 1, ctaCount: 1,
+  }
+  const imageFeatures = { count: 3, aspect: 'square' as const, measured: 3 }
+  const saved = repo.saveItem(itemInput({ copyFeatures, imageFeatures }))
+  assert.deepEqual(saved.copyFeatures, copyFeatures)
+  assert.deepEqual(saved.imageFeatures, imageFeatures)
+
+  // 换一次查询也读得回来（解码走 JSON 列，不是内存缓存）。
+  const rows = repo.listItems(SELLER_ID)
+  assert.deepEqual(rows[0]?.copyFeatures, copyFeatures)
+  assert.deepEqual(rows[0]?.imageFeatures, imageFeatures)
+
+  const row = store.db.prepare('SELECT * FROM seller_items').get()
+  assert.ok(row !== undefined)
+  assert.equal(typeof row.copy_features, 'string')
+  // 红线：特征列里没有标题原文，也没有任何图片地址。
+  assert.equal(String(row.copy_features).includes('机械键盘'), false)
+  assert.equal(String(row.copy_features).includes('http'), false)
+  assert.equal(String(row.image_features).includes('http'), false)
+})
+
+test('saveItem：特征结构非法 → VALIDATION；库里特征列被改坏 → STORAGE', (t) => {
+  const { repo, store } = setup(t)
+  const badCopy = { titleChars: 1, descChars: 0, titleSegments: -1, descParagraphs: 0, descSentences: 0, avgSentenceChars: 0, bulletLines: 0, hasBracketTag: false, emojiCount: 0, titleDigitGroups: 0, ctaCount: 0 }
+  // exactOptionalPropertyTypes：可缺省字段不收 undefined，假值类型用 NonNullable 收窄。
+  expectCode('VALIDATION', () => repo.saveItem(itemInput({ copyFeatures: badCopy as unknown as NonNullable<SellerItemInput['copyFeatures']> })))
+  expectCode('VALIDATION', () => repo.saveItem(itemInput({
+    imageFeatures: { count: 1, aspect: 'weird', measured: 1 } as unknown as NonNullable<SellerItemInput['imageFeatures']>,
+  })))
+
+  repo.saveItem(itemInput())
+  store.db.prepare(`UPDATE seller_items SET copy_features = '{not json'`).run()
+  expectCode('STORAGE', () => repo.listItems(SELLER_ID))
+})
+
 test('saveProfile：同 sellerId 覆盖写，isSelf 落成 0/1，缺字段不出现', (t) => {
   const { repo } = setup(t)
   repo.saveProfile({ sellerId: SELLER_ID, nick: '某商家', city: '西安', itemCount: 7, registeredYear: 2012, soldCount: 2, isSelf: true })
@@ -142,4 +181,40 @@ test('存库隔离：不同商家的商品互不串（items 表也不受影响�
   assert.equal(repo.countItems(), 2)
   const legacy = store.db.prepare('SELECT COUNT(*) AS total FROM items').get()
   assert.equal(legacy?.total, 0)
+})
+
+test('listItemsByCategory：按类目过滤、跨商家、collectedAt 倒序，limit 校验同 listItems', (t) => {
+  const { repo } = setup(t)
+  repo.saveItem(itemInput({ itemId: 'a', categoryId: '50023914', collectedAt: NOW - 2000 }))
+  repo.saveItem(itemInput({ itemId: 'b', sellerId: '222', categoryId: '50023914', collectedAt: NOW }))
+  repo.saveItem(itemInput({ itemId: 'c', categoryId: '99', collectedAt: NOW - 1000 }))
+  // 没有 categoryId 的行不会误入任何类目。
+  repo.saveItem(itemInput({ itemId: 'd', collectedAt: NOW - 3000 }))
+
+  assert.deepEqual(repo.listItemsByCategory('50023914').map((row) => row.itemId), ['b', 'a'])
+  assert.deepEqual(repo.listItemsByCategory('50023914', 1).map((row) => row.itemId), ['b'])
+  assert.deepEqual(repo.listItemsByCategory('999').map((row) => row.itemId), [])
+  expectCode('VALIDATION', () => repo.listItemsByCategory('', 10))
+  // 注入串根本过不了 id 校验（只有字母/数字/. _ : -），更到不了 SQL。
+  expectCode('VALIDATION', () => repo.listItemsByCategory("' OR 1=1 --", 10))
+  expectCode('VALIDATION', () => repo.listItemsByCategory('50023914', 501))
+  expectCode('VALIDATION', () => repo.listItemsByCategory('50023914', 0))
+})
+
+test('listAllItems：缺省全库、可按类目筛、limit 缺省 200 / 上限 500', (t) => {
+  const { repo } = setup(t)
+  repo.saveItem(itemInput({ itemId: 'a', categoryId: '50023914', collectedAt: NOW - 2000 }))
+  repo.saveItem(itemInput({ itemId: 'b', categoryId: '99', collectedAt: NOW }))
+  repo.saveItem(itemInput({ itemId: 'c', collectedAt: NOW - 1000 }))
+
+  assert.deepEqual(repo.listAllItems().map((row) => row.itemId), ['b', 'c', 'a'])
+  assert.deepEqual(repo.listAllItems({ categoryId: '99' }).map((row) => row.itemId), ['b'])
+  assert.deepEqual(repo.listAllItems({ limit: 2 }).map((row) => row.itemId), ['b', 'c'])
+  // 筛选对象可以只给 limit；空对象 = 全库。
+  assert.equal(repo.listAllItems({}).length, 3)
+  expectCode('VALIDATION', () => repo.listAllItems({ limit: 501 }))
+  expectCode('VALIDATION', () => repo.listAllItems({ limit: 0 }))
+  expectCode('VALIDATION', () => repo.listAllItems({ categoryId: 'has space' }))
+  // 绕过类型传非对象：运行时按 VALIDATION 拒，而不是崩溃成 TypeError。
+  expectCode('VALIDATION', () => repo.listAllItems('x' as unknown as { categoryId?: string }))
 })

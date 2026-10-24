@@ -239,8 +239,7 @@ export function publishOptionsFromEnv(env: EnvLike, config: DaemonConfig): Publi
   const dryRun = enabled(env['BF_PUBLISH_DRYRUN'])
   const submit = enabled(env['BF_PUBLISH_SUBMIT'])
   if (!dryRun && !submit) return undefined
-  const chromePortRaw = (env['BF_CHROME_PORT'] ?? '').trim()
-  const chromePort = chromePortRaw === '' ? undefined : parsePortFlag(chromePortRaw, 'BF_CHROME_PORT', false)
+  const chromePort = chromePortFromEnv(env)
   const screenshotsRaw = (env['BF_PUBLISH_SCREENSHOTS'] ?? '').trim()
   const screenshotsDir = screenshotsRaw === '' ? join(dirname(config.dbPath), 'publish-shots') : screenshotsRaw
   return {
@@ -251,12 +250,19 @@ export function publishOptionsFromEnv(env: EnvLike, config: DaemonConfig): Publi
   }
 }
 
+/** BF_CHROME_PORT：托管浏览器与发布共用同一个端口，只解析一次。 */
+function chromePortFromEnv(env: EnvLike): number | undefined {
+  const raw = (env['BF_CHROME_PORT'] ?? '').trim()
+  return raw === '' ? undefined : parsePortFlag(raw, 'BF_CHROME_PORT', false)
+}
+
 /** 起队列 + worker + HTTP 服务，然后阻塞等 SIGINT/SIGTERM；启动失败返回 1。 */
 async function runServer(config: DaemonConfig, env: EnvLike, io: CliIo): Promise<number> {
   const logger = createLogger({ level: config.logLevel, name: 'bigfish-daemon' })
   let runtime: DaemonRuntime | undefined
   try {
     const publish = publishOptionsFromEnv(env, config)
+    const browserPort = chromePortFromEnv(env)
     const shutdown = createShutdownWaiter()
     runtime = await startDaemonRuntime({
       config,
@@ -264,6 +270,7 @@ async function runServer(config: DaemonConfig, env: EnvLike, io: CliIo): Promise
       version: await readVersion(),
       requestShutdown: shutdown.request,
       ...(publish === undefined ? {} : { publish }),
+      ...(browserPort === undefined ? {} : { browserPort }),
     })
     logger.info('daemon 已启动', {
       url: runtime.daemon.url,

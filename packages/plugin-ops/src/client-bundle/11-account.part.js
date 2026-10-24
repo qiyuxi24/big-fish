@@ -4,10 +4,10 @@
      */
     // —— 账号管理：多账号表（切换 / 退出 / 登录态剩余 / 保活）+ 进入即检测（10 分钟内不重复）——
     const VERIFY_TTL_MS = 600_000
-    const ACCOUNT_COLUMNS = ['当前', '账号', '登录状态', '登录态剩余', '最近检测', '凭据更新', '操作']
+    const ACCOUNT_COLUMNS = ['当前', '账号', '状态', '剩余', '检测', '更新', '操作']
     const ACCOUNT_GRID = '92px minmax(88px, 1fr) 136px 112px 100px 172px 268px'
     const ACCOUNT_CODE_LABELS = { AUTH_EXPIRED: '登录态过期', RISK_CONTROL: '风控拦截', RATE_LIMITED: '被限流', NETWORK: '网络异常', VALIDATION: '参数不合法', INTERNAL: '后台错误' }
-    /** 自动检测的 10 分钟缓存：自动检测真调 mtop head（账号级风控敏感），缓存期内重开面板不重复打；行内「检测」仍强制刷新。 */
+    /** 10 分钟缓存：自动检测真调 mtop head（风控敏感），行内「检测」强制刷新。 */
     const verifyCache = new Map()
     /** 正在检测的账号：3 秒轮询和手动点击可能撞在一起，用模块级集合去重。 */
     const verifyInFlight = new Set()
@@ -31,6 +31,17 @@
       if (entry.code === 'AUTH_EXPIRED') return ['已过期', S.badText]
       return ['无法确认 · ' + (ACCOUNT_CODE_LABELS[entry.code] ?? '未返回原因'), S.warnText]
     }
+    /** 托管浏览器文案：窗口在不在决定下一步；旧 daemon 没有 /browser 时如实说未知。 */
+    function browserText(browser) {
+      if (browser === null) return '托管浏览器：状态未知'
+      if (browser.enabled !== true) return '托管浏览器：daemon 未接入'
+      const port = String(browser.port ?? '?')
+      if (browser.running === true) {
+        const who = browser.owned === true ? '运行中（daemon 拉起）' : '复用已开的外部调试浏览器'
+        return '托管浏览器：' + who + ' · 端口 ' + port
+      }
+      return '托管浏览器：未启动 · 端口 ' + port + '（点扫码自动拉起）'
+    }
     function truncateText(text) { const value = typeof text === 'string' && text !== '' ? text : '操作失败'; return value.length > 120 ? value.slice(0, 118) + '…' : value }
     /** daemon 摘要里的最近检测（本地没有会话时兜底）；没有 lastCheckedAt 就不虚构。 */
     function storedEntry(account) {
@@ -45,7 +56,7 @@
     }
     /** 账号表：进入自动检测（10 分钟缓存）+ 3 秒轮询摘要；导入 / 扫码 / 退出 / 保活点两次才发 confirm。 */
     function AccountView({ connection }) {
-      const [board, setBoard] = React.useState({ phase: 'loading', accounts: [], verifies: {}, keep: null, addId: '', addPort: '9222', result: null })
+      const [board, setBoard] = React.useState({ phase: 'loading', accounts: [], verifies: {}, keep: null, browser: null, addId: '', addPort: '9222', result: null })
       const writes = useWrite(connection)
       const [switching, setSwitching] = React.useState('')
       const update = patch => setBoard(previous => ({ ...previous, ...patch }))
@@ -64,12 +75,14 @@
         verifyInFlight.delete(accountId)
         setBoard(previous => ({ ...previous, verifies: { ...previous.verifies, [accountId]: entry } }))
       }
-      /** 拉账号摘要；auto=true 时对缓存过期的账号自动检测（新导入的账号也会补一次）。 */
+      /** 拉账号摘要 + 托管浏览器状态；auto=true 时对缓存过期的账号自动检测（新导入的账号也会补一次）。 */
       const pull = async (auto, alive = () => true) => {
-        const reply = await callRead(connection, 'accounts')
+        const [reply, browserReply] = await Promise.all([callRead(connection, 'accounts'), callRead(connection, 'browser.status')])
         if (!alive()) return
         const list = reply.ok && Array.isArray(reply.value) ? reply.value : []
-        setBoard(previous => ({ ...previous, phase: reply.ok ? 'ok' : 'offline', accounts: list }))
+        // 旧版 daemon 没有 /browser：保持 null，面板显示「状态未知」而不是假装没启动。
+        const browser = browserReply.ok && browserReply.value !== null && typeof browserReply.value === 'object' ? browserReply.value : null
+        setBoard(previous => ({ ...previous, phase: reply.ok ? 'ok' : 'offline', accounts: list, browser }))
         if (!auto || !reply.ok) return
         for (const account of list) {
           const accountId = String(account !== null && typeof account === 'object' ? account.accountId ?? '' : '')
@@ -117,10 +130,14 @@
       const addTexts = kind => kind === 'import'
         ? { hint: '再点一次「确认导入」：从本机 Chrome 读 cookie 并加密写凭据', busy: '正在导入登录态…', done: value => '登录态已导入' + (value !== null && typeof value === 'object' && typeof value.accountId === 'string' ? ' · ' + value.accountId : ''), after: () => pull(true) }
         : { hint: '再点一次「确认扫码」：打开闲鱼登录页等你扫码，最长 180s', busy: '等待扫码…（最长 180s）', done: value => '扫码登录成功' + (value !== null && typeof value === 'object' && typeof value.accountId === 'string' ? ' · ' + value.accountId : ''), after: () => pull(true) }
+      /** 端口只对「导入」有意义：扫码走 daemon 的托管浏览器（端口由 daemon 决定，面板不该猜）。 */
       const runAdd = kind => {
-        const port = Number(board.addPort)
-        if (!Number.isInteger(port) || port < 1 || port > 65535) return update({ result: { kind: 'bad', text: 'Chrome 端口必须是 1..65535 的整数' } })
-        const payload = { port }, accountId = board.addId.trim()
+        const payload = {}, accountId = board.addId.trim()
+        if (kind === 'import') {
+          const port = Number(board.addPort)
+          if (!Number.isInteger(port) || port < 1 || port > 65535) return update({ result: { kind: 'bad', text: 'Chrome 端口必须是 1..65535 的整数' } })
+          payload.port = port
+        }
         if (accountId !== '') payload.accountId = accountId
         update({ result: null })
         writes.run('add:' + kind, kind === 'import' ? 'accounts.import' : 'accounts.login', payload, addTexts(kind))
@@ -147,7 +164,7 @@
           hint: '再点一次「确认保存」写入保活间隔', busy: '正在保存…', done: () => '保活间隔已保存', after: reloadKeep,
         })
       }
-      const actionButton = (role, label, onClick, disabled) => h('button', { key: role, type: 'button', 'data-role': role, disabled, onClick, style: disabled ? S.button : S.primary }, label)
+      const actionButton = (role, label, onClick, disabled) => h('button', { key: role, type: 'button', 'data-role': role, disabled, onClick, style: disabled ? S.offButton : S.primary }, label)
       const rowActions = (accountId, checking) => [
         actionButton('account-verify', checking ? '检测中…' : '检测', () => void verifyOne(accountId, 'manual'), checking || busy),
         actionButton('account-import', writes.state.armed === 'import:' + accountId ? '确认导入' : busy ? '导入中…' : '导入', () => runRowWrite('import', accountId), busy),
@@ -160,7 +177,7 @@
         return h('div', { key: accountId, style: gridRow(ACCOUNT_GRID, false), 'data-role': 'account-row', 'data-account-id': accountId },
           h('div', { style: S.actions },
             account.active === true ? h('span', { key: 'active', style: S.goodText, 'data-role': 'account-active' }, '当前') : null,
-            h('button', { key: 'switch', type: 'button', 'data-role': 'account-switch', disabled: busy, title: '把当前账号切到 ' + accountId, onClick: () => switchAccount(accountId), style: S.chip }, switching === accountId ? '切换中…' : '切换')),
+            h('button', { key: 'switch', type: 'button', 'data-role': 'account-switch', disabled: busy, title: '把当前账号切到 ' + accountId, onClick: () => switchAccount(accountId), style: busy ? { ...S.chip, ...S.chipOff } : S.chip }, switching === accountId ? '切换中…' : '切换')),
           h('span', null, accountId),
           h('span', { style: badge[1], 'data-role': 'account-status' }, badge[0]),
           h('span', { style: S.small, 'data-role': 'account-lifetime' }, formatLifetime(account.loginExpiresAt, account.loginExpiresSource)),
@@ -176,10 +193,11 @@
         h('div', { style: S.fieldRow },
           h(Field, { label: '账号 id（留空 = 从 Chrome 读 unb）', control: h('input', { type: 'text', maxLength: 64, value: board.addId, placeholder: '2206569289277', 'data-role': 'account-add-id', onChange: event => update({ addId: event.target.value }), style: S.input }) }),
           h(Field, { label: 'Chrome 调试端口', control: h('input', { type: 'number', min: 1, max: 65535, value: board.addPort, 'data-role': 'account-add-port', onChange: event => update({ addPort: event.target.value }), style: S.input }) })),
-        // 两种入口的前置条件不同，「导入」必须由用户先把带调试端口的浏览器准备好（面板不能替他登录），
-        // 「扫码」会由 daemon 自己拉起窗口：写清这一句，省掉「点了没反应/报连不上」的往返。
-        h('div', { style: S.small, 'data-role': 'account-add-hint' }, '「从 Chrome 导入」需要先用 --remote-debugging-port=' + String(board.addPort) + ' 启动并登录闲鱼的 Chrome；「扫码登录」由后台自己打开浏览器窗口。'),
-        h('div', { style: S.buttonRow }, addButton('account-add-import', 'import', '从 Chrome 导入'), addButton('account-add-login', 'login', '扫码登录')))
+        // 状态行放在按钮上面：用户要先知道「窗口在不在」才谈得上点哪个按钮。
+        h('div', { style: S.small, 'data-role': 'account-browser' }, browserText(board.browser)),
+        // 两个入口前置条件不同：导入要用户先开调试端口，扫码由 daemon 拉起托管浏览器。
+        h('div', { style: S.small, 'data-role': 'account-add-hint' }, '从 Chrome 导入：先用 --remote-debugging-port=' + String(board.addPort) + ' 启动并登录闲鱼；扫码：daemon 自开托管窗口。'),
+        h('div', { style: S.buttonRow }, addButton('account-add-import', 'import', 'Chrome 导入'), addButton('account-add-login', 'login', '扫码登录')))
       const keepButtonLabel = writes.state.armed === 'keepalive-toggle'
         ? (keep.enabled ? '确认关闭' : '确认开启')
         : busy ? '请稍候…' : (keep.enabled ? '关闭保活' : '开启保活')
@@ -187,16 +205,16 @@
         h('div', { style: S.sectionTitle }, '登录保活'),
         h('div', { style: S.fieldRow },
           h('div', { style: { ...S.buttonRow, marginTop: '0', alignSelf: 'flex-end' } }, actionButton('keepalive-toggle', keepButtonLabel, toggleKeepAlive, !keepValid || busy)),
-          h(Field, { label: '间隔（秒，60–3600）', control: h('input', { type: 'number', min: 60, max: 3600, value: keep.seconds, 'data-role': 'keepalive-interval', onChange: event => update({ keep: { ...keep, seconds: event.target.value } }), style: S.input }) }),
+          h(Field, { label: '间隔（秒）', control: h('input', { type: 'number', min: 60, max: 3600, value: keep.seconds, 'data-role': 'keepalive-interval', onChange: event => update({ keep: { ...keep, seconds: event.target.value } }), style: S.input }) }),
           h('div', { style: { ...S.buttonRow, marginTop: '0', alignSelf: 'flex-end' } }, actionButton('keepalive-save', writes.state.armed === 'keepalive-interval' ? '确认保存' : busy ? '保存中…' : '保存间隔', saveKeepInterval, !keepValid || busy))),
-        h('div', { style: { ...S.small, marginTop: '10px' }, 'data-role': 'keepalive-state' }, keep.enabled ? '已开启：每 ' + keep.seconds + ' 秒校验一次当前账号登录态' : '未开启'))
+        h('div', { style: { ...S.small, marginTop: '10px' }, 'data-role': 'keepalive-state' }, keep.enabled ? '已开启：每 ' + keep.seconds + ' 秒校验登录态' : '未开启'))
       const emptyRow = h('div', { style: gridRow(ACCOUNT_GRID, false), 'data-role': 'account-empty' }, h('span', { style: { ...S.small, gridColumn: 'span 7' } }, '还没有导入账号'))
       return h('div', { style: S.section },
         h('div', { style: S.sectionTitle }, '账号管理'),
         addSection,
         keepaliveSection,
         board.phase === 'loading' ? h('div', { style: S.small }, '正在读取账号…') : null,
-        board.phase === 'offline' ? h('div', { style: S.badText, 'data-role': 'account-offline' }, '连不上 daemon：启动 daemon 后重开本页') : null,
+        board.phase === 'offline' ? h('div', { style: S.badText, 'data-role': 'account-offline' }, '连不上 daemon') : null,
         h('div', { 'data-role': 'account-table' },
           h('div', { style: gridRow(ACCOUNT_GRID, true) }, ...ACCOUNT_COLUMNS.map(label => h('span', { key: label }, label))),
           ...board.accounts.map(rowOf), board.phase === 'ok' && board.accounts.length === 0 ? emptyRow : null),

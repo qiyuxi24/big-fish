@@ -12,11 +12,11 @@ function findTool(specs, name) {
   return spec.definition
 }
 
-test('注册 14 个 xy_ 工具，schema 形态合法', () => {
+test('注册 15 个 xy_ 工具，schema 形态合法', () => {
   const tools = buildTools({ client: createFakeClient({}), config })
   assert.deepEqual(tools.map((spec) => spec.definition.name).sort(), [
-    'xy_accounts_list', 'xy_copy_plan', 'xy_daemon_health', 'xy_import_account', 'xy_items_list', 'xy_ping',
-    'xy_publish_batch', 'xy_publish_draft', 'xy_reference_collect', 'xy_status', 'xy_task_action',
+    'xy_accounts_list', 'xy_copy_plan', 'xy_daemon_health', 'xy_import_account', 'xy_items_list', 'xy_market_brief',
+    'xy_ping', 'xy_publish_batch', 'xy_publish_draft', 'xy_reference_collect', 'xy_status', 'xy_task_action',
     'xy_task_enqueue', 'xy_task_retry', 'xy_tasks_list',
   ])
   for (const { definition: tool } of tools) {
@@ -236,6 +236,78 @@ test('xy_copy_plan 给出注入后的提示词，且完全不碰 daemon', async 
   assert.equal(client.calls.length, 0)
 })
 
+/** daemon /market/brief 的原始返回（brief 摊在信封里，keywords 在顶层）。 */
+function rawMarketBrief(overrides = {}) {
+  return {
+    brief: {
+      sampleSize: 24,
+      priceCents: { p25: 2000, p50: 2800, p75: 3500, min: 900, max: 6000 },
+      titleLength: { min: 8, max: 30, avg: 19 },
+      titleSegmentsAvg: 3.5,
+      descSentencesAvg: 4.2,
+      bracketTagRatio: 0.4,
+      ctaRatio: 0.6,
+      imageCountAvg: 3.2,
+      imageAspect: { square: 18, portrait: 6, landscape: 0, mixed: 0, unknown: 0 },
+      ...overrides,
+    },
+    priceSuggestion: { lowCents: 2500, suggestedCents: 2800, highCents: 3200, basis: '同类中位 × 1.0（几乎全新）' },
+    keywords: [{ word: '高数笔记', count: 12 }, { word: '考研', count: 9 }],
+  }
+}
+
+test('xy_market_brief 渲染价格带/结构/建议价，只转发三个过滤字段', async () => {
+  const client = createFakeClient({ marketBrief: () => rawMarketBrief() })
+  const tool = findTool(buildTools({ client, config }), 'xy_market_brief')
+  assert.equal(tool.parameters.properties.limit.maximum, 500)
+  assert.deepEqual(tool.parameters.properties.condition.enum, ['new', 'like-new', 'light-wear', 'visible-wear', 'flawed'])
+  const value = await tool.execute({ categoryId: '50023914', sellerId: '7', limit: 50, condition: 'like-new' }, {})
+  assert.match(value.text, /市场简报：24 件样本/)
+  assert.match(value.text, /价格带：¥20\.00 ~ ¥35\.00（p25~p75），中位 ¥28\.00，最低 ¥9\.00 \/ 最高 ¥60\.00/)
+  assert.match(value.text, /建议价：¥28\.00（区间 ¥25\.00 ~ ¥32\.00） · 同类中位/)
+  // 真机样本会混进不同形态的货（¥3.88 的 PDF 与 ¥150 的实体笔记），跨度大时要明说只当量级参考。
+  assert.match(value.text, /注意：样本价格跨度 6\.7 倍（¥9\.00 ~ ¥60\.00）/)
+  assert.match(value.text, /结构：标题均 19 字 \/ 3\.5 段/)
+  assert.match(value.text, /主图以方图为主/)
+  assert.match(value.text, /高频词：高数笔记\(12\)、考研\(9\)/)
+  assert.match(value.text, /xy_copy_plan 带上 marketCategoryId/)
+  assert.match(value.text, /不下载他人图片/)
+  assert.deepEqual(client.calls[0], { method: 'marketBrief', args: [{ categoryId: '50023914', sellerId: '7', limit: 50, condition: 'like-new' }] })
+  // 只读统计不该出现任何商品直链/原句。
+  assert.equal(/https?:\/\//.test(value.text), false)
+})
+
+test('xy_market_brief 没有样本时给采集指引而不是一串 0', async () => {
+  const client = createFakeClient({ marketBrief: () => ({ brief: { sampleSize: 0 }, keywords: [] }) })
+  const tool = findTool(buildTools({ client, config }), 'xy_market_brief')
+  const value = await tool.execute({}, {})
+  assert.match(value.text, /还没有可用的样本/)
+  assert.match(value.text, /xy_reference_collect/)
+  assert.equal(/¥0\.00/.test(value.text), false)
+})
+
+test('xy_market_brief 对坏结构（缺 brief）报 INTERNAL 文本', async () => {
+  const client = createFakeClient({ marketBrief: () => 'nope' })
+  const tool = findTool(buildTools({ client, config }), 'xy_market_brief')
+  const value = await tool.execute({}, {})
+  assert.match(value.text, /\[INTERNAL\]/)
+})
+
+test('xy_copy_plan 带 marketCategoryId 时先取简报再注入提示词', async () => {
+  const client = createFakeClient({ marketBrief: () => rawMarketBrief() })
+  const tool = findTool(buildTools({ client, config }), 'xy_copy_plan')
+  const value = await tool.execute({
+    styleId: 'plain', productName: '高数笔记', condition: 'light-wear', priceYuan: '28',
+    marketCategoryId: '50023914',
+  }, {})
+  assert.match(value.text, /【市场参考/)
+  assert.match(value.text, /高数笔记、考研/)
+  assert.match(value.text, /"priceCents": 2800/)
+  assert.deepEqual(client.calls.map((call) => call.method), ['marketBrief'])
+  assert.deepEqual(client.calls[0].args[0], { categoryId: '50023914', condition: 'light-wear' })
+})
+
+
 test('xy_reference_collect 渲染只读统计，不出现图片直链', async () => {
   const report = {
     accountId: 'acc-1',
@@ -263,6 +335,8 @@ test('xy_reference_collect 渲染只读统计，不出现图片直链', async ()
   assert.match(value.text, /中位 ¥42\.00/)
   assert.match(value.text, /图片均 2\.5 张/)
   assert.match(value.text, /有描述占 50%/)
+  // 结构特征：比例分布与结构均值（只有数字，不含原文）。
+  assert.match(value.text, /结构：主图 方 0 \/ 竖 0 \/ 横 0 \/ 混 0 \/ 未测 0/)
   assert.match(value.text, /50023914 ×2/)
   assert.match(value.text, /机械键盘\(2\)/)
   assert.match(value.text, /某商家 · 西安 · 在售 12 件/)

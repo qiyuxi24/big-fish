@@ -329,6 +329,19 @@ test('settings.get/put 没有 settingsStore 时退回 daemon 的 GET/PUT /settin
   assert.deepEqual(client.calls[1].args, ['/settings', { method: 'PUT', body: { maxBatchItems: 3 } }])
 })
 
+test('browser.status 只读透传：优先 client.browserStatus，缺方法时回落 GET /browser', async () => {
+  const direct = bridgeWith({ browserStatus: { enabled: true, port: 9333, running: true, owned: false, headless: false } })
+  assert.deepEqual(await direct.bridge.handle('browser.status', {}), {
+    ok: true,
+    value: { enabled: true, port: 9333, running: true, owned: false, headless: false },
+  })
+  assert.deepEqual(direct.client.calls[0], { method: 'browserStatus', args: [] })
+
+  // 旧版客户端没有 browserStatus 方法时走通用 request（保持向前兼容）。
+  const fallback = createRpcBridge({ client: { request: async (path) => ({ path }) } })
+  assert.deepEqual(await fallback.handle('browser.status', {}), { ok: true, value: { path: '/browser' } })
+})
+
 test('daemon 抛错翻译成稳定 code；未知异常收敛为 INTERNAL 且不泄栈', async () => {
   const failing = bridgeWith({ status: new DaemonError('CIRCUIT_OPEN', '账号熔断中') }).bridge
   assertError(await failing.handle('status', {}), 'CIRCUIT_OPEN', /账号熔断中/)
@@ -345,6 +358,22 @@ test('非法 payload / endpoint 类型都返回信封而不是抛错（host 侧�
   assertError(await bridge.handle('status', [1, 2]), 'VALIDATION')
   assertError(await bridge.handle(Symbol('x'), {}), 'UNSUPPORTED')
   assert.deepEqual(await bridge.handle('status'), { ok: true, value: { ok: 1 } })
+})
+
+test('market.brief 只转发白名单过滤字段，非法 condition/limit 直接 VALIDATION', async () => {
+  const { client, bridge } = bridgeWith({ marketBrief: () => ({ brief: { sampleSize: 1 } }) })
+  assert.ok(bridge.endpoints.includes('market.brief'))
+  const result = await bridge.handle('market.brief', {
+    categoryId: '50023914', sellerId: '2206569289277', limit: 50, condition: 'like-new', evil: 1,
+  })
+  assert.equal(result.ok, true)
+  assert.deepEqual(client.calls[0].args[0], {
+    categoryId: '50023914', sellerId: '2206569289277', limit: 50, condition: 'like-new',
+  })
+  assertError(await bridge.handle('market.brief', { condition: 'mint' }), 'VALIDATION', /condition 非法/)
+  assertError(await bridge.handle('market.brief', { limit: 0 }), 'VALIDATION', /limit/)
+  assertError(await bridge.handle('market.brief', { limit: 501 }), 'VALIDATION', /limit/)
+  assertError(await bridge.handle('market.brief', { sellerId: 'abc' }), 'VALIDATION', /纯数字/)
 })
 
 test('createRpcBridge 缺少 client 时 fail loud；endpoints 选项可追加端点', async () => {
@@ -446,7 +475,7 @@ test('宿主没有 connection 时 apply 不抛错、工具照常注册、日志�
   } finally {
     console.log = original
   }
-  assert.equal(tools.length, 14)
+  assert.equal(tools.length, 15)
   assert.equal(logs.length, 1)
   assert.equal(JSON.parse(logs[0]).rpcChannel, 'skipped')
 })

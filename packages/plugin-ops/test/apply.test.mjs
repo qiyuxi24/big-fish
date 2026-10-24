@@ -18,7 +18,7 @@ test('apply 注册全部工具与写操作门禁', () => {
   } finally {
     console.log = original
   }
-  assert.equal(tools.length, 14)
+  assert.equal(tools.length, 15)
   assert.ok(tools.every((tool) => tool.name.startsWith('xy_')))
   assert.equal(listeners.has('tools/pre-execute'), true)
   assert.equal(logs.length, 1)
@@ -63,7 +63,7 @@ test('writeGate=false 时不注册门禁', () => {
   } finally {
     console.log = original
   }
-  assert.equal(tools.length, 14)
+  assert.equal(tools.length, 15)
   assert.equal(listeners.has('tools/pre-execute'), false)
 })
 

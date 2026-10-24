@@ -2,21 +2,18 @@
      * 片段 08：面板骨架（tab 分发 + 面板级状态，切 tab 不丢输入）。
      * 拼接顺序由文件名决定；单独打开不是合法模块，见 scripts/build-client.mjs。
      */
-    /** 当前 tab 的内容区；copy 页的状态留在 Panel 里（切走再切回不丢输入）。 */
+    /**
+     * 当前 tab 的内容区：只在 `PANEL_TABS` 里查表，**不写 if 链**——
+     * 加模块不会再出现「加了 tab 忘了分支」这类半死 tab。未知 id 回落到默认页，不渲染空白。
+     */
     function PanelBody({ tab, copyProps, connection }) {
-      if (tab === 'publish-batch') return h(PublishBatchView, { connection })
-      if (tab === 'account') return h(AccountView, { connection })
-      if (tab === 'copy') return h(CopyStudio, copyProps)
-      if (tab === 'reference') return h(ReferenceView, { connection })
-      if (tab === 'diagnose') return h(DiagnoseTab, { connection })
-      return h('div', { style: S.section },
-        h('div', { style: S.sectionHint }, '登录态导入：xy_import_account（本机 Chrome → 加密凭据）；daemon：127.0.0.1:47001（前台进程）。'),
-        h('div', { style: S.cmdRow }, h('code', { style: S.cmdCode }, 'npm run daemon:import-account'), h('code', { style: S.cmdCode }, 'npm run daemon')))
+      const entry = PANEL_TABS.find(item => item.id === tab) ?? PANEL_TABS[0]
+      return h(entry.component, entry.pickProps === undefined ? { connection } : entry.pickProps({ copyProps, connection }))
     }
 
-    /** 面板骨架：顶部 tab + 内容区 + 门禁说明。connection 由 apply 注入（模块级单实例）。 */
+    /** 面板骨架：页头 + 固定 tab 栏 + 唯一滚动的内容区。connection 由 apply 注入（模块级单实例）。 */
     function BigFishPanel() {
-      const [tab, setTab] = React.useState(PANEL_TABS[0].id)
+      const [tab, setTab] = React.useState(DEFAULT_TAB_ID)
       const [template, setTemplate] = React.useState({ phase: 'loading', data: FALLBACK_TEMPLATE })
       const [copyForm, setCopyForm] = React.useState({
         categoryId: 'digital', styleId: COPY_STYLE_OPTIONS[0].id,
@@ -49,13 +46,17 @@
         onClear: () => setCopyForm(previous => ({ ...previous, submitted: false, picked: clearedPicked(fields) })),
         onSubmit: () => setCopyForm(previous => ({ ...previous, submitted: true })),
       }
-      return h('div', { style: S.page },
+      return h('div', { style: S.root, 'data-role': 'panel-root' },
         h('div', { style: S.header },
           h('div', { style: S.logo }, '🐟'),
           h('div', null,
             h('div', { style: S.title }, 'BigFish 闲鱼运营'),
-            h('div', { style: S.subtitle }, '发布 / 账号 / 文案 / 采集 · 面板只组参数，执行交给 agent 与 daemon'))),
+            h('div', { style: S.subtitle }, '账号 → 采集 → 文案 → 发布 → 商品'))),
+        // tab 栏在滚动区之外：滚到内容底部也能直接切模块。
         h(TabBar, { active: tab, onSelect: setTab }),
-        h(PanelBody, { tab, copyProps, connection: panelConnection }))
+        h('div', { style: S.scroll, 'data-role': 'panel-scroll' },
+          h('div', {
+            style: S.content, role: 'tabpanel', id: tabPanelId(tab), 'aria-labelledby': tabDomId(tab),
+          }, h(PanelBody, { tab, copyProps, connection: panelConnection }))))
     }
 

@@ -7,15 +7,15 @@
       return text.split('\n').map(line => line.trim()).filter(line => line !== '').map((line, index) => {
         if (!line.startsWith('{')) {
           return /\.json$/i.test(line)
-            ? { index, kind: 'path', ok: true, path: line, message: '路径条目（host 侧读取，面板不校验内容）' }
-            : { index, kind: 'bad', ok: false, message: '既不是内联 JSON 对象，也不是 .json 路径' }
+            ? { index, kind: 'path', ok: true, path: line, message: '路径条目（host 读取）' }
+            : { index, kind: 'bad', ok: false, message: '既不是 JSON，也不是 .json 路径' }
         }
         let draft
-        try { draft = JSON.parse(line) } catch { return { index, kind: 'inline', ok: false, message: 'JSON 不合法' } }
+        try { draft = JSON.parse(line) } catch { return { index, kind: 'inline', ok: false, message: 'JSON 错误' } }
         if (typeof draft !== 'object' || draft === null || Array.isArray(draft)) return { index, kind: 'inline', ok: false, message: 'JSON 不是对象' }
         const missing = ['title', 'price', 'images'].filter(key => draft[key] === undefined || draft[key] === null || draft[key] === '' || (Array.isArray(draft[key]) && draft[key].length === 0))
         return missing.length === 0
-          ? { index, kind: 'inline', ok: true, draft, message: '格式通过' }
+          ? { index, kind: 'inline', ok: true, draft, message: '通过' }
           : { index, kind: 'inline', ok: false, draft, message: '缺 ' + missing.join(' / ') }
       })
     }

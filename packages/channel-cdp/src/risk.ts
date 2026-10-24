@@ -183,6 +183,15 @@ export function withRiskGuards(steps: readonly PublishStep[]): PublishStep[] {
         ctx.log(step.name, '识别到风控：' + risk.reason)
         throw riskError(step.name, risk)
       }
+      if (step.postRiskCheck === false) {
+        // 终态步骤（提交并验证）：成功后页面被风控弹层盖住是常态，但上架已经生效，
+        // 不能把成功翻成失败。这里只记一条日志，交给人工确认页面。
+        const risk = await detectPublishRisk(page)
+        if (risk !== undefined) {
+          ctx.log(step.name, '提交已完成，页面出现风控弹层（不影响已生成的上架）：' + risk.reason)
+        }
+        return
+      }
       await assertNoRisk(page, step.name, ctx)
     },
   }))

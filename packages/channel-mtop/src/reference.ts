@@ -7,7 +7,7 @@
  *
  * 实测抓包（2026-10-21，CDP 登录态 + mtop.taobao.idle.pc.detail，样本见 .scratch/collect/detail.json）：
  * data.itemDO{itemId(数字),title,desc,richTextDesc{children...},soldPrice("100" 元字符串),
- *   categoryId,itemCatDTO{catId,rootChannelCatId,level2ChannelCatId,...},imageInfos[*].url,
+ *   categoryId,itemCatDTO{catId,rootChannelCatId,level2ChannelCatId,...},imageInfos[*]{url,widthSize,heightSize},
  *   cpvLabels[{propertyName,valueName}],browseCnt,wantCnt,collectCnt,soldCnt,quantity,gmtCreate(毫秒)}
  * data.b2cItemDO.wantBuyCount（移动端形态的「想要」数）
  * data.sellerDO{sellerId(数字),nick,city,itemCount,userRegDay(注册年份),hasSoldNumInteger,xianyuSummary,
@@ -19,7 +19,9 @@
  * @module @bigfish/channel-mtop/reference
  */
 import { fail } from '@bigfish/core'
+import type { SellerItemCopyFeatures, SellerItemImageFeatures } from '@bigfish/core'
 import { centsFromYuan } from './api.ts'
+import { analyzeCopyStructure, analyzeImageFeatures } from './features.ts'
 
 type UnknownRecord = Record<string, unknown>
 
@@ -67,6 +69,10 @@ export interface ReferenceItem {
   publishedAt?: number
   seller: ReferenceSeller
   siblingItems: ReferenceSiblingItem[]
+  /** 文案结构特征（只数字与开关，不含原文）。 */
+  copyFeatures: SellerItemCopyFeatures
+  /** 主图构成特征（张数 + 比例分类，不含地址）。 */
+  imageFeatures: SellerItemImageFeatures
 }
 
 /** 汇总结果：一堆商品的价位带、标题长度、类目分布、卖点词。 */
@@ -79,6 +85,15 @@ export interface ReferenceSummary {
   descRatio: number
   categories: { categoryId: string; count: number }[]
   keywords: { word: string; count: number }[]
+  /** 主图比例分布（学「这个类目都拍什么比例」用）。 */
+  imageAspect: Record<SellerItemImageFeatures['aspect'], number>
+  /** 文案结构均值：标题段数 / 描述句数 / 带标签占比 / 有行动号召占比。 */
+  copyStructure: {
+    titleSegmentsAvg: number
+    descSentencesAvg: number
+    bracketTagRatio: number
+    ctaRatio: number
+  }
 }
 
 /** 标题里没有被当成「卖点词」的字（虚词/高频停用字），只用于过滤纯虚词片段。 */
@@ -256,6 +271,8 @@ export function parseItemReference(raw: unknown): ReferenceItem {
     ...(publishedAt === undefined ? {} : { publishedAt }),
     seller: pickSeller(data),
     siblingItems: pickSiblings(data),
+    copyFeatures: analyzeCopyStructure(title, desc),
+    imageFeatures: analyzeImageFeatures(item.imageInfos),
   }
 }
 
@@ -290,6 +307,10 @@ export function extractTitleKeywords(titles: readonly string[], limit = DEFAULT_
     fail('VALIDATION', 'extractTitleKeywords 的 limit 必须在 1..100 之间：' + String(limit))
   }
   const counts = new Map<string, number>()
+  // 片段内部的 2-gram 常常跨词边界（「考研数学笔记」切出「研数」「学笔」），直接进高频词就是把噪声喂给文案提示词。
+  // 只保留出现在片段首尾的 2-gram；整段片段与英文/数字串本来就可信，不进这个「可疑」集合。
+  const innerOnly = new Set<string>()
+  const boundary = new Set<string>()
   const bump = (word: string): void => {
     counts.set(word, (counts.get(word) ?? 0) + 1)
   }
@@ -301,7 +322,10 @@ export function extractTitleKeywords(titles: readonly string[], limit = DEFAULT_
       if (run.length > 2) {
         for (let index = 0; index + 2 <= run.length; index += 1) {
           const bigram = run.slice(index, index + 2)
-          if (!isMeaningless(bigram)) bump(bigram)
+          if (isMeaningless(bigram)) continue
+          bump(bigram)
+          if (index === 0 || index + 2 === run.length) boundary.add(bigram)
+          else innerOnly.add(bigram)
         }
       }
     }
@@ -309,7 +333,7 @@ export function extractTitleKeywords(titles: readonly string[], limit = DEFAULT_
     for (const word of latin) bump(word)
   }
   return [...counts.entries()]
-    .filter(([, count]) => count >= 2)
+    .filter(([word, count]) => count >= 2 && !(innerOnly.has(word) && !boundary.has(word)))
     .sort((left, right) => (right[1] - left[1]) || left[0].localeCompare(right[0]))
     .slice(0, limit)
     .map(([word, count]) => ({ word, count }))
@@ -335,6 +359,9 @@ export function summarizeReferences(
     .slice(0, topCategories)
     .map(([categoryId, count]) => ({ categoryId, count }))
   const withDesc = items.filter((item) => (item.desc ?? '').length > 0).length
+  const aspectCount = (target: SellerItemImageFeatures['aspect']): number =>
+    items.filter((item) => item.imageFeatures.aspect === target).length
+  const ratio = (hit: number): number => (items.length === 0 ? 0 : Math.round((hit / items.length) * 100) / 100)
   return {
     count: items.length,
     priceCents: {
@@ -349,8 +376,21 @@ export function summarizeReferences(
       avg: average(lengths),
     },
     imageCountAvg: average(items.map((item) => item.imageCount)),
-    descRatio: items.length === 0 ? 0 : Math.round((withDesc / items.length) * 100) / 100,
+    descRatio: ratio(withDesc),
     categories,
     keywords: extractTitleKeywords(items.map((item) => item.title), topKeywords),
+    imageAspect: {
+      square: aspectCount('square'),
+      portrait: aspectCount('portrait'),
+      landscape: aspectCount('landscape'),
+      mixed: aspectCount('mixed'),
+      unknown: aspectCount('unknown'),
+    },
+    copyStructure: {
+      titleSegmentsAvg: average(items.map((item) => item.copyFeatures.titleSegments)),
+      descSentencesAvg: average(items.map((item) => item.copyFeatures.descSentences)),
+      bracketTagRatio: ratio(items.filter((item) => item.copyFeatures.hasBracketTag).length),
+      ctaRatio: ratio(items.filter((item) => item.copyFeatures.ctaCount > 0).length),
+    },
   }
 }

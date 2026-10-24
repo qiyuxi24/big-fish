@@ -34,7 +34,8 @@ class RichPage implements DomPage {
       return {} as T
     }
     if (method === 'Input.dispatchKeyEvent') {
-      if (params.type === 'keyDown') this.events.push('enter')
+      // keyDown 不带 text 时 Chrome 不插入换行，这里把两种形态区分开记，防止回退。
+      if (params.type === 'keyDown') this.events.push(params.text === '\r' ? 'enter' : 'enter-no-text')
       return {} as T
     }
     return {} as T
@@ -59,6 +60,13 @@ test('fillRichText：回读不含写入内容时报 INTERNAL，不静默通过',
   const page = new RichPage()
   page.readback = ''
   await assert.rejects(fillRichText(page, '#desc', '要写的内容', '描述'), /回读不一致/)
+})
+
+test('fillRichText：多行时回读没有换行算失败（标题与描述粘成一行）', async () => {
+  const page = new RichPage()
+  // 模拟编辑器吞掉回车：两段文字都在，但粘在同一行。
+  page.readback = '标题描述'
+  await assert.rejects(fillRichText(page, '#desc', '标题\n描述', '描述'), /换行未生效/)
 })
 
 test('fillRichText：元素不存在是 VALIDATION，不是可编辑元素是 UNSUPPORTED', async () => {

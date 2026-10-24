@@ -70,6 +70,17 @@ describe('daemon HTTP 外壳', () => {
     assert.deepEqual(status.circuits, {})
   })
 
+  it('GET /browser：注入时回托管浏览器状态，未注入时明确 enabled:false（不假装）', async (t) => {
+    const status = { port: 9333, profileDir: 'C:/data/chrome-profile', running: true, owned: true, headless: false }
+    const withBrowser = await createHarness(t, { browser: async () => status })
+    const response = await withBrowser.rawRequest({ method: 'GET', path: '/browser' })
+    assert.equal(response.status, 200)
+    assert.deepEqual(dataOf(response), { enabled: true, ...status })
+
+    const without = await createHarness(t)
+    assert.deepEqual(dataOf(await without.rawRequest({ method: 'GET', path: '/browser' })), { enabled: false })
+  })
+
   it('未知路由 404、方法不匹配 405，都是 VALIDATION 信封', async (t) => {
     const h = await createHarness(t)
     const missing = await h.rawRequest({ method: 'GET', path: '/nope' })

@@ -138,12 +138,22 @@ CREATE TABLE IF NOT EXISTS sellers (
 );
 `
 
+/**
+ * v5：采集入库的「可学习特征」两列（文案结构 / 主图构成）。
+ * 只存数字与开关，不存原文与图片地址；ALTER 用探测包一层，手工补过列的库不会卡住启动。
+ */
+const V5_SQL = `
+ALTER TABLE seller_items ADD COLUMN copy_features TEXT;
+ALTER TABLE seller_items ADD COLUMN image_features TEXT;
+`
+
 const MIGRATIONS: readonly Migration[] = [
   { version: 1, apply: (db: DatabaseSync): void => db.exec(V1_SQL) },
   { version: 2, apply: applyBatchMigration },
   // v3 全用 IF NOT EXISTS：手工建过表的库再迁移不会失败（与 v2 的探测同样的理由）。
   { version: 3, apply: (db: DatabaseSync): void => db.exec(V3_SQL) },
   { version: 4, apply: (db: DatabaseSync): void => db.exec(V4_SQL) },
+  { version: 5, apply: applySellerFeaturesMigration },
 ]
 
 const CREATE_MIGRATIONS_SQL = `CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -319,6 +329,12 @@ function applyBatchMigration(db: DatabaseSync): void {
     return
   }
   db.exec(V2_SQL)
+}
+
+/** v5 与 v2 同样的理由：ALTER TABLE ADD COLUMN 不幂等，先探测列再补。 */
+function applySellerFeaturesMigration(db: DatabaseSync): void {
+  if (hasColumn(db, 'seller_items', 'copy_features')) return
+  db.exec(V5_SQL)
 }
 
 /** 表名/列名只来自本文件内的常量，不接收外部输入。 */

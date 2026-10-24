@@ -4,7 +4,10 @@
      */
     // —— 实时状态：client → host rpc（只读端点）——
     const RPC_CHANNEL = '/bigfish'
+    /** 轮询周期（毫秒）：所有面板数据共用一个节奏，别再各写各的 3000。 */
     const POLL_MS = 3000
+    /** daemon 默认监听地址（只用于文案提示；面板本身只走 rpc，不直连）。 */
+    const DAEMON_ADDR = '127.0.0.1:47001'
     const OFFLINE_TEXT = '未连接后台（daemon 未启动）'
     /** 队列状态的展示顺序与中文名；与 src/rpc.js 的 TASK_STATES 一致。 */
     const TASK_STATE_LABELS = [['queued', '排队'], ['leased', '执行中'], ['done', '完成'], ['failed', '失败'], ['needs_review', '待审']]
@@ -20,12 +23,7 @@
         return connection
       } catch { return null }
     }
-    /**
-     * 单次只读 rpc：传输失败、信封非法、handler 抛错都折成 { ok:false }，绝不冒泡。
-     * 失败时带上 error.code 与 message：面板要区分「daemon 断了」和「宿主加载的是旧插件、
-     * 根本没有这个 rpc」——两者都表现为一次失败的 rpc，但用户该做的事完全不同；
-     * message 用于展示可操作的原因（例如「短链需要在浏览器打开」）。
-     */
+    /** 单次只读 rpc：失败折成 { ok:false } 并带 code/message（区分 daemon 断连与旧插件缺 rpc）。 */
     async function callRead(connection, endpoint, payload) {
       if (connection === null) return { ok: false, code: '', message: '' }
       try {
@@ -61,14 +59,14 @@
           setState(previous => ({ ...previous, busy: '', notice: result.ok ? { kind: 'ok', text: doneText } : { kind: 'bad', text: result.message } }))
         })
       }
-      const start = () => { if (state.busy !== '') return; run('daemon.start', {}, '已请求启动 daemon，等下一次轮询确认在线') }
+      const start = () => { if (state.busy !== '') return; run('daemon.start', {}, '已请求启动，等下一次轮询确认在线') }
       const stop = () => {
         if (state.busy !== '') return
         if (!state.stopArmed) {
-          setState(previous => ({ ...previous, stopArmed: true, notice: { kind: 'warn', text: '再点一次「确认停止」才会停 daemon：在飞任务会被中断（任务保持 queued，下次启动后继续）' } }))
+          setState(previous => ({ ...previous, stopArmed: true, notice: { kind: 'warn', text: '再点一次「确认停止」：在飞任务会中断（保持 queued，下次启动继续）' } }))
           return
         }
-        run('daemon.stop', { confirm: true }, 'daemon 已停止；队列暂停执行，面板下一次轮询会转为离线')
+        run('daemon.stop', { confirm: true }, '已停止；队列暂停，下一次轮询转离线')
       }
       const cancelStop = () => { setState(previous => ({ ...previous, stopArmed: false, notice: null })) }
       return { state, start, stop, cancelStop }

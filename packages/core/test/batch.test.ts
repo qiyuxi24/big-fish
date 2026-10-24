@@ -117,7 +117,7 @@ test('旧库（v1，无 batch_id 列）打开后自动迁移 v2：历史任务�
   const path = box.path('legacy.db')
   writeLegacyDb(path, false)
   const store = box.track(openStore({ path, now: () => 5_000 }), (value: Store) => value.close())
-  assert.deepEqual(migrationVersions(store), [1, 2, 3, 4])
+  assert.deepEqual(migrationVersions(store), [1, 2, 3, 4, 5])
 
   const queue = box.track(createTaskQueue({ store, now: () => 5_000 }), (value: TaskQueueHandle) => value.close())
   const legacy = queue.get('legacy-1')
@@ -138,7 +138,7 @@ test('旧库（v1，无 batch_id 列）打开后自动迁移 v2：历史任务�
 
   // 迁移幂等：重开不重复 ALTER，也不重复记账
   const reopened = box.track(openStore({ path }), (value: Store) => value.close())
-  assert.deepEqual(migrationVersions(reopened), [1, 2, 3, 4])
+  assert.deepEqual(migrationVersions(reopened), [1, 2, 3, 4, 5])
 })
 
 test('列已存在但版本未记录：迁移可重入，不因 duplicate column 启动失败', (t) => {
@@ -146,7 +146,7 @@ test('列已存在但版本未记录：迁移可重入，不因 duplicate column
   const path = box.path('half-migrated.db')
   writeLegacyDb(path, true)
   const store = box.track(openStore({ path, now: () => 7_000 }), (value: Store) => value.close())
-  assert.deepEqual(migrationVersions(store), [1, 2, 3, 4])
+  assert.deepEqual(migrationVersions(store), [1, 2, 3, 4, 5])
   const queue = box.track(createTaskQueue({ store, now: () => 7_000 }), (value) => value.close())
   assert.equal(queue.get('legacy-1')?.state, 'queued')
   assert.equal(queue.enqueue({ kind: 'probe', dedupeKey: 'p-1', payload: {}, batchId: 'b1' }).batchId, 'b1')

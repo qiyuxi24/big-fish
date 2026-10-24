@@ -266,5 +266,8 @@ function toStoredItem(item: ReferenceItem, request: SellerCollectRequest) {
     ...(item.collectCount === undefined ? {} : { collectCount: item.collectCount }),
     ...(item.soldCount === undefined ? {} : { soldCount: item.soldCount }),
     ...(item.publishedAt === undefined ? {} : { publishedAt: item.publishedAt }),
+    // 结构特征（只数字与开关）：让面板/工具能看「标题怎么分段、主图什么比例」，原文与图片地址不进库。
+    copyFeatures: item.copyFeatures,
+    imageFeatures: item.imageFeatures,
   }
 }

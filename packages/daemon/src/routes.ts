@@ -2,7 +2,7 @@
  * daemon 的路由「表」与公共上下文。
  *
  * 这层只做两件事：声明一次请求的上下文（RouteContext）与把各域路由拼成一张表。
- * 具体 handler 按域分文件：status / accounts / tasks / items / settings / seller / lifecycle。
+ * 具体 handler 按域分文件：status / accounts / tasks / items / settings / seller / market / lifecycle。
  * 为什么不再全放这里：13 条路由时代还看得过来，21 条之后任何一处改动都要在同一个
  * 500+ 行文件里翻五个域，且每次加能力都会在同一段 RouteContext 上制造冲突。
  * @module @bigfish/daemon/routes
@@ -22,8 +22,10 @@ import type { LoginInput, LoginResult } from './login.ts'
 import type { AccountSummary } from './account-list.ts'
 import type { AccountSessionState } from './account-verify.ts'
 import type { ActivateResult, LogoutResult } from './account-lifecycle.ts'
+import type { BrowserStatus } from './managed-browser.ts'
 import { lifecycleRoutes } from './lifecycle.ts'
 import { sellerRoutes } from './seller-routes.ts'
+import { marketRoutes } from './routes-market.ts'
 import type { SellerCollectHandler } from './seller-routes.ts'
 import type { SettingsStore } from './settings.ts'
 import { accountRoutes } from './routes-accounts.ts'
@@ -83,6 +85,8 @@ export interface RouteContext {
   settings: SettingsStore | undefined
   /** 任务事件流；未注入时 GET /events 返回 UNSUPPORTED。 */
   events: TaskEventSink | undefined
+  /** 托管浏览器状态（扫码/导入/发布共用的那个实例）；未注入时 GET /browser 返回 enabled:false。 */
+  browser: (() => Promise<BrowserStatus>) | undefined
   now: () => number
   startedAt: number
   version: string
@@ -115,6 +119,7 @@ const ROUTES: readonly Route[] = [
   ...taskRoutes,
   ...itemRoutes,
   ...sellerRoutes,
+  ...marketRoutes,
   ...settingsRoutes,
   // 生命周期路由单独成文件：关停是运维动作，不跟业务读写在同一个模块里改。
   ...lifecycleRoutes,

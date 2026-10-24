@@ -14,7 +14,7 @@ import { createFakeClient, createFakeCtx } from './helpers.mjs'
 
 const config = { daemonUrl: 'http://127.0.0.1:47001', tokenPath: '/tmp/daemon.token' }
 
-/** 14 个真实工具的规格（定义 + access + reason/writeWhen）。 */
+/** 15 个真实工具的规格（定义 + access + reason/writeWhen）。 */
 function makeSpecs() {
   return buildTools({ client: createFakeClient({}), config })
 }
@@ -93,18 +93,18 @@ test('任务重试属于写操作：会清零 attempts 并让 daemon 重放发�
   assert.equal(isWriteCall('xy_not_registered', {}), false)
 })
 
-test('access 分类：14 个工具里 5 个 confirm、9 个 read', () => {
+test('access 分类：15 个工具里 5 个 confirm、10 个 read', () => {
   const specs = makeSpecs()
   for (const spec of specs) {
     assert.ok(spec.access === 'read' || spec.access === 'confirm', spec.definition.name + ' 缺少合法 access')
   }
   const { result } = setup(specs)
-  assert.deepEqual(result.counts, { read: 9, confirm: 5 })
+  assert.deepEqual(result.counts, { read: 10, confirm: 5 })
   assert.deepEqual(
     specs.filter((spec) => spec.access === 'confirm').map((spec) => spec.definition.name).sort(),
     ['xy_import_account', 'xy_publish_batch', 'xy_publish_draft', 'xy_task_enqueue', 'xy_task_retry'],
   )
-  assert.equal(result.names.length, 14)
+  assert.equal(result.names.length, 15)
 })
 
 test('register 为每条规格调用一次 ctx.tools.register，names 与定义顺序一致', () => {
@@ -177,8 +177,8 @@ test('logger 打一条注册摘要；没有 logger 时静默', () => {
   const lines = []
   setup(makeSpecs(), { logger: (line) => lines.push(line) })
   assert.equal(lines.length, 1)
-  assert.match(lines[0], /共 14 个/)
-  assert.match(lines[0], /read=9/)
+  assert.match(lines[0], /共 15 个/)
+  assert.match(lines[0], /read=10/)
   assert.match(lines[0], /confirm=5/)
   // 静默路径：不传 logger 不抛错，也不产生日志（调用方自己汇总）。
   assert.doesNotThrow(() => setup(makeSpecs()))
@@ -195,7 +195,7 @@ test('dispose 解绑门禁监听，之后不再触发', () => {
 test('gate=false 时不注册门禁监听，但工具照常注册', () => {
   const { listeners, tools, result } = setup(makeSpecs(), { gate: false })
   assert.equal(listeners.size, 0)
-  assert.equal(tools.length, 14)
+  assert.equal(tools.length, 15)
   assert.equal(typeof result.dispose, 'function')
 })
 

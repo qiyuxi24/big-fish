@@ -19,6 +19,10 @@ class FakePage implements DomPage {
   readonly clicked: string[] = []
   readonly navigated: string[] = []
   readonly screenshots: string[] = []
+  /** 前 N 次 screenshot 抛超时（模拟真机抖动）。 */
+  screenshotFailures = 0
+  /** screenshot 被调用总次数（含失败），用来断言「重试了一次」。 */
+  screenshotAttempts = 0
   readonly commands: { method: string; params: Record<string, unknown> }[] = []
   href = 'https://www.goofish.com/publish'
   bodyText = ''
@@ -120,6 +124,13 @@ class FakePage implements DomPage {
   }
 
   async screenshot(path: string): Promise<void> {
+    // 模拟真机偶发的 Page.captureScreenshot 超时：前 N 次抛错，之后正常。
+    if (this.screenshotFailures > 0) {
+      this.screenshotFailures -= 1
+      this.screenshotAttempts += 1
+      throw new Error('CDP 请求超时：Page.captureScreenshot（15000ms）')
+    }
+    this.screenshotAttempts += 1
     this.screenshots.push(path)
   }
 
@@ -226,6 +237,26 @@ test('dry-run 全流程：填完表、不动提交按钮、返回 ok', async () 
   assert.ok(page.commands.some((call) => call.method === 'DOM.setFileInputFiles'))
   const uploaded = page.commands.find((call) => call.method === 'DOM.setFileInputFiles')
   assert.deepEqual(uploaded?.params.files, DRAFT.images)
+})
+
+test('截图偶发超时：重试一次后继续，整条发布不报失败', async () => {
+  const page = readyPage()
+  page.screenshotFailures = 1
+  const result = await publishItem(asPage(page), DRAFT, makeCtx(), { dryRun: true, screenshotsDir: 'D:/shots' })
+  assert.deepEqual(result, { ok: true })
+  assert.equal(page.screenshots[0], 'D:/shots/01-open.png')
+  assert.equal(page.screenshotAttempts, page.screenshots.length + 1)
+})
+
+test('截图两次都失败：报「截图重试后仍失败」，不假装成功', async () => {
+  const page = readyPage()
+  page.screenshotFailures = 2
+  const result = await publishItem(asPage(page), DRAFT, makeCtx(), { dryRun: true, screenshotsDir: 'D:/shots' })
+  assert.equal(result.ok, false)
+  if (result.ok) return
+  assert.equal(result.step, '打开发布页')
+  assert.match(result.error, /截图重试后仍失败/)
+  assert.equal(page.screenshots.length, 0)
 })
 
 test('上传失败：没有文件输入框也没有「添加首图」→ 停在「上传图片」', async () => {

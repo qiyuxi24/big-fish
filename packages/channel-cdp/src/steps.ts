@@ -11,6 +11,15 @@ import type { CdpPage } from './page.ts'
 export interface PublishStep {
   name: string
   run(page: CdpPage, ctx: PublishContext): Promise<void>
+  /**
+   * 步骤成功后的风控检查开关（默认开）。
+   *
+   * 为什么要有：提交成功后页面会跳到商品页，此时账号被风控弹层（滑块/punish iframe）盖住是常态，
+   * 但上架已经生效（2026-10-23 实测 itemId 1095534136427：商品已在「我发布的」里）。
+   * 若终态步骤也做 post 检查，就会把成功翻成 RISK_CONTROL 失败，CLI 退出码非 0、队列标失败，
+   * 人工还会以为没发出去。终态步骤显式关掉；执行前的检查照旧，真被风控挡住的发布仍会被拦。
+   */
+  postRiskCheck?: boolean
 }
 
 export interface PublishContext {

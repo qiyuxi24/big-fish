@@ -7,6 +7,7 @@
  */
 import type { CircuitBreaker, DaemonStatus, TaskQueue } from '@bigfish/core'
 import { ok, sendJson } from './http.ts'
+import type { BrowserStatus } from './managed-browser.ts'
 import type { Route, RouteContext } from './routes.ts'
 
 /** /status.worker 的最小形状（避免 routes 依赖 worker 实现）。 */
@@ -59,8 +60,23 @@ async function statusHandler(ctx: RouteContext): Promise<void> {
   await sendJson(ctx.res, 200, ok(buildStatus(ctx)), ctx.redact)
 }
 
+/**
+ * 托管浏览器状态：面板要能回答「扫码/发布共用的是哪个窗口、现在活着没」。
+ * 与 /status 分开是因为它要真的探一次端口（毫秒级、连不上立刻返回），
+ * 而 /status 每 3 秒被轮询一次、必须保持同步无 IO。
+ */
+async function browserHandler(ctx: RouteContext): Promise<void> {
+  if (ctx.browser === undefined) {
+    await sendJson(ctx.res, 200, ok({ enabled: false }), ctx.redact)
+    return
+  }
+  const status: BrowserStatus = await ctx.browser()
+  await sendJson(ctx.res, 200, ok({ enabled: true, ...status }), ctx.redact)
+}
+
 /** 状态域路由；拼进 routes.ts 的 ROUTES。 */
 export const statusRoutes: readonly Route[] = [
   { method: 'GET', pattern: /^\/health\/?$/, handler: healthHandler, public: true },
   { method: 'GET', pattern: /^\/status\/?$/, handler: statusHandler },
+  { method: 'GET', pattern: /^\/browser\/?$/, handler: browserHandler },
 ]

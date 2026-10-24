@@ -272,6 +272,8 @@ function daemonReplies() {
       },
     },
     accounts: { ok: true, value: [{ accountId: '2206569289277', updatedAt: 1, savedFieldCount: 3, ready: true }] },
+    // 托管浏览器：默认「未启动」——面板据此提示「点扫码会自动拉起」。
+    'browser.status': { ok: true, value: { enabled: true, port: 9222, running: false, owned: false, headless: false } },
     'settings.get': {
       ok: true,
       value: { copyStyle: 'warm', defaultCategory: '电子资料', publishMinIntervalMs: 180000 },
@@ -613,6 +615,38 @@ test('添加账户：输入账号 id 与 Chrome 端口，点两次才带 confirm
   assert.match(toText(tree()), /端口必须是 1..65535 的整数/)
 })
 
+test('添加账户：托管浏览器状态行如实反映未启动/运行中/复用外部/未接入/未知', async () => {
+  const cases = [
+    { value: { enabled: true, port: 9222, running: false, owned: false, headless: false }, pattern: /托管浏览器：未启动 · 端口 9222/ },
+    { value: { enabled: true, port: 9333, running: true, owned: true, headless: false }, pattern: /托管浏览器：运行中（daemon 拉起） · 端口 9333/ },
+    { value: { enabled: true, port: 9333, running: true, owned: false, headless: false }, pattern: /托管浏览器：复用已开的外部调试浏览器/ },
+    { value: { enabled: false }, pattern: /托管浏览器：daemon 未接入/ },
+    { reply: { ok: false, error: { code: 'UNSUPPORTED', message: 'no fixture' } }, pattern: /托管浏览器：状态未知/ },
+  ]
+  for (const entry of cases) {
+    const replies = daemonReplies()
+    replies['browser.status'] = entry.reply ?? { ok: true, value: entry.value }
+    const { tree } = await openAccountTab(replies)
+    const line = roleNodes(tree(), 'account-browser')
+    assert.equal(line.length, 1, '缺少托管浏览器状态行')
+    assert.match(toText(line[0]), entry.pattern)
+  }
+})
+
+test('添加账户：扫码登录不传端口（交给 daemon 托管浏览器），导入仍带端口', async () => {
+  const replies = daemonReplies()
+  replies['accounts.login'] = (payload) => ({ ok: true, value: { accountId: payload.accountId ?? 'from-managed' } })
+  const { calls, tree } = await openAccountTab(replies)
+  const logins = () => calls.filter((call) => call.endpoint === 'accounts.login')
+
+  roleElements(tree(), 'account-add-login')[0].props.onClick()
+  roleElements(tree(), 'account-add-login')[0].props.onClick()
+  await settle()
+  assert.equal(logins().length, 1)
+  assert.equal(Object.hasOwn(logins()[0].payload, 'port'), false, '端口必须由 daemon 决定，面板不该猜')
+  assert.equal(logins()[0].payload.confirm, true)
+})
+
 test('登录保活：一个按钮开关（点两次带 confirm:true），settings.get 回填，间隔保存换算毫秒', async () => {
   const replies = daemonReplies()
   let settings = { copyStyle: 'warm', defaultCategory: '电子资料', publishMinIntervalMs: 180000, keepAliveEnabled: true, keepAliveIntervalMs: 300000 }
@@ -684,55 +718,92 @@ test('侧边栏图标渲染 🐟，选中态与未选中态透明度不同', () 
   assert.equal(active.props['aria-hidden'], 'true')
 })
 
-test('面板内 tab：6 个分区，默认「自动发布」，点击切换内容', () => {
+test('面板内 tab：6 个分区按功能分三组，默认「概览」，点击切换内容', () => {
   const { render, openTab } = mountPanel()
   let tree = render()
   const tabs = roleElements(tree, 'panel-tab')
-  assert.deepEqual(tabs.map((node) => toText(node)), ['自动发布', '账号', '文案', '采集', '概览', '诊断'])
+  assert.deepEqual(tabs.map((node) => toText(node)), ['概览', '账号', '采集', '文案', '发布', '商品'])
   assert.deepEqual(tabs.map((node) => node.props['aria-selected']), [true, false, false, false, false, false])
-  // 默认页是发布模块（流水线 + 草稿集）；文案与诊断内容此时不应出现。
-  assert.match(toText(tree), /流水线/)
-  assert.match(toText(tree), /草稿集/)
-  assert.equal(toText(tree).includes('文案风格（skill 注入）'), false)
-  assert.equal(toText(tree).includes('127.0.0.1:47001'), false)
+  // 分组标签不进 tab 位（组名是 span），三组：监控 / 准备 / 作业。
+  assert.deepEqual(roleNodes(tree, 'panel-tab-group').map((node) => node.props['data-group']), ['监控', '准备', '作业'])
+  // 默认页是驾驶舱；发布与文案的内容此时不应出现。
+  assert.match(toText(tree), /待办提醒/)
+  assert.equal(toText(tree).includes('文案风格'), false)
+  assert.equal(toText(tree).includes('草稿集'), false)
 
   tree = openTab('账号')
   assert.match(toText(tree), /账号管理/)
   assert.equal(roleElements(tree, 'panel-tab')[1].props['aria-selected'], true)
   assert.equal(roleElements(tree, 'panel-tab')[0].props['aria-selected'], false)
 
+  tree = openTab('采集')
+  assert.match(toText(tree), /链接 → 商家商品入库/)
+
   tree = openTab('文案')
-  assert.match(toText(tree), /文案风格（skill 注入）/)
+  assert.match(toText(tree), /文案风格/)
 
-  tree = openTab('概览')
-  const overview = toText(tree)
-  assert.match(overview, /登录态导入/)
-  assert.match(overview, /127.0.0.1:47001/)
-  assert.match(overview, /npm run daemon:import-account/)
+  tree = openTab('发布')
+  assert.match(toText(tree), /流水线/)
+  assert.match(toText(tree), /草稿集/)
 
-  tree = openTab('诊断')
-  assert.match(toText(tree), /xy_status/)
-  assert.match(toText(tree), /xy_tasks_list/)
-  assert.match(toText(tree), /npm run dsh:dev -- --fresh/)
+  tree = openTab('商品')
+  assert.match(toText(tree), /自有商品/)
 })
 
 test('面板标题与副标题在任意 tab 都在（tab 栏顶部固定）', () => {
   const { render, openTab } = mountPanel()
   const text = toText(render())
-  for (const expected of ['BigFish 闲鱼运营', '发布 / 账号 / 文案 / 采集 · 面板只组参数', '自动发布', '账号', '文案', '采集', '概览', '诊断']) {
+  for (const expected of ['BigFish 闲鱼运营', '账号 → 采集 → 文案 → 发布 → 商品', '概览', '账号', '采集', '文案', '发布', '商品']) {
     assert.ok(text.includes(expected), '面板文本缺少：' + expected)
   }
   // 切到任意 tab，标题与 tab 栏都在。
   const account = toText(openTab('账号'))
   assert.ok(account.includes('BigFish 闲鱼运营'))
-  assert.ok(account.includes('自动发布'))
+  assert.ok(account.includes('概览'))
 })
 
-test('概览页只留导入入口与 daemon 命令，不再有 disabled 假按钮', () => {
+test('面板骨架：根节点撑满高度、tab 栏在滚动区之外、内容区是唯一滚动容器', () => {
+  const { render } = mountPanel()
+  const tree = render()
+  // 宿主 main 插槽的容器是 flex 列 + overflow:hidden（自己不管滚动），面板必须撑满并自己开滚动区，
+  // 否则内容超出会被直接裁掉、滚轮也没反应（2026-10-23 用户实测「不能上下滑动」）。
+  const root = roleNodes(tree, 'panel-root')[0]
+  assert.equal(root.props.style.height, '100%')
+  assert.equal(root.props.style.display, 'flex')
+  assert.equal(root.props.style.flexDirection, 'column')
+  assert.equal(root.props.style.minHeight, 0)
+  const scrolls = roleNodes(tree, 'panel-scroll')
+  assert.equal(scrolls.length, 1)
+  assert.equal(scrolls[0].props.style.overflow, 'auto')
+  assert.equal(scrolls[0].props.style.minHeight, 0)
+  // tab 栏固定：不在滚动容器内，滚到底也能直接切模块。
+  assert.equal(roleNodes(scrolls[0], 'panel-tab').length, 0)
+  assert.equal(roleNodes(tree, 'panel-tab').length, 6)
+})
+
+test('面板 tab 与内容区双向 aria 关联（tabpanel 跟随当前 tab）', () => {
+  const { render, openTab } = mountPanel()
+  let tree = render()
+  const panel = () => roleNodes(tree, 'panel-scroll')[0].children[0]
+  assert.equal(panel().props.role, 'tabpanel')
+  assert.equal(panel().props.id, 'bigfish-panel-overview')
+  assert.equal(panel().props['aria-labelledby'], 'bigfish-tab-overview')
+  const overviewTab = roleElements(tree, 'panel-tab')[0]
+  assert.equal(overviewTab.props.id, 'bigfish-tab-overview')
+  assert.equal(overviewTab.props['aria-controls'], 'bigfish-panel-overview')
+
+  tree = openTab('发布')
+  assert.equal(panel().props.id, 'bigfish-panel-publish')
+  assert.equal(roleElements(tree, 'panel-tab').find(node => node.props['aria-selected']).props.id, 'bigfish-tab-publish')
+})
+
+test('概览页：驾驶舱 + 系统区（不再是登录说明占位）', () => {
   const { openTab } = mountPanel()
-  const tree = openTab('概览')
-  assert.match(toText(tree), /npm run daemon:import-account/)
-  assert.equal(collectByType(tree, 'button').filter((node) => node.props.disabled === true).length, 0)
+  const text = toText(openTab('概览'))
+  assert.match(text, /待办提醒/)
+  assert.match(text, /工具与命令/)
+  assert.match(text, /npm run daemon:import-account/)
+  assert.equal(text.includes('登录态导入：xy_import_account'), false)
 })
 
 test('文案风格区：5 个风格可选，默认闲鱼口语，切换后选中态转移', () => {
@@ -876,24 +947,23 @@ test('品类模板拉不到：显式提示降级，仍能用通用字段生成�
   assert.match(toText(tree), /品类模板没拉到/)
   assert.deepEqual(roleElements(tree, 'copy-category').map(toText), ['其他'])
 
-  mounted.openTab('自动发布')
+  mounted.openTab('发布')
   tree = mounted.openTab('文案')
   assert.match(toText(tree), /品类模板没拉到/)
   assert.equal(calls.filter(call => call.endpoint === 'copy.templates').length, 1)
 })
 
-test('「自动发布」模块（默认 tab）：流水线四步、草稿集与类目矩阵都在', () => {
-  const { render } = mountPanel()
-  const tree = render()
+test('「发布」tab：流水线、草稿集与类目矩阵都在', () => {
+  const { openTab } = mountPanel()
+  const tree = openTab('发布')
   const text = toText(tree)
   for (const expected of [
-    '自动发布',
     '流水线',
     '草稿集',
     '发布前校验',
-    '✅ 电子资料 / 学习笔记 / 课业本；❌ 教材教辅 / 语言与兴趣培训 / 学习资料定制 / 文学 / 考研咨询（网页端不支持发布）',
+    '✅ 电子资料 / 学习笔记 / 课业本；❌ 教材教辅 / 培训 / 文学 / 考研咨询（网页端）',
   ]) {
-    assert.ok(text.includes(expected), '自动发布视图缺少：' + expected)
+    assert.ok(text.includes(expected), '发布视图缺少：' + expected)
   }
   const textarea = collectByType(tree, 'textarea')[0]
   assert.equal(textarea.props['data-role'], 'draft-input')
@@ -901,7 +971,8 @@ test('「自动发布」模块（默认 tab）：流水线四步、草稿集与�
 })
 
 test('草稿集逐行解析：非法 JSON、缺字段、非 .json 路径都报出来', () => {
-  const { render } = mountPanel()
+  const { render, openTab } = mountPanel()
+  openTab('发布')
   collectByType(render(), 'textarea')[0].props.onChange({
     target: {
       value: [
@@ -917,17 +988,17 @@ test('草稿集逐行解析：非法 JSON、缺字段、非 .json 路径都报�
   const rows = collectByType(tree, 'div').filter((node) => node.props['data-role'] === 'draft-check')
   assert.equal(rows.length, 5)
   const messages = rows.map((node) => toText(node))
-  assert.match(messages[0], /格式通过/)
-  assert.match(messages[1], /JSON 不合法/)
+  assert.match(messages[0], /通过/)
+  assert.match(messages[1], /JSON 错误/)
   assert.match(messages[2], /缺 images/)
-  assert.match(messages[3], /路径条目（host 侧读取，面板不校验内容）/)
-  assert.match(messages[4], /既不是内联 JSON 对象，也不是 \.json 路径/)
+  assert.match(messages[3], /路径条目（host 读取）/)
+  assert.match(messages[4], /既不是 JSON，也不是 \.json 路径/)
   assert.deepEqual(rows.map((node) => node.props['data-ok']), [true, false, false, true, false])
 })
 
 test('至少 2 条合法草稿才启用「生成批量发布请求」，产出 xy_publish_batch 参数', () => {
-  const { render } = mountPanel()
-  let tree = render()
+  const { render, openTab } = mountPanel()
+  let tree = openTab('发布')
   const submit = () => collectByType(tree, 'button').find((node) => node.props['data-role'] === 'publish-batch-submit')
   const typeDrafts = (value) => {
     collectByType(tree, 'textarea')[0].props.onChange({ target: { value } })
@@ -956,7 +1027,7 @@ test('至少 2 条合法草稿才启用「生成批量发布请求」，产出 x
   assert.equal(Object.prototype.hasOwnProperty.call(request, 'accountId'), false)
 
   // 任何输入变化都撤销已生成的 JSON，避免拿着旧参数去执行。
-  collectByType(tree, 'button').find((node) => node.props['data-role'] === 'publish-mode' && toText(node) === 'enqueue（入队，走审批）').props.onClick()
+  collectByType(tree, 'button').find((node) => node.props['data-role'] === 'publish-mode' && toText(node) === 'enqueue 入队').props.onClick()
   tree = render()
   assert.equal(collectByType(tree, 'pre').length, 0)
   assert.equal(submit().props.disabled, false)
@@ -971,7 +1042,8 @@ test('至少 2 条合法草稿才启用「生成批量发布请求」，产出 x
 })
 
 test('有校验不通过的行时按钮保持禁用，不静默丢草稿', () => {
-  const { render } = mountPanel()
+  const { render, openTab } = mountPanel()
+  openTab('发布')
   collectByType(render(), 'textarea')[0].props.onChange({
     target: {
       value: [
@@ -1076,7 +1148,7 @@ test('采集：商品链接给出「改贴商家主页」提示，且采集按�
   roleElements(tree(), 'reference-parse')[0].props.onClick()
   await settle()
   assert.match(toText(tree()), /商品 id：1091933071728/)
-  assert.match(toText(tree()), /改贴商家主页链接/)
+  assert.match(toText(tree()), /改贴商家主页/)
   assert.equal(roleElements(tree(), 'reference-collect')[0].props.disabled, true)
 })
 
@@ -1092,7 +1164,7 @@ test('采集：已采集商家列表可点开，渲染价格（分→元）/类�
       sellerId: '2206569289277',
       total: 2,
       items: [
-        { itemId: '1', title: '机械键盘', priceCents: 12900, categoryId: '50023914', imageCount: 3, browseCount: 12, wantCount: 3, collectCount: 1, publishedAt: Date.now() - 3600_000 },
+        { itemId: '1', title: '机械键盘', priceCents: 12900, categoryId: '50023914', imageCount: 3, browseCount: 12, wantCount: 3, collectCount: 1, publishedAt: Date.now() - 3600_000, copyFeatures: { titleChars: 18, descChars: 40, titleSegments: 3, descParagraphs: 2, descSentences: 2, avgSentenceChars: 20, bulletLines: 0, hasBracketTag: true, emojiCount: 0, titleDigitGroups: 2, ctaCount: 1 }, imageFeatures: { count: 3, aspect: 'square', measured: 3 } },
         { itemId: '2', title: '鼠标', priceCents: 9900, imageCount: 1 },
       ],
     },
@@ -1116,12 +1188,19 @@ test('采集：已采集商家列表可点开，渲染价格（分→元）/类�
   assert.match(toText(rows[0]), /129 元/)
   assert.match(toText(rows[0]), /50023914/)
   assert.match(toText(rows[0]), /12/)
+  // 结构列：特征齐全时显示比例与段/句数；老数据没有特征就退化，不虚构。
+  const structure = roleNodes(tree(), 'reference-structure')
+  assert.equal(structure.length, 2)
+  assert.match(toText(structure[0]), /方图/)
+  assert.match(toText(structure[0]), /3 段/)
+  assert.match(toText(structure[0]), /2 句/)
+  assert.match(toText(structure[1]), /无描述/)
   assert.match(toText(rows[1]), /99 元/)
   // 缺失字段显示破折号，不虚构 0。
   assert.match(toText(rows[1]), /—/)
 })
 
-test('rpc 在线：health / 账号就绪 / 队列计数 / 最近批次 / 设置摘要渲染到「自动发布」页', async () => {
+test('rpc 在线：health / 账号就绪 / 队列计数 / 最近批次 / 设置摘要渲染到「概览」页', async () => {
   const { connection, calls } = createFakeConnection(daemonReplies())
   const mounted = mountPanel({ connection })
   const text = await snapshotText(mounted)
@@ -1140,9 +1219,9 @@ test('rpc 在线：health / 账号就绪 / 队列计数 / 最近批次 / 设置�
   assert.ok(inputs.some((node) => node.props.value === '电子资料'))
   assert.equal(collectByType(tree, 'select')[0].props.value, 'warm')
 
-  // 发布页有三个消费者：任务表（limit 20）、daemon 快照（6 个端点）、步骤事件流与批次明细。
+  // 概览页的消费者：daemon 快照（6 个端点，其中 tasks.list 只为反查最新批次）+ 步骤事件流。
   // 乱序断言：effect 的 flush 顺序由假 React 的注册顺序决定，这里只认「都发了、payload 对」。
-  assert.deepEqual(calls.filter((call) => call.endpoint === 'tasks.list').map((call) => call.payload.limit).sort(), [20, 50])
+  assert.deepEqual(calls.filter((call) => call.endpoint === 'tasks.list').map((call) => call.payload.limit).sort(), [50])
   assert.deepEqual(
     calls.map((call) => call.endpoint).filter((endpoint) => endpoint !== 'tasks.list').sort(),
     ['accounts', 'batches.get', 'copy.templates', 'events.list', 'health', 'settings.get', 'status'],
@@ -1190,15 +1269,19 @@ test('轮询周期 3 秒；卸载时清定时器，之后不再发起 rpc', asyn
   const mounted = mountPanel({ connection })
   await snapshotText(mounted)
 
-  // 三个定时器：daemon 快照 + 工作流事件流 + 任务表，周期都是 3 秒。
-  assert.equal(mounted.loaded.clock.size, 3)
+  // 概览页两个定时器：daemon 快照 + 工作流事件流，周期都是 3 秒。
+  assert.equal(mounted.loaded.clock.size, 2)
   assert.equal(mounted.loaded.clock.period, 3000)
   const firstRound = calls.length
-  const firstTasks = calls.filter((call) => call.endpoint === 'tasks.list').length
   mounted.loaded.clock.advance()
   await settle()
   assert.ok(calls.length > firstRound)
-  // 任务状态由 daemon 异步推进，任务表必须跟着轮询而不是只拉一次。
+
+  // 任务状态由 daemon 异步推进，「发布」tab 的任务表必须跟着轮询而不是只拉一次。
+  await snapshotText(mounted, mounted.openTab('发布'))
+  const firstTasks = calls.filter((call) => call.endpoint === 'tasks.list').length
+  mounted.loaded.clock.advance()
+  await settle()
   assert.ok(calls.filter((call) => call.endpoint === 'tasks.list').length > firstTasks)
 
   mounted.unmount()
@@ -1282,19 +1365,35 @@ test('工作流树为空：daemon 在线但没有事件，给出「执行任务�
   assert.match(text, /还没有步骤事件/)
 })
 
-test('「诊断」页也显示 daemon 实时状态，与发布页共用同一份快照', async () => {
-  const { connection, calls } = createFakeConnection(daemonReplies())
+test('概览页驾驶舱：worker 计数与熔断/待审都进待办提醒（只认 /status 现有字段）', async () => {
+  const replies = daemonReplies()
+  replies.status.value.worker = { leased: 1, done: 5, failed: 0, errors: 0 }
+  replies.status.value.circuits = { '2206569289277': 'RGV587 风控' }
+  const { connection, calls } = createFakeConnection(replies)
   const mounted = mountPanel({ connection })
-  const tree = mounted.openTab('诊断')
-  const text = await snapshotText(mounted, tree)
+  const text = await snapshotText(mounted)
 
   assert.match(text, /daemon 状态/)
   assert.match(text, /在线 · v0\.3\.0/)
   assert.match(text, /排队 2/)
-  // 假 React 不卸载未渲染的发布页：发布页的快照 + 事件流 + 任务表，加上诊断页自己的快照 = 4 个定时器。
-  assert.equal(mounted.loaded.clock.size, 4)
-  assert.equal(mounted.loaded.clock.period, 3000)
+  // worker 只有 daemon 注入时才带这一行：让「队列有没有人在领」可判。
+  assert.match(text, /领取 1 · 完成 5 · 失败 0 · 错误 0/)
+  // 熔断与待审进待办提醒；重置端点还没进 rpc，所以文案只提示等冷却。
+  assert.match(text, /熔断中（RGV587 风控）/)
+  assert.match(text, /待审 1 条/)
+  assert.equal(mounted.loaded.clock.size, 2)
   assert.ok(calls.length >= 5)
+})
+
+test('概览页：一切正常时不编造提醒，只给一行「没有待办」', async () => {
+  const replies = daemonReplies()
+  replies.status.value.queue = { queued: 0, leased: 0, done: 5, failed: 0, needs_review: 0 }
+  const { connection } = createFakeConnection(replies)
+  const mounted = mountPanel({ connection })
+  const text = await snapshotText(mounted)
+
+  assert.match(text, /没有待办/)
+  assert.equal(roleNodes(mounted.render(), 'overview-alert').length, 0)
 })
 
 test('bundle 不写死 daemon 地址以外的环境值，也不访问 document/localStorage/fetch', () => {
@@ -1323,7 +1422,7 @@ test('校验并入队：两次确认，第二次带 confirm:true 发 batch.enque
   })
   const { connection, calls } = createFakeConnection(replies)
   const mounted = mountPanel({ connection })
-  await snapshotText(mounted)
+  await snapshotText(mounted, mounted.openTab('发布'))
   typeDrafts(mounted, TWO_DRAFTS)
 
   let tree = mounted.render()
@@ -1362,7 +1461,7 @@ test('校验并入队失败：batch-result 显示 host 错误，任务表与整�
   replies['batch.enqueue'] = { ok: false, error: { code: 'VALIDATION', message: 'items 必须是非空数组' } }
   const { connection } = createFakeConnection(replies)
   const mounted = mountPanel({ connection })
-  await snapshotText(mounted)
+  await snapshotText(mounted, mounted.openTab('发布'))
   typeDrafts(mounted, TWO_DRAFTS)
 
   roleElements(mounted.render(), 'batch-enqueue')[0].props.onClick()
@@ -1389,7 +1488,7 @@ test('任务区：tasks.list(limit 20)；failed 行有重试、queued 行没有�
   replies['tasks.retry'] = { ok: true, value: { id: 't-failed', state: 'queued' } }
   const { connection, calls } = createFakeConnection(replies)
   const mounted = mountPanel({ connection })
-  await snapshotText(mounted)
+  await snapshotText(mounted, mounted.openTab('发布'))
 
   const tree = mounted.render()
   assert.equal(roleNodes(tree, 'tasks-table').length, 1)
@@ -1496,7 +1595,7 @@ test('进程管理：点「启动」发 daemon.start（空 payload），显示�
   assert.equal(roleElements(busy, 'daemon-start')[0].props.disabled, true)
 
   await settle()
-  assert.match(toText(mounted.render()), /已请求启动 daemon，等下一次轮询确认在线/)
+  assert.match(toText(mounted.render()), /已请求启动，等下一次轮询确认在线/)
   const starts = calls.filter((call) => call.endpoint === 'daemon.start')
   assert.equal(starts.length, 1)
   assert.equal(starts[0].channel, '/bigfish')
@@ -1512,7 +1611,7 @@ test('进程管理：停 daemon 要点两次，第二次才带 confirm:true 发 
   assert.equal(first.props.disabled, false)
   first.props.onClick()
   let armed = mounted.render()
-  assert.match(toText(armed), /再点一次「确认停止」才会停 daemon/)
+  assert.match(toText(armed), /再点一次「确认停止」：在飞任务会中断/)
   assert.equal(toText(roleElements(armed, 'daemon-stop')[0]), '确认停止 daemon')
   assert.equal(calls.some((call) => call.endpoint === 'daemon.stop'), false)
 
@@ -1523,7 +1622,7 @@ test('进程管理：停 daemon 要点两次，第二次才带 confirm:true 发 
   const stops = calls.filter((call) => call.endpoint === 'daemon.stop')
   assert.equal(stops.length, 1)
   assert.equal(stops[0].payload.confirm, true)
-  assert.match(toText(mounted.render()), /daemon 已停止；队列暂停执行/)
+  assert.match(toText(mounted.render()), /已停止；队列暂停，下一次轮询转离线/)
 })
 
 test('进程管理：动作失败时把 host 侧的 error.message 显示出来，而不是只写「失败」', async () => {
@@ -1546,4 +1645,126 @@ test('进程管理：宿主没有 connection 服务时点「启动」给出可�
   roleElements(mounted.render(), 'daemon-start')[0].props.onClick()
   await settle()
   assert.match(toText(mounted.render()), /宿主没有连接服务，无法操作 daemon/)
+})
+
+test('任务筛选：state / kind 交给 daemon 过滤，发货与客服置灰只占位', async () => {
+  const { connection, calls } = createFakeConnection(daemonReplies())
+  const mounted = mountPanel({ connection })
+  await snapshotText(mounted, mounted.openTab('发布'))
+
+  const chip = (id) => roleElements(mounted.render(), 'task-filter').find((node) => node.props['data-filter'] === id)
+  // 默认全量：任务表只带 limit，不给 daemon 多余参数。
+  const initial = calls.filter((call) => call.endpoint === 'tasks.list' && call.payload.limit === 20)
+  assert.ok(initial.length >= 1)
+  assert.deepEqual(Object.keys(initial[0].payload), ['limit'])
+
+  chip('failed').props.onClick()
+  toText(mounted.render())
+  mounted.flush()
+  await settle()
+  const withState = calls.filter((call) => call.endpoint === 'tasks.list' && call.payload.state === 'failed')
+  assert.ok(withState.length >= 1)
+  assert.equal(withState[0].payload.limit, 20)
+
+  chip('polish').props.onClick()
+  toText(mounted.render())
+  mounted.flush()
+  await settle()
+  const withKind = calls.filter((call) => call.endpoint === 'tasks.list' && call.payload.kind === 'polish')
+  assert.ok(withKind.length >= 1)
+  // 两个筛选同时生效（GET /tasks?state&kind）。
+  assert.equal(withKind[0].payload.state, 'failed')
+
+  // 未接线：按钮 disabled，且 title 说明卡在哪，不给假入口。
+  assert.equal(chip('deliver').props.disabled, true)
+  assert.equal(chip('reply').props.disabled, true)
+  assert.match(chip('deliver').props.title, /未接线/)
+})
+
+test('「商品」tab：items.list 渲染快照，勾选后擦亮入队（两次确认，kind=polish）', async () => {
+  const replies = daemonReplies()
+  replies['items.list'] = {
+    ok: true,
+    value: [{ itemId: '50023914', accountId: '2206569289277', title: '学习笔记', priceCents: 12900, state: 'online', updatedAt: Date.now() - 60000 }],
+  }
+  replies['batch.enqueue'] = (payload) => ({
+    ok: true,
+    value: { batchId: payload.batchId ?? 'b-x', tasks: payload.items.map(() => ({ id: 'q', state: 'queued' })), created: payload.items.map(() => true) },
+  })
+  const { connection, calls } = createFakeConnection(replies)
+  const mounted = mountPanel({ connection })
+  const text = await snapshotText(mounted, mounted.openTab('商品'))
+
+  assert.match(text, /自有商品/)
+  assert.match(text, /学习笔记/)
+  assert.match(text, /129 元/)
+  assert.match(text, /在售/)
+
+  // 没勾选时按钮禁用；勾上后可用。
+  assert.equal(roleElements(mounted.render(), 'items-polish')[0].props.disabled, true)
+  roleNodes(mounted.render(), 'item-pick')[0].props.onChange({ target: { checked: true } })
+  mounted.render()
+  assert.equal(roleElements(mounted.render(), 'items-polish')[0].props.disabled, false)
+
+  roleElements(mounted.render(), 'items-polish')[0].props.onClick()
+  assert.match(toText(mounted.render()), /确认擦亮/)
+  assert.equal(calls.some((call) => call.endpoint === 'batch.enqueue'), false)
+  roleElements(mounted.render(), 'items-polish')[0].props.onClick()
+  await settle()
+
+  const enqueues = calls.filter((call) => call.endpoint === 'batch.enqueue')
+  assert.equal(enqueues.length, 1)
+  assert.equal(enqueues[0].payload.confirm, true)
+  assert.equal(enqueues[0].payload.items.length, 1)
+  assert.equal(enqueues[0].payload.items[0].kind, 'polish')
+  assert.equal(enqueues[0].payload.items[0].payload.itemId, '50023914')
+  assert.equal(enqueues[0].payload.items[0].payload.accountId, '2206569289277')
+  // 幂等键带日期：同一天重复点不会把同一件商品塞两遍队列。
+  assert.match(enqueues[0].payload.items[0].dedupeKey, /^polish:50023914:\d{4}-\d{2}-\d{2}$/)
+  assert.match(toText(mounted.render()), /已入队 1 条擦亮任务/)
+})
+
+test('采集行情简报：选中商家后按 sellerId 拉 market.brief，价格带与建议价原样渲染', async () => {
+  const replies = daemonReplies()
+  replies['sellers.list'] = { ok: true, value: [{ sellerId: '7788', nick: '某商家', storedCount: 2 }] }
+  replies['seller.items'] = { ok: true, value: { sellerId: '7788', total: 0, items: [] } }
+  replies['market.brief'] = {
+    ok: true,
+    value: {
+      sampleSize: 2,
+      brief: {
+        sampleSize: 2,
+        priceCents: { p25: 100, p50: 200, p75: 300, min: 90, max: 400 },
+        titleLength: { min: 3, max: 9, avg: 6 }, titleSegmentsAvg: 2, descSentencesAvg: 3,
+        ctaRatio: 0.5, bracketTagRatio: 0, imageCountAvg: 4,
+        imageAspect: { square: 1, portrait: 1, landscape: 0, mixed: 0, unknown: 0 },
+      },
+      priceSuggestion: { lowCents: 150, suggestedCents: 200, highCents: 350, basis: 'condition=like-new；anchor=p50 200 分' },
+      keywords: [{ word: '笔记', count: 3 }],
+    },
+  }
+  const { connection, calls } = createFakeConnection(replies)
+  const mounted = mountPanel({ connection })
+  const initial = await snapshotText(mounted, mounted.openTab('采集'))
+
+  // 没选商家就不查行情（面板不猜你要看谁）。
+  assert.match(initial, /先在上面点一个商家/)
+  assert.equal(calls.some((call) => call.endpoint === 'market.brief'), false)
+
+  roleElements(mounted.render(), 'reference-seller')[0].props.onClick()
+  // 假 React 是惰性渲染：先走一遍树让 MarketBriefBlock 拿到新 sellerId，再 flush 它注册的 effect。
+  toText(mounted.render())
+  mounted.flush()
+  await settle()
+  const briefCalls = calls.filter((call) => call.endpoint === 'market.brief')
+  assert.equal(briefCalls.length, 1)
+  assert.equal(briefCalls[0].payload.sellerId, '7788')
+  assert.equal(briefCalls[0].payload.condition, 'like-new')
+
+  const text = toText(mounted.render())
+  assert.match(text, /行情简报/)
+  assert.match(text, /P25 1 元/)
+  assert.match(text, /1\.50 元 ~ 3\.50 元（建议 2 元）/)
+  assert.match(text, /笔记\(3\)/)
+  assert.match(text, /定价依据：condition=like-new/)
 })

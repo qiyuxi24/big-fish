@@ -14,6 +14,7 @@ import type { AccountStateStore } from './account-state.ts'
 import type { AccountVerifier } from './account-session.ts'
 import { importAccountFromChrome } from './accounts.ts'
 import { loginAndSave } from './login.ts'
+import type { ManagedBrowser } from './managed-browser.ts'
 import type {
   ActivateAccountHandler,
   ImportAccountHandler,
@@ -33,7 +34,13 @@ export interface AccountHandlerDeps {
   lifecycle: AccountLifecycle
   /** 导入/登录/退出后刷新 /status 的账号快照（status 是同步接口）。 */
   refreshAccounts: () => Promise<string[]>
-  /** 扫码登录自起浏览器时用的独立 profile 目录；不传则用 login.ts 的默认值。 */
+  /**
+   * 托管浏览器：扫码登录/导入/发布共用的那个实例。
+   * 有它时「扫码登录」复用它并**保留**窗口（会话由这个真浏览器续期）；
+   * 没有它（CLI/测试）就退回 login.ts 的「自起一个、用完关掉」。
+   */
+  browser?: ManagedBrowser | undefined
+  /** 没有托管浏览器时，扫码自起浏览器用的独立 profile 目录。 */
   browserProfileDir?: string | undefined
   logger: Logger
   now?: (() => number) | undefined
@@ -65,11 +72,13 @@ export function createAccountHandlers(deps: AccountHandlerDeps): AccountHandlers
       })
     },
     importAccount: async (input) => {
+      // 默认读托管浏览器：它就是扫码登录用的那个窗口，刚登完立刻「导入」读到的必然是同一份登录态。
+      const port = input.port ?? deps.browser?.port
       const imported = await importAccountFromChrome({
         credentials,
         ...(now === undefined ? {} : { now }),
         ...(input.accountId === undefined ? {} : { accountId: input.accountId }),
-        ...(input.port === undefined ? {} : { port: input.port }),
+        ...(port === undefined ? {} : { port }),
       })
       // /status 的账号列表是启动时快照；导入后立刻刷新，概览面板才不会显示旧列表。
       await refreshAccounts()
@@ -87,15 +96,28 @@ export function createAccountHandlers(deps: AccountHandlerDeps): AccountHandlers
     },
     // 扫码登录与导入共用 CredentialStore，只是多了「开页面 + 等扫码」的轮询。
     loginAccount: async (input) => {
+      const browser = deps.browser
+      // 没显式给端口 = 走托管浏览器：复用/拉起同一个实例，并且**不关**它——
+      // 会话要靠这个真浏览器续期，关掉就等于把登录态的最后一条命根子掐了。
+      const keepBrowser = browser !== undefined && input.port === undefined
+      const port = input.port ?? browser?.port
       const logged = await loginAndSave({
         credentials,
-        ...(deps.browserProfileDir === undefined ? {} : { browserProfileDir: deps.browserProfileDir }),
+        ...(browser === undefined ? {} : { browserProfileDir: browser.profileDir }),
+        ...(keepBrowser && browser !== undefined
+          ? {
+              ensureBrowser: async (): Promise<() => Promise<void>> => {
+                await browser.ensure()
+                return async (): Promise<void> => {}
+              },
+            }
+          : {}),
         // 自起浏览器关不掉只是收尾噪音，记一条 warn 即可，不能盖住登录结果。
         onWarn: (message: string): void => {
           logger.warn(message)
         },
         ...(now === undefined ? {} : { now }),
-      }, input)
+      }, port === undefined ? input : { ...input, port })
       await refreshAccounts()
       try {
         await lifecycle.activateIfEmpty(logged.accountId)

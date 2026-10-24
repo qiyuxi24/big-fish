@@ -162,6 +162,12 @@ describe('createSellerCollector', () => {
     assert.equal(first.imageCount, 2)
     assert.equal(first.categoryId, '50023914')
     assert.equal(first.browseCount, 12)
+    // 结构特征：fixture 的图只有 url（没宽高）→ 比例 unknown；标题 3 段、描述 1 句。
+    assert.equal(first.imageFeatures?.count, 2)
+    assert.equal(first.imageFeatures?.aspect, 'unknown')
+    assert.equal(first.imageFeatures?.measured, 0)
+    assert.equal(first.copyFeatures?.titleSegments, 3)
+    assert.equal(first.copyFeatures?.descSentences, 1)
     // 红线：描述与图片地址都不落库。
     assert.equal('desc' in first, false)
     assert.equal(JSON.stringify(first).includes('img.example'), false)

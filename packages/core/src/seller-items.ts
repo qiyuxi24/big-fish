@@ -12,6 +12,19 @@
 import type { StatementSync } from 'node:sqlite'
 
 import { fail, toXianyuError } from './errors.ts'
+import { assertCopyFeatures, assertImageFeatures, decodeFeatureColumn } from './seller-features.ts'
+import type { SellerItemCopyFeatures, SellerItemImageFeatures } from './seller-features.ts'
+import {
+  assertCents,
+  assertCount,
+  assertFlag,
+  assertId,
+  assertLimit,
+  assertTimestamp,
+  assertTitle,
+  optionalCents,
+  optionalText,
+} from './seller-item-validate.ts'
 import {
   asSqlRow,
   readSqlNumber,
@@ -67,6 +80,10 @@ export interface SellerItemRecord {
   /** 发布时间（毫秒）。 */
   publishedAt?: number
   collectedAt: number
+  /** 文案结构特征（不含原文）；采集时没算就缺省。 */
+  copyFeatures?: SellerItemCopyFeatures
+  /** 主图构成特征（不含地址）；采集时没算就缺省。 */
+  imageFeatures?: SellerItemImageFeatures
 }
 
 /** 写商品快照的入参；collectedAt 缺省用当前时间。 */
@@ -85,6 +102,8 @@ export interface SellerItemInput {
   soldCount?: number
   publishedAt?: number
   collectedAt?: number
+  copyFeatures?: SellerItemCopyFeatures
+  imageFeatures?: SellerItemImageFeatures
 }
 
 /** 采集结果仓储；daemon 只依赖这个接口，不直接拼 SQL。 */
@@ -93,10 +112,20 @@ export interface SellerRepository {
   saveItem(input: SellerItemInput): SellerItemRecord
   /** 某商家的商品快照，最近采集在前；limit 缺省 200、上限 500。 */
   listItems(sellerId: string, limit?: number): SellerItemRecord[]
+  /** 某个类目的商品快照（跨商家），最近采集在前；limit 缺省 200、上限 500。 */
+  listItemsByCategory(categoryId: string, limit?: number): SellerItemRecord[]
+  /** 全库商品快照，可按类目筛，最近采集在前；limit 缺省 200、上限 500。 */
+  listAllItems(filter?: SellerItemListFilter): SellerItemRecord[]
   /** 某商家的商品数（不给 sellerId 时为全库）。 */
   countItems(sellerId?: string): number
   /** 已采集过的商家，最近采集在前。 */
   listProfiles(limit?: number): SellerProfileRecord[]
+}
+
+/** listAllItems 的筛选条件：都可不给（都不给 = 全库，按采集时间倒序）。 */
+export interface SellerItemListFilter {
+  categoryId?: string
+  limit?: number
 }
 
 export interface SellerRepositoryOptions {
@@ -105,19 +134,14 @@ export interface SellerRepositoryOptions {
   now?: () => number
 }
 
-const DEFAULT_LIST_LIMIT = 200
-const MAX_LIST_LIMIT = 500
-const MAX_ID_CHARS = 64
-const MAX_TITLE_CHARS = 200
-const ID_PATTERN = /^[A-Za-z0-9._:-]{1,64}$/
-
 const ITEM_COLUMNS = `item_id, seller_id, account_id, title, price_cents, original_price_cents,
-  category_id, image_count, browse_count, want_count, collect_count, sold_count, published_at, collected_at`
+  category_id, image_count, browse_count, want_count, collect_count, sold_count, published_at, collected_at,
+  copy_features, image_features`
 
 const PROFILE_COLUMNS = 'seller_id, nick, city, item_count, registered_year, sold_count, is_self, collected_at'
 
 const SQL = {
-  upsertItem: `INSERT INTO seller_items (${ITEM_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  upsertItem: `INSERT INTO seller_items (${ITEM_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(item_id) DO UPDATE SET
       seller_id = excluded.seller_id,
       account_id = excluded.account_id,
@@ -131,9 +155,15 @@ const SQL = {
       collect_count = excluded.collect_count,
       sold_count = excluded.sold_count,
       published_at = excluded.published_at,
-      collected_at = excluded.collected_at`,
+      collected_at = excluded.collected_at,
+      copy_features = excluded.copy_features,
+      image_features = excluded.image_features`,
   selectItem: `SELECT ${ITEM_COLUMNS} FROM seller_items WHERE item_id = ?`,
   listBySeller: `SELECT ${ITEM_COLUMNS} FROM seller_items WHERE seller_id = ?
+    ORDER BY collected_at DESC, item_id ASC LIMIT ?`,
+  listByCategory: `SELECT ${ITEM_COLUMNS} FROM seller_items WHERE category_id = ?
+    ORDER BY collected_at DESC, item_id ASC LIMIT ?`,
+  listAll: `SELECT ${ITEM_COLUMNS} FROM seller_items
     ORDER BY collected_at DESC, item_id ASC LIMIT ?`,
   countAll: 'SELECT COUNT(*) AS total FROM seller_items',
   countBySeller: 'SELECT COUNT(*) AS total FROM seller_items WHERE seller_id = ?',
@@ -161,6 +191,8 @@ export function createSellerRepository(options: SellerRepositoryOptions): Seller
     upsertItem: store.db.prepare(SQL.upsertItem),
     selectItem: store.db.prepare(SQL.selectItem),
     listBySeller: store.db.prepare(SQL.listBySeller),
+    listByCategory: store.db.prepare(SQL.listByCategory),
+    listAll: store.db.prepare(SQL.listAll),
     countAll: store.db.prepare(SQL.countAll),
     countBySeller: store.db.prepare(SQL.countBySeller),
     upsertProfile: store.db.prepare(SQL.upsertProfile),
@@ -171,6 +203,8 @@ export function createSellerRepository(options: SellerRepositoryOptions): Seller
     saveProfile: (input) => saveProfile(store, sql, now, input),
     saveItem: (input) => saveItem(store, sql, now, input),
     listItems: (sellerId, limit) => listItems(sql, sellerId, limit),
+    listItemsByCategory: (categoryId, limit) => listItemsByCategory(sql, categoryId, limit),
+    listAllItems: (filter) => listAllItems(sql, filter),
     countItems: (sellerId) => countItems(sql, sellerId),
     listProfiles: (limit) => listProfiles(sql, limit),
   }
@@ -181,6 +215,8 @@ interface Sql {
   upsertItem: StatementSync
   selectItem: StatementSync
   listBySeller: StatementSync
+  listByCategory: StatementSync
+  listAll: StatementSync
   countAll: StatementSync
   countBySeller: StatementSync
   upsertProfile: StatementSync
@@ -204,11 +240,15 @@ function saveItem(store: Store, sql: Sql, now: () => number, input: SellerItemIn
   const soldCount = assertCount(input.soldCount, 'soldCount')
   const publishedAt = input.publishedAt === undefined ? undefined : assertTimestamp(input.publishedAt, 'publishedAt')
   const collectedAt = input.collectedAt === undefined ? now() : assertTimestamp(input.collectedAt, 'collectedAt')
+  const copyFeatures = input.copyFeatures === undefined ? undefined : assertCopyFeatures(input.copyFeatures)
+  const imageFeatures = input.imageFeatures === undefined ? undefined : assertImageFeatures(input.imageFeatures)
   return withTransaction(store.db, () => {
     sql.upsertItem.run(
       itemId, sellerId, accountId, title, priceCents, originalPriceCents ?? null,
       categoryId ?? null, imageCount, browseCount ?? null, wantCount ?? null,
       collectCount ?? null, soldCount ?? null, publishedAt ?? null, collectedAt,
+      copyFeatures === undefined ? null : JSON.stringify(copyFeatures),
+      imageFeatures === undefined ? null : JSON.stringify(imageFeatures),
     )
     return readItem(sql.selectItem.get(itemId))
   })
@@ -237,6 +277,26 @@ function listItems(sql: Sql, sellerId: string, limit?: number): SellerItemRecord
   const seller = assertId(sellerId, 'sellerId')
   const size = assertLimit(limit)
   return runSql(() => sql.listBySeller.all(seller, size)).map((row) => readItem(row))
+}
+
+function listItemsByCategory(sql: Sql, categoryId: string, limit?: number): SellerItemRecord[] {
+  const category = assertId(categoryId, 'categoryId')
+  const size = assertLimit(limit)
+  return runSql(() => sql.listByCategory.all(category, size)).map((row) => readItem(row))
+}
+
+function listAllItems(sql: Sql, filter?: SellerItemListFilter): SellerItemRecord[] {
+  if (filter !== undefined && (typeof filter !== 'object' || filter === null)) {
+    fail('VALIDATION', 'listAllItems 的筛选参数必须是对象')
+  }
+  const category = filter?.categoryId === undefined ? undefined : assertId(filter.categoryId, 'categoryId')
+  const size = assertLimit(filter?.limit)
+  // 两个分支各自参数化：不给类目时走 listAll，给类目时复用 listByCategory。
+  // 不拼 SQL 字符串——拼接既会被类目 id 注入，也享受不到语句缓存。
+  const rows = category === undefined
+    ? runSql(() => sql.listAll.all(size))
+    : runSql(() => sql.listByCategory.all(category, size))
+  return rows.map((row) => readItem(row))
 }
 
 function countItems(sql: Sql, sellerId?: string): number {
@@ -270,6 +330,8 @@ function readItem(raw: unknown): SellerItemRecord {
     collectCount: readSqlOptionalNumber(row, 'collect_count'),
     soldCount: readSqlOptionalNumber(row, 'sold_count'),
     publishedAt: readSqlOptionalNumber(row, 'published_at'),
+    copyFeatures: decodeFeatureColumn(readSqlOptionalText(row, 'copy_features'), 'copy_features', assertCopyFeatures),
+    imageFeatures: decodeFeatureColumn(readSqlOptionalText(row, 'image_features'), 'image_features', assertImageFeatures),
   })
 }
 
@@ -297,72 +359,6 @@ function withOptional<T extends object>(base: T, optional: Record<string, unknow
     if (value !== undefined) out[key] = value
   }
   return out as T
-}
-
-function assertId(value: unknown, field: string): string {
-  if (typeof value !== 'string') fail('VALIDATION', field + ' 必须是字符串')
-  const text = value.trim()
-  if (text.length === 0) fail('VALIDATION', field + ' 不能为空')
-  if (text.length > MAX_ID_CHARS || !ID_PATTERN.test(text)) {
-    fail('VALIDATION', field + ' 只能由字母、数字、.、_、:、- 组成且长度 1..' + MAX_ID_CHARS)
-  }
-  return text
-}
-
-function assertTitle(value: unknown): string {
-  if (typeof value !== 'string') fail('VALIDATION', 'title 必须是字符串')
-  const text = value.trim()
-  if (text.length === 0) fail('VALIDATION', 'title 不能为空')
-  if (text.length > MAX_TITLE_CHARS) fail('VALIDATION', 'title 不能超过 ' + MAX_TITLE_CHARS + ' 个字符')
-  return text
-}
-
-function assertCents(value: unknown, field: string): number {
-  const cents = assertCount(value, field)
-  if (cents === undefined) fail('VALIDATION', field + ' 必须是整数分')
-  return cents
-}
-
-function optionalCents(value: unknown, field: string): number | undefined {
-  return value === undefined ? undefined : assertCents(value, field)
-}
-
-/** 计数类字段：非负安全整数；undefined 表示平台没给，不写成 0。 */
-function assertCount(value: unknown, field: string): number | undefined {
-  if (value === undefined || value === null) return undefined
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
-    fail('VALIDATION', field + ' 必须是非负安全整数：' + String(value).slice(0, 40))
-  }
-  return value
-}
-
-function assertTimestamp(value: unknown, field: string): number {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
-    fail('VALIDATION', field + ' 必须是整数毫秒：' + String(value).slice(0, 40))
-  }
-  return value
-}
-
-function assertFlag(value: unknown): boolean {
-  if (typeof value !== 'boolean') fail('VALIDATION', 'isSelf 必须是布尔')
-  return value
-}
-
-function optionalText(value: unknown): string | undefined {
-  if (value === undefined || value === null) return undefined
-  if (typeof value !== 'string') fail('VALIDATION', '文本字段必须是字符串')
-  const text = value.trim()
-  if (text.length === 0) return undefined
-  if (text.length > MAX_TITLE_CHARS) fail('VALIDATION', '文本字段不能超过 ' + MAX_TITLE_CHARS + ' 个字符')
-  return text
-}
-
-function assertLimit(limit: number | undefined): number {
-  if (limit === undefined) return DEFAULT_LIST_LIMIT
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_LIST_LIMIT) {
-    fail('VALIDATION', 'limit 必须在 1..' + MAX_LIST_LIMIT + ' 之间：' + String(limit))
-  }
-  return limit
 }
 
 /** 把 node:sqlite 的运行时错误统一收敛成 STORAGE（例如连接已关闭）。 */

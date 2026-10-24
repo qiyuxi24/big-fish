@@ -14,7 +14,7 @@
       const pickedSpecs = specFields.filter(field => fieldPicked(field, form)).length
       return h('div', null,
         h('div', { style: S.section },
-          h('div', { style: S.sectionTitle }, '① 品类（决定问哪些信息）'),
+          h('div', { style: S.sectionTitle }, '品类'),
           h('div', { style: S.chipRow }, ...template.data.categories.map(category => h('button', {
             key: category.id, type: 'button', 'data-role': 'copy-category', 'data-category': category.id,
             'aria-pressed': category.id === form.categoryId,
@@ -22,35 +22,47 @@
             style: category.id === form.categoryId ? { ...S.chip, ...S.chipActive } : S.chip,
           }, category.label))),
           template.phase === 'offline'
-            ? h('div', { style: S.warnText }, '品类模板没拉到（daemon 未启动或插件是旧版）：先用通用字段，规格等连上后台再填。')
-            : h('div', { style: S.sectionHint }, '已选 ' + String(pickedSpecs) + '/' + String(specFields.length) + ' 项规格；未勾选的字段不会出现在提示词里。')),
+            ? h('div', { style: S.warnText }, '品类模板没拉到：先用通用字段。')
+            : h('div', { style: S.sectionHint }, '已选 ' + String(pickedSpecs) + '/' + String(specFields.length) + ' 项规格')),
         h('div', { style: S.section },
-          h('div', { style: S.sectionTitle }, '② 勾选要写进文案的信息'),
+          h('div', { style: S.sectionTitle }, '写进文案的信息'),
           h('div', { style: S.fieldRow }, ...rows(commonFields)),
           specFields.length === 0 ? null : h('div', { style: S.fieldRow }, ...rows(specFields)),
           h('div', { style: S.buttonRow },
             h('button', { type: 'button', 'data-role': 'copy-pick-all', onClick: () => props.onPickAll(), style: S.button }, '全选'),
-            h('button', { type: 'button', 'data-role': 'copy-clear', onClick: () => props.onClear(), style: S.button }, '清空勾选'))),
+            h('button', { type: 'button', 'data-role': 'copy-clear', onClick: () => props.onClear(), style: S.button }, '清空'))),
         h('div', { style: S.section },
-          h('div', { style: S.sectionTitle }, '③ 文案风格（skill 注入）'),
+          h('div', { style: S.sectionTitle }, '文案风格'),
           h(StylePicker, { styleId: form.styleId, onStyle: props.onStyle })),
         h('div', { style: S.section },
           h('div', { style: S.buttonRow },
             h('button', {
               type: 'button', 'data-role': 'copy-submit', disabled: !ready,
-              title: ready ? '按当前品类/勾选/风格组装 xy_copy_plan 请求' : '先填商品名与价格（元）',
-              onClick: () => props.onSubmit(), style: ready ? S.primary : S.button,
+              title: ready ? '按当前品类/勾选/风格组装 xy_copy_plan 参数' : '先填商品名与价格（元）',
+              onClick: () => props.onSubmit(), style: ready ? S.primary : S.offButton,
             }, '生成文案请求'),
-            h('span', { style: S.sectionHint }, ready ? '生成的是工具参数，不是文案；拿到后由 agent 按 skill 出稿。' : '商品名与价格都填了才能生成（价格用于校验，不写进标题）。')),
-          h('div', { style: S.sectionHint }, '图片：面板暂不能选文件（素材库接入前在对话里给本机绝对路径）；出稿后先 dry-run，再让 agent 跑 xianyu-listing-audit 自检。'),
+            h('span', { style: S.sectionHint }, ready ? '产出的是工具参数，不是文案' : '填商品名与价格后可生成')),
           submitted ? h(CopyPlanPreview, { request }) : null))
     }
+    /** 面板 tab 与内容区的 DOM id：tabpanel 与 tab 用 aria-labelledby / aria-controls 双向关联。 */
+    const tabDomId = id => 'bigfish-tab-' + id
+    const tabPanelId = id => 'bigfish-panel-' + id
+    /** tab 栏：按 PANEL_TABS 的 group 分段，组名以小字前置（侧边栏窄时整条换行，不裁切）。 */
     function TabBar({ active, onSelect }) {
+      const groups = []
+      for (const tab of PANEL_TABS) {
+        const last = groups[groups.length - 1]
+        if (last === undefined || last.group !== tab.group) groups.push({ group: tab.group, tabs: [tab] })
+        else last.tabs.push(tab)
+      }
       return h('div', { role: 'tablist', 'aria-label': 'BigFish 面板分区', style: S.tabBar },
-        ...PANEL_TABS.map(tab => h('button', {
-          key: tab.id, type: 'button', role: 'tab', 'data-role': 'panel-tab',
-          'aria-selected': tab.id === active, onClick: () => onSelect(tab.id),
-          style: tab.id === active ? { ...S.tab, ...S.tabActive } : S.tab,
-        }, tab.label)))
+        ...groups.map(entry => h('div', { key: entry.group, style: S.tabGroup, 'data-role': 'panel-tab-group', 'data-group': entry.group },
+          h('span', { style: S.tabGroupLabel, 'aria-hidden': 'true' }, entry.group),
+          ...entry.tabs.map(tab => h('button', {
+            key: tab.id, type: 'button', role: 'tab', id: tabDomId(tab.id), 'aria-controls': tabPanelId(tab.id),
+            'data-role': 'panel-tab', 'data-tab': tab.id,
+            'aria-selected': tab.id === active, onClick: () => onSelect(tab.id),
+            style: tab.id === active ? { ...S.tab, ...S.tabActive } : S.tab,
+          }, tab.label)))))
     }
 

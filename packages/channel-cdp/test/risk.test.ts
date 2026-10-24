@@ -158,6 +158,26 @@ test('withRiskGuards：步骤执行后才出现风控 → 步骤成功也要抛 
   await assert.rejects(() => guarded[0]!.run(asPage(page), makeContext()), /遇到风控/)
 })
 
+test('withRiskGuards：终态步骤成功后出现风控 → 不把成功翻成失败', async () => {
+  // 2026-10-23 真机：itemId 1095534136427 已上架，但商品页被 punish 弹层盖住；
+  // 终态步骤关掉 post 检查，只要日志里留下提示，不能报 RISK_CONTROL 失败。
+  const page = new FakeRiskPage()
+  const logs: string[] = []
+  const terminal: PublishStep = {
+    name: '提交并验证',
+    postRiskCheck: false,
+    run: async () => {
+      page.url = 'https://www.goofish.com/item?id=1095534136427'
+      page.bodyText = '请拖动下方滑块完成验证'
+      page.elementHits = ['iframe[src*="punish"]']
+    },
+  }
+  const guarded = withRiskGuards([terminal])
+  await guarded[0]!.run(asPage(page), makeContext(logs))
+  assert.ok(logs.some((line) => line.includes('不影响已生成的上架')))
+  assert.ok(!logs.some((line) => line.includes('遇到风控')))
+})
+
 test('withRiskGuards：步骤抛普通错误但页面已是风控页 → 风控原因优先', async () => {
   const page = new FakeRiskPage()
   const guarded = withRiskGuards([step('提交并验证', async () => {

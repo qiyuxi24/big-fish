@@ -17,16 +17,35 @@ import { DaemonError } from './client.js'
 import { CONDITIONS, COPY_STYLE_IDS, planCopy } from './copy.js'
 import {
   formatAccountLine,
+  formatMarketBrief,
   formatReferenceReport,
   formatStatus,
   formatTaskLine,
   formatTime,
   readAccountSummary,
   readImportedAccount,
+  readMarketBrief,
   readReferenceReport,
+  toCopyMarketHints,
 } from './tool-format.js'
 import { NO_PARAMS, TASK_KINDS, TASK_STATES, taskEnqueueIsWrite, textTool } from './tool-kit.js'
 import { publishToolSpecs } from './tool-specs-publish.js'
+
+/**
+ * 文案请求可选挂一份「市场简报」：给了类目或商家就去 daemon 聚合一次（只读）。
+ *
+ * 为什么失败直接抛、不降级成「没有参考也行」：简报是这条链路定价与结构的依据，
+ * 悄悄跳过会让用户拿一份凭空写出来的价格去发布。
+ */
+async function readCopyMarket(client, args) {
+  /** @type {Record<string, unknown>} */
+  const query = {}
+  if (args.marketCategoryId !== undefined) query.categoryId = args.marketCategoryId
+  if (args.marketSellerId !== undefined) query.sellerId = args.marketSellerId
+  if (query.categoryId === undefined && query.sellerId === undefined) return undefined
+  query.condition = args.condition
+  return toCopyMarketHints(readMarketBrief(await client.marketBrief(query)))
+}
 
 /**
  * 构造全部工具规格（定义 + 访问级别 + 审批理由），交给 tool-middleware 统一注册与挂门禁。
@@ -272,13 +291,17 @@ export function buildTools(deps) {
           imagePaths: { type: 'array', maxItems: 9, items: { type: 'string' }, description: '本机图片绝对路径；面板入口通常暂缺，提示词会标为待补。' },
           variantCount: { type: 'integer', minimum: 1, maximum: 3, description: '备选套数，默认 1。' },
           usedAiImages: { type: 'boolean', description: '是否含 AI 生成图；true 时描述第 3 段必须声明。' },
+          marketCategoryId: { type: 'string', minLength: 1, maxLength: 64, description: '可选：把该闲鱼类目的市场简报（价格带/结构/高频词/建议价）写进提示词；与 marketSellerId 二选一。' },
+          marketSellerId: { type: 'string', minLength: 1, maxLength: 20, description: '可选：按已采集的某个商家出简报；与 marketCategoryId 二选一。' },
         },
         required: ['productName', 'condition'],
         anyOf: [{ required: ['priceCents'] }, { required: ['priceYuan'] }],
         additionalProperties: false,
       },
+      // 带类目/商家时要先读 daemon 的市场简报，因此 handler 是异步的；纯函数逻辑仍在 copy.js。
       async handler(args) {
-        return planCopy(args).text
+        const market = await readCopyMarket(client, args)
+        return planCopy(market === undefined ? args : { ...args, market }).text
       },
     }),
     textTool({
@@ -302,6 +325,31 @@ export function buildTools(deps) {
         if (args.itemIds !== undefined) input.itemIds = args.itemIds
         if (args.sellerId !== undefined) input.sellerId = args.sellerId
         return formatReferenceReport(readReferenceReport(await client.collectReferences(input)))
+      },
+    }),
+    textTool({
+      name: 'xy_market_brief',
+      access: 'read',
+      description: '市场简报：把已入库的他人商品快照聚合成价格带（p25/p50/p75）、按成色的建议价、标题/描述结构、主图规格与高频词。只读、不触达闲鱼、不下载图片、不含他人原句。先用 xy_reference_collect 或面板「采集」把人家的在售商品入库，再来取简报；之后用 xy_copy_plan 带 marketCategoryId/marketSellerId 把简报写进文案提示词。',
+      parameters: {
+        type: 'object',
+        properties: {
+          categoryId: { type: 'string', minLength: 1, maxLength: 64, description: '只看该闲鱼类目（seller_items.category_id）；不传则看全部已采集商品。' },
+          sellerId: { type: 'string', minLength: 1, maxLength: 20, description: '只看该商家的商品；与 categoryId 同时给时两个条件都要满足。' },
+          limit: { type: 'integer', minimum: 1, maximum: 500, description: '最多取多少条样本，默认 200。' },
+          condition: { type: 'string', enum: CONDITIONS, description: '你的商品成色；给了才出建议价（同一市场里成色不同价格不同）。' },
+        },
+        additionalProperties: false,
+      },
+      timeoutMs: 20_000,
+      async handler(args) {
+        /** @type {Record<string, unknown>} */
+        const input = {}
+        if (args.categoryId !== undefined) input.categoryId = args.categoryId
+        if (args.sellerId !== undefined) input.sellerId = args.sellerId
+        if (args.limit !== undefined) input.limit = args.limit
+        if (args.condition !== undefined) input.condition = args.condition
+        return formatMarketBrief(readMarketBrief(await client.marketBrief(input)))
       },
     }),
     // 发布类工具（draft / batch）在 tool-specs-publish.js：默认 dry-run，显式 enqueue 才要审批。

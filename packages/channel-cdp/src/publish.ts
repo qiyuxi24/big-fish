@@ -29,6 +29,7 @@ import {
 import { pickAddressOption } from './address.ts'
 import { assertCategoryPublishable, stepSelectCategory } from './category.ts'
 import { readFormFieldText, waitFormFieldText } from './form.ts'
+import { findProblemHint, shot } from './report.ts'
 import type { DomPage } from './dom.ts'
 import type { CdpPage } from './page.ts'
 import { runRiskGuardedSteps } from './risk.ts'
@@ -176,7 +177,12 @@ export function createPublishSteps(draft: PublishDraft, options: PublishOptions 
   }
   if (options.dryRun === false) {
     steps.push({ name: '必填项预检', run: (page, ctx) => stepCheckRequired(page, ctx, options) })
-    steps.push({ name: '提交并验证', run: (page, ctx) => stepSubmitAndVerify(page, ctx, selectors, options) })
+    // postRiskCheck: false —— 跳转到商品页后常被风控弹层覆盖，但发布已生效（见 PublishStep.postRiskCheck）。
+    steps.push({
+      name: '提交并验证',
+      postRiskCheck: false,
+      run: (page, ctx) => stepSubmitAndVerify(page, ctx, selectors, options),
+    })
   } else {
     steps.push({ name: 'dry-run 收尾', run: (page, ctx) => stepDryRun(page, ctx, options) })
   }
@@ -370,23 +376,6 @@ async function stepDryRun(page: CdpPage, ctx: PublishContext, options: PublishOp
 async function pageHasSuccessText(page: DomPage): Promise<boolean> {
   const text = await readBodyText(page)
   return text.includes('发布成功')
-}
-
-/** 从页面文本里摘一条可能的原因（只用于报错提示，不参与成功判定）。 */
-function findProblemHint(text: string): string | undefined {
-  const lines = text
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line !== '')
-  const keywords = ['请选择', '请填写', '不能为空', '暂不支持', '扫码', '失败', '错误']
-  const hit = lines.find((line) => keywords.some((keyword) => line.includes(keyword)))
-  return hit === undefined ? undefined : hit.slice(0, 80)
-}
-
-async function shot(page: CdpPage, options: PublishOptions, name: string): Promise<void> {
-  if (options.screenshotsDir === undefined) return
-  const target = options.screenshotsDir + '/' + name + '.png'
-  await page.screenshot(target)
 }
 
 function isAbsolutePath(path: string): boolean {

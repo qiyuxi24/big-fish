@@ -14,6 +14,7 @@
  * @module @bigfish/plugin-ops/copy
  */
 import { DaemonError } from './client.js'
+import { formatMoney, priceSpreadNote } from './tool-format.js'
 
 /** 成色枚举，与 .agents/skills/xianyu-listing-copy/references/input-schema.json 对齐。 */
 export const CONDITIONS = ['new', 'like-new', 'light-wear', 'visible-wear', 'flawed']
@@ -186,6 +187,43 @@ function readSpecs(record) {
 }
 
 /**
+ * 市场简报（可选）：来自已采集的他人商品统计，用来定结构/定价，不是「事实」。
+ * 只做窄化与截断，不校验数值合理性——上游 daemon 已经算过一遍，这里防的是坏 JSON。
+ */
+function readMarketHints(value) {
+  if (value === undefined) return undefined
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw invalid('market 必须是 JSON 对象（xy_market_brief 的输出）')
+  }
+  const number = raw => (typeof raw === 'number' && Number.isFinite(raw) ? raw : 0)
+  const price = value.priceCents ?? {}
+  const suggestion = value.priceSuggestion
+  const keywords = Array.isArray(value.keywords) ? value.keywords : []
+  return {
+    sampleSize: number(value.sampleSize),
+    // min/max 也要留：跨度大时提示「建议价只当量级参考」（同品类混着电子版与实体的常见情况）。
+    priceCents: { p25: number(price.p25), p50: number(price.p50), p75: number(price.p75), min: number(price.min), max: number(price.max) },
+    priceSuggestion: suggestion === null || typeof suggestion !== 'object' || Array.isArray(suggestion)
+      ? undefined
+      : {
+        lowCents: number(suggestion.lowCents),
+        suggestedCents: number(suggestion.suggestedCents),
+        highCents: number(suggestion.highCents),
+        basis: typeof suggestion.basis === 'string' ? suggestion.basis : '',
+      },
+    titleSegmentsAvg: number(value.titleSegmentsAvg),
+    descSentencesAvg: number(value.descSentencesAvg),
+    bracketTagRatio: number(value.bracketTagRatio),
+    ctaRatio: number(value.ctaRatio),
+    imageCountAvg: number(value.imageCountAvg),
+    imageAspect: typeof value.imageAspect === 'string' ? value.imageAspect : '未测',
+    keywords: keywords
+      .filter(word => typeof word === 'string' && word.trim() !== '')
+      .slice(0, 10)
+      .map(word => word.trim()),
+  }
+}
+/**
  * 把工具参数/面板请求校验并归一化成一份 facts。
  * 价格接受 `priceCents`（整数分，优先）或 `priceYuan`（元，字符串/数字）。
  *
@@ -210,6 +248,8 @@ export function buildCopyRequest(raw) {
   // 出售原因/使用时长是 SKILL.md 第 2 段的事实来源：不给就允许模型省略，但不许编。
   const reason = readText(record, 'reason', '出售原因', { max: 200 })
   const usedMonths = readOptionalMonths(record.usedMonths)
+  // 市场参考是可选的：没有简报也要能出提示词（链路第 2 步允许先不采集）。
+  const market = readMarketHints(record.market)
 
   /** @type {Record<string, unknown>} */
   const facts = {
@@ -236,7 +276,7 @@ export function buildCopyRequest(raw) {
   const missing = []
   if (imagePaths === undefined || imagePaths.length === 0) missing.push('imagePaths')
 
-  return { style, facts, missing }
+  return { style, facts, missing, market }
 }
 
 function readPriceCents(value) {
@@ -264,14 +304,46 @@ function readOptionalMonths(value) {
 }
 
 /**
+ * 市场参考段：只给统计与建议价，不给任何他人原文/图片地址（红线：不照抄）。
+ * 没有样本就不渲染，避免提示词里出现一堆 0 让人误读。
+ */
+function renderMarketLines(market) {
+  if (market === undefined || market.sampleSize === 0) return []
+  const lines = ['【市场参考（已采集他人商品的统计：只学结构与价格带，不得照抄原句/原图）】']
+  lines.push(
+    '- 价格带 ' + formatMoney(market.priceCents.p25) + ' ~ ' + formatMoney(market.priceCents.p75) +
+      '，中位 ' + formatMoney(market.priceCents.p50) +
+      '；样本 ' + String(market.sampleSize) + ' 件',
+  )
+  if (market.priceSuggestion !== undefined) {
+    const s = market.priceSuggestion
+    lines.push(
+      '- 建议价 ' + formatMoney(s.suggestedCents) + '（区间 ' + formatMoney(s.lowCents) + ' ~ ' + formatMoney(s.highCents) + '）' +
+        (s.basis === '' ? '' : '：' + s.basis),
+    )
+  }
+  lines.push(
+    '- 结构：标题均 ' + String(market.titleSegmentsAvg) + ' 段、描述均 ' + String(market.descSentencesAvg) + ' 句；' +
+      '带标签 ' + String(Math.round(market.bracketTagRatio * 100)) + '%、含行动号召 ' + String(Math.round(market.ctaRatio * 100)) + '%',
+  )
+  const spread = priceSpreadNote(market.priceCents)
+  if (spread !== null) lines.push('- ' + spread)
+  lines.push('- 图片：均 ' + market.imageCountAvg.toFixed(1) + ' 张，主图以' + market.imageAspect + '为主')
+  if (market.keywords.length > 0) {
+    lines.push('- 高频词（选词参考，别整段照搬）：' + market.keywords.join('、'))
+  }
+  lines.push('- 定价：`priceCents` 仍是事实字段；与建议价偏离超过 30% 时，在 `warnings` 里写一条理由，不要偷偷改价。')
+  return lines
+}
+/**
  * 把归一化结果渲染成可直接喂给 agent 的提示词。
  * 刻意不复述 38 条违禁词：红线由 .agents/skills/xianyu-listing-audit 统一持有，避免两处规则漂移。
  *
- * @param {{style: object, facts: object, missing: string[]}} request - buildCopyRequest 的返回值。
+ * @param {{style: object, facts: object, missing: string[], market?: object}} request - buildCopyRequest 的返回值。
  * @returns {string} 多行提示词。
  */
 export function renderCopyPrompt(request) {
-  const { style, facts, missing } = request
+  const { style, facts, missing, market } = request
   const lines = [
     '【skill】' + SKILL_PATH + '（按 SKILL.md 的步骤 3–5 执行；本段风格约束优先于其中的默认语气）',
     '【语言风格】' + style.id + ' · ' + style.label + ' —— ' + style.summary,
@@ -284,11 +356,15 @@ export function renderCopyPrompt(request) {
   if (style.avoid.length > 0) {
     lines.push('', '【这个风格最容易写油的地方】', ...style.avoid.map(item => '- ' + item))
   }
+  const marketLines = renderMarketLines(market)
   lines.push(
     '',
     '【事实（唯一允许的信息来源，不得编造/推断）】',
     JSON.stringify(facts, null, 2),
     '',
+    ...marketLines,
+    // 有市场参考段时补一个空行，否则「定价」那条会跟【输入契约】粘在一起。
+    ...(marketLines.length > 0 ? [''] : []),
     '【输入契约】' + INPUT_SCHEMA,
     '【输出契约】' + OUTPUT_SCHEMA + '：只输出纯 JSON，不加 markdown 围栏与解释。',
     '【红线】按 .agents/skills/xianyu-listing-audit 自检；违规就换词，不删事实。',
@@ -304,7 +380,7 @@ export function renderCopyPrompt(request) {
  * 一次性完成「校验 + 渲染」，工具与测试共用。
  *
  * @param {unknown} raw - 未校验的输入。
- * @returns {{text: string, request: {style: object, facts: object, missing: string[]}}} 结果。
+ * @returns {{text: string, request: {style: object, facts: object, missing: string[], market?: object}}} 结果。
  */
 export function planCopy(raw) {
   const request = buildCopyRequest(raw)

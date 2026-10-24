@@ -33,7 +33,7 @@ export class DaemonError extends Error {
  * 建客户端。所有方法都返回 data 本体，失败抛 DaemonError。
  *
  * @param {{daemonUrl: string, tokenPath: string, timeoutMs?: number, fetchImpl?: typeof fetch, readFileImpl?: typeof readFile}} options
- * @returns {{request: Function, health: Function, status: Function, listTasks: Function, listEvents: Function, enqueue: Function, taskAction: Function, listItems: Function, listAccounts: Function, importAccount: Function, collectReferences: Function, resolveLink: Function, collectSeller: Function, listSellers: Function, listSellerItems: Function, daemonUrl: string, tokenPath: string}}
+ * @returns {{request: Function, health: Function, status: Function, browserStatus: Function, listTasks: Function, listEvents: Function, enqueue: Function, taskAction: Function, listItems: Function, listAccounts: Function, importAccount: Function, collectReferences: Function, marketBrief: Function, resolveLink: Function, collectSeller: Function, listSellers: Function, listSellerItems: Function, daemonUrl: string, tokenPath: string}}
  */
 export function createDaemonClient(options) {
   const { daemonUrl, tokenPath, timeoutMs = 15_000 } = options
@@ -107,6 +107,8 @@ export function createDaemonClient(options) {
     request,
     health: () => request('/health', { auth: false }),
     status: () => request('/status'),
+    // 托管浏览器（扫码/导入/发布共用）的只读状态：面板用来告诉用户「窗口在不在、端口是多少」。
+    browserStatus: () => request('/browser', { timeoutMs: 5_000 }),
     listTasks: (filter = {}) => {
       const query = new URLSearchParams()
       if (filter.state) query.set('state', String(filter.state))
@@ -142,6 +144,8 @@ export function createDaemonClient(options) {
     importAccount: (input = {}) => request('/accounts/import', { method: 'POST', body: input }),
     // 参考采集是只读统计（最坏 20 件串行，每件一次 mtop 调用），单独放宽超时。
     collectReferences: (input = {}) => request('/reference', { method: 'POST', body: input, timeoutMs: 90_000 }),
+    // 市场简报：把已入库的他人商品快照聚合成价格带/结构/图片规格（只读，不触达闲鱼）。
+    marketBrief: (input = {}) => request('/market/brief', { method: 'POST', body: input, timeoutMs: 20_000 }),
     // —— 采集模块（链接 → 商家商品快照落库）——
     // 纯解析：不联网、不写库；面板「解析」按钮用它把链接换成 sellerId/itemId。
     resolveLink: (link) => request('/resolve', { method: 'POST', body: { link } }),

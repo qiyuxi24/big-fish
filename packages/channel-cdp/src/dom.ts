@@ -194,12 +194,23 @@ export async function fillRichText(page: DomPage, selector: string, value: strin
       message: '富文本填写后回读不一致（' + (label ?? selector) + '）：期望包含「' + probe.slice(0, 20) + '」，实际「' + actual.slice(0, 40) + '」',
     })
   }
+  // 多行还必须回读到换行：编辑器吞掉回车时各段会粘成一行（真机踩过），
+  // 只校验「包含某段文字」会漏掉这种情况。
+  if (lines.length > 1 && !actual.includes('\n')) {
+    throw new XianyuError({
+      code: 'INTERNAL',
+      message: '富文本换行未生效（' + (label ?? selector) + '）：期望 ' + String(lines.length) + ' 行，实际回读「' + actual.slice(0, 40) + '」',
+    })
+  }
 }
 
 /** 在 Input 域按一次回车（富文本换行用）。 */
 async function pressEnter(page: DomPage): Promise<void> {
   const key = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }
-  await page.command('Input.dispatchKeyEvent', { type: 'keyDown', ...key })
+  // keyDown 必须带 text（也就是回车符 \r）才会真的产生换行：不带 text 时只是冒泡一次按键事件，
+  // Lexical 这类编辑器按段落接收输入，收不到字符就等于没换行 —— 2026-10-23 真机
+  // itemId 1093372926298 的「标题与描述首行粘连」就是这个原因。
+  await page.command('Input.dispatchKeyEvent', { type: 'keyDown', text: '\r', unmodifiedText: '\r', ...key })
   await page.command('Input.dispatchKeyEvent', { type: 'keyUp', ...key })
 }
 

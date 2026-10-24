@@ -45,6 +45,7 @@ export type {
   ReferenceSiblingItem,
   ReferenceSummary,
 } from './reference.ts'
+export { analyzeCopyStructure, analyzeImageFeatures } from './features.ts'
 export { parseXianyuLink } from './link.ts'
 export type { XianyuLinkTarget } from './link.ts'
 export type { MtopCallOptions, MtopHttpRequest, MtopHttpResponse, MtopSession, MtopTransport } from './types.ts'

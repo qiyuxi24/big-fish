@@ -12,6 +12,7 @@
  * @module @bigfish/plugin-ops/rpc
  */
 import { listCategoryTemplates } from './category-templates.js'
+import { CONDITIONS } from './copy.js'
 import { startDaemon, stopDaemon } from './daemon-control.js'
 
 /**
@@ -184,6 +185,22 @@ function readReferenceInput(body) {
   }
   if (body.sellerId !== undefined) input.sellerId = readItemId(body.sellerId)
   if (input.itemIds === undefined && input.sellerId === undefined) bad('reference.collect 需要 itemIds 或 sellerId 至少一个')
+  return input
+}
+
+/** 市场简报入参：全是可选过滤条件；上限与 daemon 的 limit 约束一致（1..500）。 */
+function readMarketBriefInput(body) {
+  const input = {}
+  const categoryId = readOptionalString(body, 'categoryId', 64)
+  if (categoryId !== undefined) input.categoryId = categoryId
+  if (body.sellerId !== undefined) input.sellerId = readItemId(body.sellerId)
+  if (body.limit !== undefined) input.limit = readIntegerValue(body.limit, 'limit', 1, 500)
+  if (body.condition !== undefined) {
+    if (typeof body.condition !== 'string' || !CONDITIONS.includes(body.condition)) {
+      bad('condition 非法：' + String(body.condition).slice(0, 40))
+    }
+    input.condition = body.condition
+  }
   return input
 }
 
@@ -364,6 +381,12 @@ function getBatchEndpoint(client, id) {
   return client.request('/batches/' + encodeURIComponent(id))
 }
 
+/** 托管浏览器状态：纯只读探测，面板每 3 秒轮询一次也不会产生闲鱼请求。 */
+function browserStatusEndpoint(client) {
+  if (typeof client.browserStatus === 'function') return client.browserStatus()
+  return client.request('/browser')
+}
+
 function importAccountEndpoint(client, body) {
   const input = {}
   const accountId = readOptionalString(body, 'accountId', 64)
@@ -429,6 +452,8 @@ function createDefaultHandlers(options) {
   return {
     health: () => client.health(),
     status: () => client.status(),
+    // 托管浏览器状态：只读，不挂 confirm（面板进账号 tab 就能看到窗口在不在）。
+    'browser.status': () => browserStatusEndpoint(client),
     accounts: () => client.listAccounts(),
     'items.list': () => client.listItems(),
     // 面板「文案」tab 的品类模板：纯常量、不碰 daemon，也不写任何状态。
@@ -439,6 +464,8 @@ function createDefaultHandlers(options) {
     'tasks.retry': (body) => retryTaskEndpoint(client, readRequiredString(body, 'id', ID_RE)),
     'batches.get': (body) => getBatchEndpoint(client, readRequiredString(body, 'id', ID_RE)),
     'reference.collect': (body) => client.collectReferences(readReferenceInput(body)),
+  // 市场简报：只读统计（已入库的他人商品），面板/工具用来定结构与定价。
+  'market.brief': (body) => client.marketBrief(readMarketBriefInput(body)),
     // 采集模块：先解析链接（只读），再决定采谁 —— 面板两步走，用户能看清要采的是哪家店。
     'reference.parseLink': (body) => client.resolveLink(readLinkInput(body)),
     // 会写本地库：在 WRITE_ENDPOINTS 里，等 confirm:true。

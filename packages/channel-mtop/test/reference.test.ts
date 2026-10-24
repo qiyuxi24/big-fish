@@ -165,6 +165,16 @@ test('extractTitleKeywords：只留出现≥2次的词，纯虚词片段被过�
   expectSyncCode('VALIDATION', () => extractTitleKeywords(['a'], 0))
 })
 
+test('extractTitleKeywords：片段内部的 2-gram 当噪声剔除（研数/学笔 这类跨词边界产物）', () => {
+  const map = new Map(extractTitleKeywords(['考研数学笔记', '考研数学笔记 二手']).map((entry) => [entry.word, entry.count]))
+  // 落在片段首尾的 2-gram 保留：考研（首）、笔记（尾）
+  assert.equal(map.get('考研'), 2)
+  assert.equal(map.get('笔记'), 2)
+  // 片段内部切出来的 2-gram 不进榜：研数、学笔 在任何标题里都没有独立出现
+  assert.equal(map.get('研数'), undefined)
+  assert.equal(map.get('学笔'), undefined)
+})
+
 test('summarizeReferences：价格带/标题长度/类目分布/主图数/描述覆盖率', () => {
   const items = [
     parseItemReference({
@@ -190,7 +200,10 @@ test('summarizeReferences：价格带/标题长度/类目分布/主图数/描述
     { categoryId: '11', count: 2 },
     { categoryId: '22', count: 1 },
   ])
-  assert.ok(summary.keywords.some((entry) => entry.word === '机械'))
+  // 「九成新机械键盘」7 字整段只出现 2 次、超 6 字不进榜，靠首尾 2-gram（九成/键盘）露头；
+  // 片段内部的「机械」按 2-gram 噪声规则剔除（见 extractTitleKeywords 的用例）。
+  assert.ok(summary.keywords.some((entry) => entry.word === '键盘'))
+  assert.equal(summary.keywords.some((entry) => entry.word === '机械'), false)
 })
 
 test('summarizeReferences：空数组给零值，不抛错', () => {

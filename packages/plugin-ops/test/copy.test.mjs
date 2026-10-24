@@ -167,6 +167,73 @@ test('出售原因 / 使用时长：给了进 facts，没给就不出现（不�
   expectValidation(() => buildCopyRequest(baseInput({ reason: '   ' })), /出售原因/)
 })
 
+/** 市场简报样本（xy_market_brief 的输出形态，数字随便取但形态要全）。 */
+function marketSample(overrides = {}) {
+  return {
+    sampleSize: 24,
+    priceCents: { p25: 2000, p50: 2800, p75: 3500 },
+    priceSuggestion: { lowCents: 2500, suggestedCents: 2800, highCents: 3200, basis: '同类中位 × 1.0（几乎全新）' },
+    titleSegmentsAvg: 3.5,
+    descSentencesAvg: 4.2,
+    bracketTagRatio: 0.4,
+    ctaRatio: 0.6,
+    imageCountAvg: 3.2,
+    imageAspect: '方图',
+    keywords: ['高数笔记', '考研', '手写'],
+    ...overrides,
+  }
+}
+
+test('市场简报进提示词：价格带/结构/图片规格/高频词，且明确「不得照抄」', () => {
+  const { text, request } = planCopy(baseInput({ market: marketSample() }))
+  assert.equal(request.market.sampleSize, 24)
+  assert.match(text, /【市场参考（已采集他人商品的统计：只学结构与价格带，不得照抄原句\/原图）】/)
+  assert.match(text, /价格带 ¥20\.00 ~ ¥35\.00，中位 ¥28\.00；样本 24 件/)
+  assert.match(text, /建议价 ¥28\.00（区间 ¥25\.00 ~ ¥32\.00）：同类中位/)
+  assert.match(text, /标题均 3\.5 段、描述均 4\.2 句；带标签 40%、含行动号召 60%/)
+  assert.match(text, /图片：均 3\.2 张，主图以方图为主/)
+  assert.match(text, /高频词（选词参考，别整段照搬）：高数笔记、考研、手写/)
+  assert.match(text, /偏离超过 30% 时，在 `warnings` 里写一条理由/)
+  // 市场段后面要留空行，否则「定价」那条会跟【输入契约】粘成一行。
+  assert.match(text, /\n\n【输入契约】/)
+})
+
+test('样本价格跨度大时提示「只当量级参考」，跨度小时不插话', () => {
+  const wide = planCopy(baseInput({ market: marketSample({ priceCents: { p25: 480, p50: 900, p75: 15000, min: 388, max: 15000 } }) }))
+  assert.match(wide.text, /- 注意：样本价格跨度 38\.7 倍（¥3\.88 ~ ¥150\.00）/)
+  assert.match(wide.text, /按同款再核一遍/)
+
+  const narrow = planCopy(baseInput({ market: marketSample({ priceCents: { p25: 2000, p50: 2800, p75: 3000, min: 2000, max: 3000 } }) }))
+  assert.equal(narrow.text.includes('样本价格跨度'), false)
+})
+
+test('没有简报 / 样本为 0 时不渲染市场参考段（不塞一堆 0 误导模型）', () => {
+  const plain = planCopy(baseInput())
+  assert.equal(plain.request.market, undefined)
+  assert.equal(plain.text.includes('【市场参考'), false)
+
+  const empty = planCopy(baseInput({ market: marketSample({ sampleSize: 0 }) }))
+  assert.equal(empty.text.includes('【市场参考'), false)
+  // 没有市场段时不要凭空多出空行。
+  assert.match(plain.text, /\n\n【输入契约】/)
+  assert.equal(plain.text.includes('\n\n\n【输入契约】'), false)
+})
+
+test('简报字段做窄化：缺字段补 0，坏 JSON（数组/字符串）显式 VALIDATION', () => {
+  const { market } = buildCopyRequest(baseInput({ market: { sampleSize: 3 } }))
+  assert.deepEqual(market.priceCents, { p25: 0, p50: 0, p75: 0, min: 0, max: 0 })
+  assert.equal(market.imageAspect, '未测')
+  assert.deepEqual(market.keywords, [])
+
+  // 建议价缺失时不渲染；但结构行仍在（有样本就得给出结构参考）。
+  const text = planCopy(baseInput({ market: { sampleSize: 3, titleSegmentsAvg: 2 } })).text
+  assert.match(text, /【市场参考/)
+  assert.equal(text.includes('- 建议价 '), false)
+
+  expectValidation(() => buildCopyRequest(baseInput({ market: ['x'] })), /market 必须是 JSON 对象/)
+  expectValidation(() => buildCopyRequest(baseInput({ market: 'x' })), /market 必须是 JSON 对象/)
+})
+
 test('成色枚举与 skill 的 input-schema 保持同集合', () => {
   assert.deepEqual(CONDITIONS, ['new', 'like-new', 'light-wear', 'visible-wear', 'flawed'])
 })

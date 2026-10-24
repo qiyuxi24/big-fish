@@ -31,6 +31,7 @@ import type {
   WorkerCounts,
 } from './routes.ts'
 import type { AccountSummary } from './account-list.ts'
+import type { BrowserStatus } from './managed-browser.ts'
 import type { SellerCollectHandler } from './seller-routes.ts'
 import type { SettingsStore } from './settings.ts'
 
@@ -81,6 +82,8 @@ export interface StartDaemonOptions {
   settings?: SettingsStore
   /** 任务事件流；缺省时 GET /events 返回 UNSUPPORTED。 */
   events?: TaskEventSink
+  /** 托管浏览器状态提供者；缺省时 GET /browser 返回 enabled:false。 */
+  browser?: () => Promise<BrowserStatus>
   /** 可注入时钟（整数毫秒），测试用假时钟断言 uptime。 */
   now?: () => number
   version?: string
@@ -115,6 +118,7 @@ interface ServerContext {
   requestShutdown: RequestShutdown | undefined
   settings: SettingsStore | undefined
   events: TaskEventSink | undefined
+  browser: (() => Promise<BrowserStatus>) | undefined
   now: () => number
   startedAt: number
   version: string
@@ -153,6 +157,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
     requestShutdown: options.requestShutdown,
     settings: options.settings,
     events: options.events,
+    browser: options.browser,
     now,
     startedAt,
     version,
@@ -231,6 +236,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, context:
       requestShutdown: context.requestShutdown,
       settings: context.settings,
       events: context.events,
+      browser: context.browser,
       now: context.now,
       startedAt: context.startedAt,
       version: context.version,

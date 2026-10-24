@@ -43,6 +43,8 @@ import { createFetchTransport, createOperationPort } from './operations.ts'
 import type { PublishPortOptions } from './operations.ts'
 import { createAccountHandlers } from './runtime-account-handlers.ts'
 import { createCollectHandlers } from './runtime-collect-handlers.ts'
+import { DEFAULT_MANAGED_BROWSER_PORT, createManagedBrowser } from './managed-browser.ts'
+import type { ManagedBrowser } from './managed-browser.ts'
 import { startDaemon } from './server.ts'
 import type { Daemon } from './server.ts'
 import type { RequestShutdown } from './routes.ts'
@@ -60,6 +62,12 @@ export interface DaemonRuntimeOptions {
   ports?: Partial<OperationPort>
   /** 发布通道配置；缺省时 publish 仍是 UNSUPPORTED（安全默认）。 */
   publish?: PublishPortOptions
+  /** 托管浏览器（扫码/导入/发布共用）；测试注入假实例，生产按数据目录自建。 */
+  browser?: ManagedBrowser
+  /** 托管浏览器端口；缺省取 publish.chromePort，再缺省 9222。 */
+  browserPort?: number
+  /** 托管浏览器是否 headless；缺省 false（真人浏览器，扫码必需）。 */
+  browserHeadless?: boolean
   /** 注入时钟（毫秒）；测试用。 */
   now?: () => number
   logger?: Logger
@@ -124,13 +132,39 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
       ...(now === undefined ? {} : { now }),
     })
 
+    // 托管浏览器：一个带调试端口的 Chrome 给扫码 / 导入 / 发布共用。
+    // 端口优先级：显式 browserPort > 发布配置 > 9222；profile 固定跟着数据目录走。
+    const browser = options.browser ?? createManagedBrowser({
+      port: options.browserPort ?? options.publish?.chromePort ?? DEFAULT_MANAGED_BROWSER_PORT,
+      profileDir: join(dirname(config.dbPath), 'chrome-profile'),
+      ...(options.browserHeadless === undefined ? {} : { headless: options.browserHeadless }),
+      logger,
+    })
+
     // ports：真实通道 + 测试覆盖；Partial 覆盖只替换指定方法。
     const basePorts = createOperationPort({
       ...(options.transport === undefined ? {} : { transport: options.transport }),
       ...(now === undefined ? {} : { now }),
-      ...(options.publish === undefined ? {} : { publish: options.publish }),
+      ...(options.publish === undefined
+        ? {}
+        : { publish: { ...options.publish, chromePort: options.publish.chromePort ?? browser.port } }),
     })
-    const ports: OperationPort = { ...basePorts, ...(options.ports ?? {}) }
+    // 发布前确保托管浏览器在跑：发布依赖页面自动化，「浏览器没开」是最常见的失败原因。
+    // 只在发布通道真的可用时包装，避免 UNSUPPORTED 也去弹一个窗口。
+    const publishReady = options.publish !== undefined && (options.publish.submit || options.publish.dryRun === true)
+    const ports: OperationPort = {
+      ...basePorts,
+      ...(publishReady
+        ? {
+            publishItem: async (input: Parameters<OperationPort['publishItem']>[0]) => {
+              await browser.ensure()
+              return basePorts.publishItem(input)
+            },
+          }
+        : {}),
+      // 测试/嵌入方的覆盖永远最后生效：注入假 publishItem 时不该被上面的包装抢走。
+      ...(options.ports ?? {}),
+    }
 
     // 登录态校验执行器：同账号单飞 + 5s 冷却，结果与结论都落 account-state（见 account-session.ts）。
     const verifier = createAccountVerifier({
@@ -235,8 +269,7 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
       verifier,
       lifecycle,
       refreshAccounts,
-      // 扫码登录自起浏览器用独立 profile：与用户真实浏览器隔离，也别和它抢 profile 锁。
-      browserProfileDir: join(dirname(config.dbPath), 'chrome-profile'),
+      browser,
       logger,
       ...(now === undefined ? {} : { now }),
     })
@@ -258,6 +291,8 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
         events,
         accounts: () => accounts,
         worker: () => worker.stats(),
+        // 面板要知道托管浏览器在不在：GET /browser（与 /status 分开，因为它要真探一次端口）。
+        browser: () => browser.status(),
         // 账号摘要/导入/扫码/校验/切换/退出：见 runtime-account-handlers.ts。
         ...accountHandlers,
         // 人工收尾：requeue 成功后必须立刻唤醒 worker，否则要等下一个 pollIntervalMs，
@@ -309,6 +344,8 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
         stopKeepAlive()
         await worker.stop()
         await daemon.close()
+        // 托管浏览器是我们拉起的就由我们关；复用来的用户浏览器不受影响（见 managed-browser.ts）。
+        await browser.stop()
         queue.close()
         store.close()
       },

@@ -30,9 +30,9 @@ const valueOf = (flag, fallback) => {
 }
 const out = resolve(repoRoot, valueOf('--out', '.scratch/shots/bigfish-sidebar.png'))
 const chromePort = Number(valueOf('--port', '9333'))
-const PANEL_SUBTITLE = '发布 / 账号 / 文案 / 采集 · 面板只组参数，执行交给 agent 与 daemon'
+const PANEL_SUBTITLE = '账号 → 采集 → 文案 → 发布 → 商品'
 const PANEL_LABEL = 'BigFish 闲鱼运营'
-const TAB_LABELS = ['自动发布', '账号', '文案', '采集', '概览', '诊断']
+const TAB_LABELS = ['概览', '账号', '采集', '文案', '发布', '商品']
 const OFFLINE_TEXT = '未连接后台（daemon 未启动）'
 
 /** 从 dev 实例日志里取最后一次 token URL。 */
@@ -155,7 +155,7 @@ try {
     label: 'BigFish 面板内容', timeoutMs: 20_000,
   })
 
-  // 3) tab 条：6 个、默认「自动发布」。
+  // 3) tab 条：6 个（监控 / 准备 / 作业 三组）、默认「概览」。
   const tabs = await cdp.evaluate(`(() => {
     const nodes = [...document.querySelectorAll('button[data-role="panel-tab"]')]
     return {
@@ -164,17 +164,18 @@ try {
     }
   })()`)
   if (tabs.labels.join('|') !== TAB_LABELS.join('|')) problems.push('tab 条与预期不同：' + JSON.stringify(tabs.labels))
-  if (tabs.selected[0] !== 'true') problems.push('默认 tab 不是「自动发布」：' + JSON.stringify(tabs.selected))
+  if (tabs.selected[0] !== 'true') problems.push('默认 tab 不是「概览」：' + JSON.stringify(tabs.selected))
 
-  // 4) 自动发布（默认 tab）：daemon 状态块 + 工作流树 + 流水线 + 草稿集。
+  // 4) 概览（默认 tab）：驾驶舱（状态块 + 待办提醒 + 工作流树）+ 系统区（进程管理 / 设置 / 命令）。
   const daemonState = await roleText(cdp, 'daemon-state')
-  if (daemonState === null) problems.push('自动发布页没有 data-role=daemon-state')
+  if (daemonState === null) problems.push('概览页没有 data-role=daemon-state')
   const workflowTree = await roleText(cdp, 'workflow-tree')
-  if (workflowTree === null) problems.push('自动发布页没有 data-role=workflow-tree（工作流区）')
-  const publishText = await cdp.evaluate('document.body.innerText')
-  for (const needle of ['进程管理', '流水线', '草稿集', '发布前校验']) {
-    if (!publishText.includes(needle)) problems.push('自动发布页缺少「' + needle + '」')
+  if (workflowTree === null) problems.push('概览页没有 data-role=workflow-tree（工作流区）')
+  const overviewText = await cdp.evaluate('document.body.innerText')
+  for (const needle of ['待办提醒', '进程管理', '工具与命令', 'npm run daemon:import-account']) {
+    if (!overviewText.includes(needle)) problems.push('概览页缺少「' + needle + '」')
   }
+  if (await roleText(cdp, 'overview-todo') === null) problems.push('概览页没有 data-role=overview-todo（待办提醒）')
   const manage = await cdp.evaluate(`(() => [...document.querySelectorAll('[data-role="daemon-start"],[data-role="daemon-stop"]')].map((node) => node.getAttribute('data-role')))()`)
   if (!manage.includes('daemon-start') || !manage.includes('daemon-stop')) problems.push('进程管理按钮缺失：' + JSON.stringify(manage))
   const daemonOnline = daemonState !== null && daemonState.includes('在线')
@@ -213,12 +214,18 @@ try {
   const updatedAt = await roleText(cdp, 'account-updated')
   await screenshot(cdp, out.replace(/\.png$/, '-account.png'))
 
-  // 6) 概览：导入登录态入口与 daemon 地址。
-  await clickTab(cdp, '概览')
-  const overviewText = await cdp.evaluate('document.body.innerText')
-  for (const needle of ['xy_import_account', '127.0.0.1:47001']) {
-    if (!overviewText.includes(needle)) problems.push('概览页缺少「' + needle + '」')
+  // 6) 发布：流水线 + 草稿集 + 任务表（state/kind 筛选；发货/客服未接线，应置灰）。
+  await clickTab(cdp, '发布')
+  const publishText = await cdp.evaluate('document.body.innerText')
+  for (const needle of ['流水线', '草稿集', '发布前校验', '发货 / 客服两项灰着']) {
+    if (!publishText.includes(needle)) problems.push('发布页缺少「' + needle + '」')
   }
+  const missingPublishRoles = await cdp.evaluate(`(() => ['publish-backend', 'draft-input', 'tasks-section', 'tasks-table']
+    .filter((role) => document.querySelector('[data-role="' + role + '"]') === null))()`)
+  if (missingPublishRoles.length > 0) problems.push('发布页缺少 data-role：' + missingPublishRoles.join(' / '))
+  const disabledKinds = await cdp.evaluate(`(() => [...document.querySelectorAll('[data-role="task-filter"]')]
+    .filter((node) => node.disabled === true).map((node) => (node.textContent ?? '').trim()))()`)
+  if (disabledKinds.join('|') !== '发货|客服') problems.push('任务筛选里发货/客服应置灰：' + JSON.stringify(disabledKinds))
 
   // 7) 文案：5 个风格芯片，点第二个断 aria-pressed 转移（真实 React 交互）。
   await clickTab(cdp, '文案')
@@ -240,16 +247,23 @@ try {
     })()`, { label: '文案风格切换', timeoutMs: 8_000, intervalMs: 200 })
   }
 
-  // 8) 采集 + 诊断：只断契约文案（不联网）。
+  // 8) 采集 + 商品：只断契约文案（不联网）。
   await clickTab(cdp, '采集')
   const referenceText = await cdp.evaluate('document.body.innerText')
-  if (!referenceText.includes('xy_reference_collect')) problems.push('采集页缺少 xy_reference_collect')
-  await clickTab(cdp, '诊断')
-  const diagnoseText = await cdp.evaluate('document.body.innerText')
-  for (const needle of ['xy_status', 'xy_ping']) {
-    if (!diagnoseText.includes(needle)) problems.push('诊断页缺少「' + needle + '」')
+  // 2026-10-23 面板精简后，工具名只在「贴了商品链接」的提示里出现；默认视图只断结构契约。
+  if (!referenceText.includes('采集并入库')) problems.push('采集页缺少「采集并入库」按钮')
+  if (!referenceText.includes('行情简报')) problems.push('采集页缺少「行情简报」区块')
+  const missingRoles = await cdp.evaluate(`(() => ['reference-panel', 'reference-link', 'reference-collect', 'market-brief']
+    .filter((role) => document.querySelector('[data-role="' + role + '"]') === null))()`)
+  if (missingRoles.length > 0) problems.push('采集页缺少 data-role：' + missingRoles.join(' / '))
+  await clickTab(cdp, '商品')
+  const itemsText = await cdp.evaluate('document.body.innerText')
+  for (const needle of ['自有商品', '擦亮所选', '探测详情']) {
+    if (!itemsText.includes(needle)) problems.push('商品页缺少「' + needle + '」')
   }
-  if (await roleText(cdp, 'daemon-state') === null) problems.push('诊断页没有 daemon 状态块')
+  const missingItemRoles = await cdp.evaluate(`(() => ['items-panel', 'items-table']
+    .filter((role) => document.querySelector('[data-role="' + role + '"]') === null))()`)
+  if (missingItemRoles.length > 0) problems.push('商品页缺少 data-role：' + missingItemRoles.join(' / '))
 
   // 9) 热更新（可选）。
   if (args.includes('--hmr')) await checkHotUpdate(cdp)
