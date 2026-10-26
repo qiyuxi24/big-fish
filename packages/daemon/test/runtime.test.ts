@@ -49,7 +49,10 @@ interface Fixture {
 }
 
 /** 起一套完整运行时；t.after 负责关运行时并删目录。 */
-async function createFixture(t: { after(fn: () => Promise<void>): void }, options: { autoStartWorker?: boolean } = {}): Promise<Fixture> {
+async function createFixture(
+  t: { after(fn: () => Promise<void>): void },
+  options: { autoStartWorker?: boolean; im?: { enabled?: boolean } } = {},
+): Promise<Fixture> {
   await mkdir(SCRATCH_ROOT, { recursive: true })
   const dir = await mkdtemp(join(SCRATCH_ROOT, 'run-'))
   const loaded = loadDaemonConfig({}, {
@@ -66,6 +69,7 @@ async function createFixture(t: { after(fn: () => Promise<void>): void }, option
     transport,
     owner: 'test-worker',
     autoStartWorker: options.autoStartWorker ?? true,
+    ...(options.im === undefined ? {} : { im: options.im }),
     version: '0.0.1-test',
   })
   t.after(async () => {
@@ -89,6 +93,39 @@ async function waitForTask(client: DaemonClient, id: string, predicate: (task: T
   }
   return last
 }
+
+test('集成：IM 默认关闭（不连 wss），打开 CONFIG 环境变量口径由 cli 测', async (t) => {
+  const { runtime } = await createFixture(t)
+  // 默认装配必须关闭：否则测试/离线/只跑发布的场景都会意外连 wss、暴露登录态。
+  assert.equal(runtime.im.enabled, false)
+  assert.deepEqual(runtime.im.status(), [])
+  // 关闭时连 sendReply 都不允许，避免「以为发了其实没通道」。
+  await assert.rejects(
+    runtime.im.sendReply({ accountId: 'acc-1', reply: { cid: 'cid-1', text: 'x' } }),
+    (error: unknown) => error instanceof Error && /BF_IM/.test(error.message),
+  )
+})
+
+test('集成：IM 开启后按账号建连接，登录态缺失进入 blocked 且不影响 /status', async (t) => {
+  const { runtime, client } = await createFixture(t, { im: { enabled: true } })
+  assert.equal(runtime.im.enabled, true)
+
+  // 假 transport 对 IM token 请求只回空 data：相当于「登录态不完整」。
+  await runtime.credentials.save({ accountId: 'acc-1', cookies: { _m_h5_tk: 'token_abc', unb: 'unb-1' } })
+  await runtime.refreshAccounts()
+  runtime.im.startAll(['acc-1'])
+
+  const deadline = Date.now() + 5000
+  while (runtime.im.status()[0]?.state !== 'blocked' && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 20))
+  }
+  assert.deepEqual(runtime.im.status().map((entry) => ({ accountId: entry.accountId, state: entry.state })), [
+    { accountId: 'acc-1', state: 'blocked' },
+  ])
+  // 连接失败不能把 daemon 的账号视图带崩：/status 仍正常返回。
+  const status = await client.status()
+  assert.deepEqual(status.accounts, ['acc-1'])
+})
 
 test('集成：probe 任务走完整链路并落库到 /items', async (t) => {
   const { runtime, client } = await createFixture(t)

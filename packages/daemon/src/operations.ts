@@ -10,8 +10,12 @@
  *   只有显式开启 publish.submit（BF_PUBLISH_SUBMIT=1）才允许队列任务真提交，
  *   避免「一不小心把草稿发上线」。
  *
+ * P2.1 落地的通道：
+ * - sendReply：委托给注入的 IM 回复网关（im-runtime → im-client，wss 长连接）。
+ *   没注入网关（默认，BF_IM 未开）时仍是 UNSUPPORTED，任务转 needs_review 而不是静默成功。
+ *
  * 尚未落地的通道（显式抛 UNSUPPORTED，避免任务被静默当成功）：
- * - deliverOrder / sendReply：IM 协议与发货规则在 P2 实现。
+ * - deliverOrder：自动发货规则引擎在 P2.2 实现。
  *
  * 为什么 publish 不用 mtop：发布载荷含图片上传后的 imageInfoDOList，且部分类目只支持 App，
  * 网页端 CDP 是唯一能同时覆盖"图片 + 类目属性 + 地址"的通道（见 docs/xianyu-4q-research.md）。
@@ -32,7 +36,7 @@ import { XianyuError, fail } from '@bigfish/core'
 
 import { publishViaCdp } from './cdp-publish.ts'
 import type { PublishViaCdpInput, PublishViaCdpResult } from './cdp-publish.ts'
-import type { DetailSnapshot, OperationPort, PublishDraft, Session } from './executors.ts'
+import type { DetailSnapshot, OperationPort, PublishDraft, ReplyRequest, Session } from './executors.ts'
 
 /**
  * 取 Set-Cookie 原始行；运行时没有 getSetCookie 时返回空数组。
@@ -106,6 +110,17 @@ export interface OperationPortOptions {
   pendingHint?: string
   /** 发布通道配置；缺省时 publish 仍是 UNSUPPORTED（安全默认）。 */
   publish?: PublishPortOptions
+  /** IM 回复网关；缺省时 sendReply 仍是 UNSUPPORTED（安全默认，只有 BF_IM=1 才接线）。 */
+  im?: ImReplyGateway
+}
+
+/**
+ * IM 回复网关（由 im-runtime 实现）。
+ * 只暴露「按账号发一条文本」这一件事：账号路由、连接生命周期、风控后的 blocked 都由网关自己管，
+ * operations 不碰 ws / 令牌 / 重连，保持这一层只做通道适配。
+ */
+export interface ImReplyGateway {
+  sendReply(input: { accountId: string; reply: ReplyRequest; signal?: AbortSignal }): Promise<void>
 }
 
 /**
@@ -188,8 +203,13 @@ export function createOperationPort(options: OperationPortOptions = {}): Operati
       fail('UNSUPPORTED', '自动发货通道尚未接入：' + hint + '（IM 协议 + 卡密规则引擎）')
     },
 
-    async sendReply(): Promise<void> {
-      fail('UNSUPPORTED', 'IM 回复通道尚未接入：' + hint + '（wss-goofish 握手与心跳，见 docs/im-protocol.md）')
+    async sendReply(input: { session: Session; reply: ReplyRequest; signal: AbortSignal }): Promise<void> {
+      const im = options.im
+      if (im === undefined) {
+        fail('UNSUPPORTED', 'IM 回复通道未开启：' + hint + '（设 BF_IM=1 重启 daemon 后可用，见 docs/im-protocol.md）')
+      }
+      // 账号路由与连接状态都交给网关：这里只把当前执行器会话的 accountId 递过去。
+      await im.sendReply({ accountId: input.session.accountId, reply: input.reply, signal: input.signal })
     },
   }
 }

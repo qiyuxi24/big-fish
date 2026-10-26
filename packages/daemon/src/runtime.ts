@@ -10,6 +10,7 @@ import {
   CircuitBreaker,
   CredentialStore,
   RateLimiter,
+  createImMessageRepository,
   createItemRepository,
   createLogger,
   createSellerRepository,
@@ -41,6 +42,9 @@ import type { OperationPort } from './executors.ts'
 import type { ExecutorDeps } from './executor.ts'
 import { createFetchTransport, createOperationPort } from './operations.ts'
 import type { PublishPortOptions } from './operations.ts'
+import { createImRuntime } from './im-runtime.ts'
+import type { ImRuntime } from './im-runtime.ts'
+import type { WebSocketFactory } from './im-transport.ts'
 import { createAccountHandlers } from './runtime-account-handlers.ts'
 import { createCollectHandlers } from './runtime-collect-handlers.ts'
 import { DEFAULT_MANAGED_BROWSER_PORT, createManagedBrowser } from './managed-browser.ts'
@@ -62,6 +66,11 @@ export interface DaemonRuntimeOptions {
   ports?: Partial<OperationPort>
   /** 发布通道配置；缺省时 publish 仍是 UNSUPPORTED（安全默认）。 */
   publish?: PublishPortOptions
+  /**
+   * IM 通道（收消息 + 发文本回复）。缺省 enabled=false：默认不连 wss，
+   * 避免测试/离线/只跑发布的场景意外暴露登录态（BF_IM=1 才开）。
+   */
+  im?: { enabled?: boolean; webSocketFactory?: WebSocketFactory }
   /** 托管浏览器（扫码/导入/发布共用）；测试注入假实例，生产按数据目录自建。 */
   browser?: ManagedBrowser
   /** 托管浏览器端口；缺省取 publish.chromePort，再缺省 9222。 */
@@ -93,6 +102,8 @@ export interface DaemonRuntime {
   credentials: CredentialStore
   limiter: RateLimiter
   circuits: CircuitBreaker
+  /** IM 通道：连接状态、按账号发回复；诊断与测试用（面板后续接 status()）。 */
+  im: ImRuntime
   /** 刷新 /status 里的账号列表缓存（凭据列表是异步的，status 是同步的）。 */
   refreshAccounts(): Promise<string[]>
   /** 顺序：停 worker → 停 HTTP → 关 SQLite；幂等。 */
@@ -132,6 +143,23 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
       ...(now === undefined ? {} : { now }),
     })
 
+    // 传输层只建一次：operations / 参考采集 / IM 令牌共用一份（同账号、同超时语义）。
+    // 必须建在 basePorts 之前：IM 回复网关要把它交给 ImClient 去取 token。
+    const transport = options.transport ?? createFetchTransport()
+
+    // IM 消息落库（im_messages）：收下行与发上行的记录都进这张表，回复任务才能按 cid 找收件人。
+    const imMessages = createImMessageRepository(store, { ...(now === undefined ? {} : { now }) })
+    // IM 默认关闭：只有显式 BF_IM=1 才会真的连 wss；开启后按凭据列表逐个拉起。
+    const imRuntime = createImRuntime({
+      credentials,
+      transport,
+      sink: imMessages,
+      enabled: options.im?.enabled === true,
+      ...(options.im?.webSocketFactory === undefined ? {} : { webSocketFactory: options.im.webSocketFactory }),
+      logger,
+      ...(now === undefined ? {} : { now }),
+    })
+
     // 托管浏览器：一个带调试端口的 Chrome 给扫码 / 导入 / 发布共用。
     // 端口优先级：显式 browserPort > 发布配置 > 9222；profile 固定跟着数据目录走。
     const browser = options.browser ?? createManagedBrowser({
@@ -143,8 +171,10 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
 
     // ports：真实通道 + 测试覆盖；Partial 覆盖只替换指定方法。
     const basePorts = createOperationPort({
-      ...(options.transport === undefined ? {} : { transport: options.transport }),
+      transport,
       ...(now === undefined ? {} : { now }),
+      // 回复任务按 session.accountId 路由到对应账号的 IM 连接（见 im-runtime.ts）。
+      im: { sendReply: (input) => imRuntime.sendReply(input) },
       ...(options.publish === undefined
         ? {}
         : { publish: { ...options.publish, chromePort: options.publish.chromePort ?? browser.port } }),
@@ -216,8 +246,6 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
 
     // 参考采集与执行器共用一份 transport：同一个账号、同一套超时语义。
     // 单独建 collector 而不是塞进 OperationPort：它不由队列任务驱动，是只读的即时查询。
-    // 一次装配共享一个 transport：同账号、同超时语义，也避免重复构造。
-    const transport = options.transport ?? createFetchTransport()
     const referenceCollector = createReferenceCollector({
       transport,
       ...(now === undefined ? {} : { now }),
@@ -247,6 +275,8 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
       return accounts
     }
     await refreshAccounts()
+    // 拉起 IM 长连接（enabled=false 时是空操作）。失败按账号隔离，不影响 daemon 启动。
+    imRuntime.startAll(accounts)
 
     const worker = startWorker({
       queue,
@@ -315,6 +345,7 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
       })
     } catch (error) {
       stopKeepAlive()
+      imRuntime.stop()
       await worker.stop()
       throw error
     }
@@ -337,11 +368,14 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
       credentials,
       limiter,
       circuits,
+      im: imRuntime,
       refreshAccounts,
       async close(): Promise<void> {
         if (closed) return
         closed = true
         stopKeepAlive()
+        // 先停 IM：关掉长连接后不再有新的下行消息写库，再停 worker/HTTP。
+        imRuntime.stop()
         await worker.stop()
         await daemon.close()
         // 托管浏览器是我们拉起的就由我们关；复用来的用户浏览器不受影响（见 managed-browser.ts）。

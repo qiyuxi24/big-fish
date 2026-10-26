@@ -20,6 +20,12 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/channel-im:
+    dependencies:
+      '@bigfish/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/channel-mtop:
     dependencies:
       '@bigfish/core':
@@ -33,6 +39,9 @@ importers:
       '@bigfish/channel-cdp':
         specifier: workspace:*
         version: link:../channel-cdp
+      '@bigfish/channel-im':
+        specifier: workspace:*
+        version: link:../channel-im
       '@bigfish/channel-mtop':
         specifier: workspace:*
         version: link:../channel-mtop

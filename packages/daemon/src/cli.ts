@@ -250,6 +250,18 @@ export function publishOptionsFromEnv(env: EnvLike, config: DaemonConfig): Publi
   }
 }
 
+/**
+ * 从环境变量读 IM 开关（默认关闭，必须显式开启）。
+ *
+ * 为什么默认关：daemon 一启动就连 wss 会同时暴露三件事——登录态、账号在线、
+ * 风控面；测试、离线排障、只想跑发布的用户都不该被动承受。用 `BF_IM=1` 显式开启。
+ */
+export function imOptionsFromEnv(env: EnvLike): { enabled: boolean } | undefined {
+  const raw = (env['BF_IM'] ?? '').trim().toLowerCase()
+  if (raw !== '1' && raw !== 'true') return undefined
+  return { enabled: true }
+}
+
 /** BF_CHROME_PORT：托管浏览器与发布共用同一个端口，只解析一次。 */
 function chromePortFromEnv(env: EnvLike): number | undefined {
   const raw = (env['BF_CHROME_PORT'] ?? '').trim()
@@ -263,6 +275,7 @@ async function runServer(config: DaemonConfig, env: EnvLike, io: CliIo): Promise
   try {
     const publish = publishOptionsFromEnv(env, config)
     const browserPort = chromePortFromEnv(env)
+    const im = imOptionsFromEnv(env)
     const shutdown = createShutdownWaiter()
     runtime = await startDaemonRuntime({
       config,
@@ -271,6 +284,7 @@ async function runServer(config: DaemonConfig, env: EnvLike, io: CliIo): Promise
       requestShutdown: shutdown.request,
       ...(publish === undefined ? {} : { publish }),
       ...(browserPort === undefined ? {} : { browserPort }),
+      ...(im === undefined ? {} : { im }),
     })
     logger.info('daemon 已启动', {
       url: runtime.daemon.url,

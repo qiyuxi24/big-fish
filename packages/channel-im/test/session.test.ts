@@ -6,6 +6,7 @@ import {
   HEARTBEAT_LWP,
   REG_LWP,
   buildAckDiffFrame,
+  buildSendMessageFrame,
   readPath,
 } from '../src/frames.ts'
 import { ImSession } from '../src/session.ts'
@@ -223,4 +224,36 @@ test('close 是终态：清定时器、关传输、之后下行帧不再处理',
   assert.equal(h.messages.length, 0)
   h.session.close()
   assert.equal(h.session.state, 'closed')
+})
+
+test('sendFrame：未注册直接 VALIDATION，不让业务帧抢在 /reg 前面', () => {
+  const h = createSession()
+  const frame = { lwp: '/r/MessageSend/sendByReceiverScope', headers: { mid: 'mid-1' }, body: [] }
+  expectCode(() => h.session.sendFrame(frame), 'VALIDATION')
+  h.session.start({ accessToken: 'token-1', deviceId: 'device-1' })
+  expectCode(() => h.session.sendFrame(frame), 'VALIDATION')
+  assert.equal(h.transport.framesOfLwp('/r/MessageSend/sendByReceiverScope').length, 0)
+})
+
+test('sendFrame：已注册后按原样发出，可被 parseFrameText 读回', () => {
+  const h = createSession()
+  h.session.start({ accessToken: 'token-1', deviceId: 'device-1' })
+  h.session.confirmRegistered()
+  const frame = buildSendMessageFrame({ cid: 'cid-1', text: '在的', peerId: 'buyer-1', selfId: 'seller-1' })
+  h.session.sendFrame(frame)
+  const sent = h.transport.framesOfLwp('/r/MessageSend/sendByReceiverScope')
+  assert.equal(sent.length, 1)
+  assert.deepEqual(sent[0], frame)
+  assert.equal(h.session.state, 'registered')
+})
+
+test('sendFrame：传输失败 → disconnected + NETWORK（业务帧不静默丢失）', () => {
+  const h = createSession()
+  h.session.start({ accessToken: 'token-1', deviceId: 'device-1' })
+  h.session.confirmRegistered()
+  h.transport.failNextSend = 'socket closed'
+  const frame = buildSendMessageFrame({ cid: 'cid-1', text: '在的', peerId: 'buyer-1', selfId: 'seller-1' })
+  h.session.sendFrame(frame)
+  assert.equal(h.session.state, 'disconnected')
+  assert.equal(h.session.lastError?.code, 'NETWORK')
 })

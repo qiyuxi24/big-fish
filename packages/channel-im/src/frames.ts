@@ -207,6 +207,93 @@ export function buildAckFrame(incoming: unknown): ImFrame | undefined {
   return { code: 200, headers: ackHeaders }
 }
 
+/**
+ * 发消息（单聊）：/r/MessageSend/sendByReceiverScope，协议事实见 docs/im-protocol.md §3.1。
+ * @module @bigfish/channel-im/frames
+ */
+export const SEND_LWP = '/r/MessageSend/sendByReceiverScope'
+/** 单聊固定 1；群聊等形态不在本期范围。 */
+export const CONVERSATION_TYPE_SINGLE = 1
+/** 外层 contentType=101 表示 custom.data 承载业务 JSON。 */
+export const CONTENT_TYPE_CUSTOM = 101
+/** 内层 contentType=1 表示文本。 */
+export const CUSTOM_TEXT_TYPE = 1
+/** 正文长度上限：平台约 500 字，留足余量；超长直接拒绝，避免服务端静默截断。 */
+export const SEND_TEXT_MAX_LENGTH = 2000
+const GOOFISH_SUFFIX = '@goofish'
+
+/** 发消息入参：cid 来自推送包；peer/self 都可以传裸 id，统一补 @goofish 后缀。 */
+export interface SendMessageInput {
+  cid: string
+  text: string
+  /** 对方 id（买家）。 */
+  peerId: string
+  /** 自己 id（账号 unb）；actualReceivers 必须同时包含双方，否则消息不落自己会话列表。 */
+  selfId: string
+  nowMs?: number
+  mid?: string
+  /** 幂等键：重试时应复用同一个 uuid，服务端据此去重。 */
+  uuid?: string
+}
+
+/**
+ * 裸 id → 带 @goofish 后缀；已有后缀原样返回（绝不拼出两个后缀）。
+ * 会话 id 与接收人 id 都是这个口径，漏后缀会被服务端当成不存在的会话。
+ */
+export function toGoofishId(value: unknown, field: string): string {
+  if (typeof value !== 'string') fail('VALIDATION', field + ' 必须是非空字符串')
+  const id = value.trim()
+  if (id.length === 0) fail('VALIDATION', field + ' 不能为空白')
+  return id.endsWith(GOOFISH_SUFFIX) ? id : id + GOOFISH_SUFFIX
+}
+
+/**
+ * 自定义文本负载：内层 JSON 先序列化再 base64。
+ * 空正文直接拒绝——发一条空消息既没意义也可能被平台判异常。
+ */
+function encodeCustomText(raw: unknown): string {
+  if (typeof raw !== 'string') fail('VALIDATION', 'buildSendMessageFrame.text 必须是字符串')
+  const text = raw.trim()
+  if (text.length === 0) fail('VALIDATION', 'buildSendMessageFrame.text 不能为空白（不发空消息）')
+  if (text.length > SEND_TEXT_MAX_LENGTH) {
+    fail('VALIDATION', 'buildSendMessageFrame.text 超过 ' + String(SEND_TEXT_MAX_LENGTH) + ' 字，拒绝发送')
+  }
+  const payload = JSON.stringify({ contentType: CUSTOM_TEXT_TYPE, text: { text: raw } })
+  return Buffer.from(payload, 'utf8').toString('base64')
+}
+
+/**
+ * 构造发消息帧（单聊文本）。
+ * body[0] 是消息体，body[1] 是接收人列表；两者顺序不能调换。
+ */
+export function buildSendMessageFrame(input: unknown): ImFrame {
+  if (!isRecord(input)) fail('VALIDATION', 'buildSendMessageFrame 参数必须是对象')
+  const cid = toGoofishId(input.cid, 'buildSendMessageFrame.cid')
+  const peerId = toGoofishId(input.peerId, 'buildSendMessageFrame.peerId')
+  const selfId = toGoofishId(input.selfId, 'buildSendMessageFrame.selfId')
+  const data = encodeCustomText(input.text)
+  const nowMs = input.nowMs === undefined ? Date.now() : requireInteger(input.nowMs, 'buildSendMessageFrame.nowMs')
+  const mid = input.mid === undefined ? generateMid(nowMs) : requireText(input.mid, 'buildSendMessageFrame.mid')
+  const uuid = input.uuid === undefined ? randomUUID() : requireText(input.uuid, 'buildSendMessageFrame.uuid')
+  return {
+    lwp: SEND_LWP,
+    headers: { mid },
+    body: [
+      {
+        uuid,
+        cid,
+        conversationType: CONVERSATION_TYPE_SINGLE,
+        content: { contentType: CONTENT_TYPE_CUSTOM, custom: { type: CUSTOM_TEXT_TYPE, data } },
+        redPointPolicy: 0,
+        extension: { extJson: '{}' },
+        ctx: { appVersion: '1.0', platform: 'web' },
+        msgReadStatusSetting: 1,
+      },
+      { actualReceivers: [peerId, selfId] },
+    ],
+  }
+}
+
 /** 帧 → ws 文本帧。三仓都只发文本帧，服务端是否接受二进制帧未验证。 */
 export function encodeFrame(frame: ImFrame): string {
   return JSON.stringify(frame)

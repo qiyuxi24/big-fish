@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@bigfish/channel-cdp": "workspace:*",
+    "@bigfish/channel-im": "workspace:*",
     "@bigfish/channel-mtop": "workspace:*",
     "@bigfish/core": "workspace:*"
   }

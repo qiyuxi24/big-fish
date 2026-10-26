@@ -3,15 +3,21 @@ import assert from 'node:assert/strict'
 import { XianyuError } from '@bigfish/core'
 import {
   ACK_DIFF_LWP,
+  CONTENT_TYPE_CUSTOM,
+  CONVERSATION_TYPE_SINGLE,
+  CUSTOM_TEXT_TYPE,
   HEARTBEAT_LWP,
   IM_APP_KEY,
   IM_UA,
   REG_LWP,
+  SEND_LWP,
+  SEND_TEXT_MAX_LENGTH,
   buildAckDiffFrame,
   buildAckFrame,
   buildHeartbeatFrame,
   buildImTokenRequest,
   buildRegFrame,
+  buildSendMessageFrame,
   decodeBase64Json,
   encodeFrame,
   generateDeviceId,
@@ -20,6 +26,7 @@ import {
   readInteger,
   readPath,
   readText,
+  toGoofishId,
 } from '../src/frames.ts'
 
 const UUID = '123e4567-e89b-42d3-a456-426614174000'
@@ -158,3 +165,58 @@ test('窄化工具：readText / readInteger / readPath', () => {
   assert.equal(readPath({ a: null }, ['a', 'b']), undefined)
   assert.equal(readPath({ a: 1 }, ['missing']), undefined)
 })
+
+test('buildSendMessageFrame：cid/接收人补 @goofish，custom.data 是 base64(内层 JSON)', () => {
+  const frame = buildSendMessageFrame({
+    cid: '671234567',
+    text: '在的，这个还能便宜',
+    peerId: '2206569289277',
+    selfId: '111222333',
+    nowMs: NOW,
+    mid: '500' + String(NOW) + ' 0',
+    uuid: UUID,
+  })
+  assert.equal(frame.lwp, SEND_LWP)
+  assert.deepEqual(frame.headers, { mid: '500' + String(NOW) + ' 0' })
+  const body = frame.body as Record<string, any>[]
+  assert.equal(body.length, 2)
+  const message = body[0]!
+  assert.equal(message.cid, '671234567@goofish')
+  assert.equal(message.uuid, UUID)
+  assert.equal(message.conversationType, CONVERSATION_TYPE_SINGLE)
+  assert.equal(message.redPointPolicy, 0)
+  assert.equal(message.msgReadStatusSetting, 1)
+  assert.deepEqual(message.extension, { extJson: '{}' })
+  assert.deepEqual(message.ctx, { appVersion: '1.0', platform: 'web' })
+  const content = message.content
+  assert.equal(content.contentType, CONTENT_TYPE_CUSTOM)
+  assert.equal(content.custom.type, CUSTOM_TEXT_TYPE)
+  const inner = JSON.parse(Buffer.from(content.custom.data, 'base64').toString('utf8'))
+  assert.deepEqual(inner, { contentType: 1, text: { text: '在的，这个还能便宜' } })
+  assert.deepEqual(body[1], { actualReceivers: ['2206569289277@goofish', '111222333@goofish'] })
+})
+
+test('buildSendMessageFrame：已带 @goofish 不重复拼，空白 id 与空正文拒绝', () => {
+  assert.equal(toGoofishId('671234567@goofish', 'cid'), '671234567@goofish')
+  assert.equal(toGoofishId(' 671234567 ', 'cid'), '671234567@goofish')
+  expectValidation(() => toGoofishId('   ', 'cid'))
+  expectValidation(() => toGoofishId(123, 'cid'))
+  expectValidation(() => buildSendMessageFrame({ cid: '1', text: '', peerId: '2', selfId: '3', nowMs: NOW }))
+  expectValidation(() => buildSendMessageFrame({ cid: '1', text: '   ', peerId: '2', selfId: '3', nowMs: NOW }))
+  expectValidation(() =>
+    buildSendMessageFrame({ cid: '1', text: 'x'.repeat(SEND_TEXT_MAX_LENGTH + 1), peerId: '2', selfId: '3', nowMs: NOW }),
+  )
+  expectValidation(() => buildSendMessageFrame(null))
+})
+
+test('buildSendMessageFrame：默认生成 uuid 与 mid，且能 JSON 往返成合法帧', () => {
+  const first = buildSendMessageFrame({ cid: '1', text: 'hi', peerId: '2', selfId: '3', nowMs: NOW })
+  const second = buildSendMessageFrame({ cid: '1', text: 'hi', peerId: '2', selfId: '3', nowMs: NOW })
+  const firstBody = first.body as Record<string, any>[]
+  const secondBody = second.body as Record<string, any>[]
+  assert.match(String(firstBody[0]!.uuid), /^[0-9a-f-]{36}$/)
+  assert.notEqual(firstBody[0]!.uuid, secondBody[0]!.uuid)
+  assert.match(String(first.headers!.mid), /^\d+ 0$/)
+  assert.deepEqual(parseFrameText(encodeFrame(first)), first)
+})
+

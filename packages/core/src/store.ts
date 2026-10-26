@@ -9,6 +9,7 @@ import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { XianyuError, fail, toXianyuError } from './errors.ts'
+import { IM_MESSAGES_V6_SQL } from './im-schema.ts'
 
 /** 打开参数。 */
 export interface StoreOptions {
@@ -147,6 +148,8 @@ ALTER TABLE seller_items ADD COLUMN copy_features TEXT;
 ALTER TABLE seller_items ADD COLUMN image_features TEXT;
 `
 
+
+
 const MIGRATIONS: readonly Migration[] = [
   { version: 1, apply: (db: DatabaseSync): void => db.exec(V1_SQL) },
   { version: 2, apply: applyBatchMigration },
@@ -154,6 +157,7 @@ const MIGRATIONS: readonly Migration[] = [
   { version: 3, apply: (db: DatabaseSync): void => db.exec(V3_SQL) },
   { version: 4, apply: (db: DatabaseSync): void => db.exec(V4_SQL) },
   { version: 5, apply: applySellerFeaturesMigration },
+  { version: 6, apply: (db: DatabaseSync): void => db.exec(IM_MESSAGES_V6_SQL) },
 ]
 
 const CREATE_MIGRATIONS_SQL = `CREATE TABLE IF NOT EXISTS schema_migrations (

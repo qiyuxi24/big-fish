@@ -6,3 +6,4 @@
 export * from './store.ts'
 export * from './queue.ts'
 export * from './task-events.ts'
+export * from './im-messages.ts'

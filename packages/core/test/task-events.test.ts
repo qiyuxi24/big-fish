@@ -62,7 +62,7 @@ describe('task_events（core）', () => {
     const tables = store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'task_events'").all()
     assert.equal(Array.isArray(tables) ? tables.length : 0, 1)
     const versions = store.db.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{ version: number }>
-    assert.deepEqual(versions.map((row) => row.version), [1, 2, 3, 4, 5])
+    assert.deepEqual(versions.map((row) => row.version), [1, 2, 3, 4, 5, 6])
   })
 
   it('append 返回递增 id 与注入时钟；list 按 id 升序', (t) => {

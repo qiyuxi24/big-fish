@@ -171,6 +171,17 @@ export class ImSession {
     for (const message of messages) this.#onMessage?.(message)
   }
 
+  /**
+   * 已注册后发业务帧（发消息等）。未注册说明调用方没等握手完成：直接 VALIDATION，
+   * 避免业务帧和 /reg 混在一条线上被服务端静默丢弃。发送失败按断链处理，与心跳一致。
+   */
+  sendFrame(frame: ImFrame): void {
+    if (this.#state !== 'registered') {
+      fail('VALIDATION', 'IM 会话未注册（' + this.#state + '），不能发送业务帧')
+    }
+    if (!this.#safeSend(frame)) this.disconnect('业务帧发送失败')
+  }
+
   /** 链路断开：清定时器、关传输、进入 disconnected；之后可再 start() 重连。 */
   disconnect(reason: string): void {
     if (this.#state === 'closed' || this.#state === 'disconnected') return
