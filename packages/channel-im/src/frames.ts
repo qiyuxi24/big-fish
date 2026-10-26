@@ -16,9 +16,12 @@ export const IM_APP_KEY = '444e9908a51d1cb236a27862abc769c9'
 /** 取 IM accessToken 的 mtop 接口与版本。 */
 export const IM_TOKEN_API = 'mtop.taobao.idlemessage.pc.login.token'
 export const IM_TOKEN_API_VERSION = '1.0'
-/** 应用层心跳间隔；发送超时由 ws 适配器执行，会话只把 send 抛错当断线。 */
+/**
+ * 应用层心跳间隔；发送超时由 ws 适配器执行，会话只把 send 抛错当断线。
+ * 没有「静默超时」这一层：内置 WebSocket 不能设 ping_interval，而服务端空闲时也不保证回包，
+ * 用收包静默判死会误杀健康连接——半开连接只能等下一次发送失败或 close 事件发现（见 STATUS §4.2）。
+ */
 export const HEARTBEAT_INTERVAL_MS = 15_000
-export const HEARTBEAT_TIMEOUT_MS = 30_000
 /** 注册成功后等待 1s 再提交同步游标（照抄参考实现，不要"优化"掉）。 */
 export const ACK_DIFF_DELAY_MS = 1_000
 /** /reg 的固定头；改 UA 会改客户端指纹，照抄。 */

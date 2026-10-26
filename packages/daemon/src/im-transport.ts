@@ -3,8 +3,9 @@
  *
  * 为什么只做「文本帧 + 生命周期」这一件事：帧格式、状态机、心跳全在 channel-im 的纯函数/状态机里，
  * 这一层薄到换任何 ws 实现都不影响上层。握手头（cookie / UA / Origin）由调用方给，见 docs/im-protocol.md §1.1。
- * 注意 Node 内置 WebSocket 不能设 ping_interval：只能靠应用层 15s 心跳 + 30s 静默兜底（channel-im 已实现心跳，
- * 静默超时由 im-client 的断链处理覆盖）。
+ * 注意 Node 内置 WebSocket 不能设 ping_interval：只能靠应用层 15s 心跳（channel-im 实现）。
+ * 不做「收包静默判死」——服务端空闲时不一定回包，误判会杀掉健康连接；半开连接只能等下次
+ * 发送失败（send 抛错）或 close 事件，再由 im-client 的退避重连兜底。
  * @module @bigfish/daemon/im-transport
  */
 
