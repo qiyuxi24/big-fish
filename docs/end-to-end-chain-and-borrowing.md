@@ -68,7 +68,7 @@
 | 取数 | XianYuApis 详情/搜索接口；MediaCrawler 节奏 | `packages/channel-mtop`（签名/信封/cookie 归一/ret 分类）+ daemon `probe` 执行器 + `items` 落库 | 签名做成**纯函数无状态**包；probe 只读、走 `read` 桶；不把 UA/设备指纹写死 |
 | 文案 | 雾里 `人物设定.txt`（标题≤30 字、4 段式、5 话题标签、纯 JSON） | `.agents/skills/xianyu-listing-copy` + `.agents/skills/xianyu-listing-audit`（2026-10-21 已落地，实际 2 个 skill；2026-10-22 迁到 `.agents/skills`，DSH 项目级 skill 根自动发现） | 素材工程化模板进了 skill 层，生成仍留在插件/agent 侧，daemon 不调 LLM |
 | 发布 | XianYuApis 发布 body（学事实）+ A/B 的「真浏览器里干活」 | `packages/channel-cdp/src/publish.ts` 步骤机 + `daemon/src/cdp-publish.ts` 装配 + CLI `daemon:publish` | **确定性步骤机是唯一写路径，LLM 不进热路径**（ADR 0003）；默认 dry-run；`uniqueCode` 每次生成、绝不复用；提交后必须解析到 itemId 或「发布成功」否则按失败，且不自动重试 |
-| 订单/发货 | B-im 的 IM 协议；A 的规则表数据模型 | `packages/core/src/delivery.ts`（`matchDeliveryRule`，priority 排序、缺上下文 fail-closed、红线词硬拦 38 条）+ `packages/channel-im`（已提交 `7a01bbf`，32 tests；未接 daemon） | 规则引擎是**纯函数 + 手写窄化校验**，可脱网单测（21 例）；daemon `deliver/reply` 仍 `UNSUPPORTED`（宁可失败不留假成功） |
+| 订单/发货 | B-im 的 IM 协议；A 的规则表数据模型 | `packages/core/src/delivery.ts`（`matchDeliveryRule`，priority 排序、缺上下文 fail-closed、红线词硬拦 38 条）+ `packages/channel-im`（帧/状态机）+ `daemon/im-{token,transport,client,runtime}.ts`（P2.1 已接，`BF_IM=1` 才连） | 规则引擎是**纯函数 + 手写窄化校验**，可脱网单测（21 例）；daemon `deliver` 仍 `UNSUPPORTED`，`reply` 已接 IM（真机未验收，宁可失败不留假成功） |
 | 官方通道 | xian-guanjia（MIT） | `packages/channel-guanjia`（签名 + 20 接口，**不含 placeOrder**） | 合规首选通道，需鱼小铺 + 订购 ERP；作为通道矩阵 A 位 |
 | 控制面 | ——（自研） | `plugin-ops` 11 个 `xy_*` 工具 + 审批门禁 + 侧边栏；`daemon` HTTP/队列/worker | daemon 与插件**互不 import**，只靠 HTTP 契约；写类工具挂 `tools/pre-execute` 审批 |
 
@@ -93,7 +93,7 @@
 | 失败重放 | 🟡 单测级 | `queue.requeue` + `POST /tasks/:id/retry` + `xy_task_retry`（写类挂审批，`BF_PUBLISH_SUBMIT=1` 下会真重放）；**未真机重放发布** |
 | 发布侧风控识别 + pacing | 🟡 单测级 | `channel-cdp/src/risk.ts` 每步探测（命中 `RISK_CONTROL`、daemon 熔断 600s）；`core/src/limiter.ts` 账号级 pacing 默认 180s（推导值、未真机校准）；均**未真机验证** |
 | 采集参考 R1（只读统计） | 🟡 真机单件 | `POST /reference` 真机 200 / 241ms（`itemIds:['1091933071728']`）；不下载图片、不照抄文案；R2 自有商品搬家未实现待拍板 |
-| 发货/回消息 | ⛔ `UNSUPPORTED` | daemon `deliver/reply` 硬编码 `UNSUPPORTED`（`operations.ts:160-166`）；`packages/channel-im` 已提交（`7a01bbf`，32 tests）但**未接 daemon**，无 websocket 长连/发送/鉴权握手 |
+| 发货 / 回消息 | 🟡 发货 ⛔、回消息代码级 | daemon `deliver` 仍是硬编码 `UNSUPPORTED`；`reply` 已接 IM 长连（P2.1：`im-runtime` → `im-client`，消息落 `im_messages`，`BF_IM=1` 才开），**真机未验收** |
 | 闲管家官方通道 | 🟡 代码就绪未接装配 | `packages/channel-guanjia` 62 测试；缺企业凭证 |
 
 ## 5. 破局真发布的三个选项

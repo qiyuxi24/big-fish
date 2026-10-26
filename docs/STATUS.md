@@ -1,6 +1,6 @@
 # 项目状态 — 单一事实源
 
-> **最后更新 2026-10-24 凌晨（账号模块 v3：**托管浏览器**——扫码/导入/发布共用同一个调试端口 Chrome，扫码登录不再关窗口；新增 `GET /browser` + 面板「托管浏览器」状态行（账号 tab data-role 27 个）；账号模块 v2：切换 / 退出 / 添加账户 / cookie 生命周期 / 定时保活（**已按用户要求真机开启**，300s 间隔，观测到 `source=keepalive`）/ verify 5s 冷却；采集 v3 结构特征 + 市场简报/成色建议价（§4.1.4）；1151 基线）· 代码基线 `main @ 218fd05`（含本节全部改动）。**
+> **最后更新 2026-10-26 中午（账号模块 v3：**托管浏览器**——扫码/导入/发布共用同一个调试端口 Chrome，扫码登录不再关窗口；新增 `GET /browser` + 面板「托管浏览器」状态行（账号 tab data-role 27 个）；账号模块 v2：切换 / 退出 / 添加账户 / cookie 生命周期 / 定时保活（**已按用户要求真机开启**，300s 间隔，观测到 `source=keepalive`）/ verify 5s 冷却；采集 v3 结构特征 + 市场简报/成色建议价（§4.1.4）；**P2.1 IM 接线已落地（1204 测试基线）**）· 代码基线 `main @ f3acef7`（含 P2.1 全部改动；IM 真机验收待做）。**
 > 本文是仓库**唯一**的「现在到哪了 / 下一步做什么」入口。其他文档里的测试数字、工具数量、阶段状态一律以本文为准；
 > 若发现别处与本文冲突，以本文为真、并把冲突处改成指向本文。规则看 [AGENTS.md](../AGENTS.md)，实现形态看 [architecture.md](architecture.md)。
 
@@ -8,7 +8,7 @@
 
 ## 1. 一句话
 
-**能登录、能取品、能单件全自动发布（真机真提交 3 次：2 次 CLI 直发 + 1 次队列路径，都是填表 → 选类目 → 地址 → 提交 → 拿到 itemId → 已下架）；队列批量发布（≥2 条）的 dry-run 已真机跑通（2/2 done，含一次 RATE_LIMITED 退避后成功），**批量真提交还没做过**（要用户点头）；账号只有只读摘要；采集参考到「只读统计 + 市场简报/成色建议价」（真机跑通单件解析 + 自己店 3 件 + 他人店铺 3 件整批采集入库；简报链路真机样本走通）；不能自动发货、IM 未接进 daemon。**
+**能登录、能取品、能单件全自动发布（真机真提交 3 次：2 次 CLI 直发 + 1 次队列路径，都是填表 → 选类目 → 地址 → 提交 → 拿到 itemId → 已下架）；队列批量发布（≥2 条）的 dry-run 已真机跑通（2/2 done，含一次 RATE_LIMITED 退避后成功），**批量真提交还没做过**（要用户点头）；账号只有只读摘要；采集参考到「只读统计 + 市场简报/成色建议价」（真机跑通单件解析 + 自己店 3 件 + 他人店铺 3 件整批采集入库；简报链路真机样本走通）；**IM 已接进 daemon（P2.1：wss 长连 + 收消息落库 + 发文本回复，`BF_IM=1` 才开；单测/集成级证据，真机待验收）**；不能自动发货。**
 P0 → P1.2 全部完成并提交。**当前按四模块重构**（用户 2026-10-21 拍板：一个插件、模块 tab 在侧边栏面板内切换、一个一个做）：发布 → 账号 → 发布前处理 → 采集参考，见 §4.1。
 P2 自动发货押后到发布这条线跑顺再切。
 
@@ -40,7 +40,7 @@ P2 自动发货押后到发布这条线跑顺再切。
 | 批量入队 `xy_publish_batch` + 批次层 | ✅ 工具单测 / 队列批量真机（dry-run） | `plugin-ops/src/batch.js`：逐条校验 + `draftDedupeKey` 幂等 + `mode=dry-run` 默认；按账号逐条预约 `availableAt`（默认 180s，`BF_PUBLISH_MIN_INTERVAL_MS` 可调，失败不占位）；写类工具挂审批门禁（仅 enqueue 需确认）。daemon 侧已有批次层：`EnqueueInput.batchId` / `batchStats` / `GET /batches/:id`（五状态计数 + items）。真机 2026-10-22：HTTP 直接入队 2 条同 `batchId` → 2/2 `done`。**仍缺**：`POST /tasks` 不给 `created` 标志（跨批重复只能显示 queued）、批次真提交未跑、180s pacing 未真机校准 |
 | 批量上架调度 | 🟡 链路通，真提交未做 | 批次层（batchId / `GET /batches/:id` 汇总）+ 单账号串行 + 账号级 pacing 已就位；队列批量 dry-run 真机 2/2；**一条命令真机验收已就绪**：`pnpm accept:publish`（`scripts/publish-acceptance.mjs`，自起 dry-run daemon、同批塞一条支持类目 + 一条不支持类目、轮询到终态、落证据 JSON；只能在非沙箱终端跑，沙箱里 CDP 渲染进程起不来）；**批量真提交仍未跑**，面板尚无批次进度消费 |
 | `deliver` 自动发货 | ❌ `UNSUPPORTED` | 规则引擎已就绪，缺订单/消息源与执行接线 |
-| `reply` / IM 收发 | ❌ `UNSUPPORTED` | `channel-im` 已提交（帧解析/归一化/会话状态机，32 tests），**未接 daemon**；websocket 长连、发送、握手未实现 |
+| `reply` / IM 收发 | 🟡 代码+测试（真机待验收） | 四层已接：`channel-im`（帧/状态机；新增 `sendFrame` + `buildSendMessageFrame`）→ `daemon/im-token.ts`（mtop 取 accessToken，风控/失效分类）→ `im-transport.ts`（内置 WebSocket 适配器）→ `im-client.ts`（`/reg` → 1s 后 ackDiff → 15s 心跳；先 ACK 再落库；`sendReply` 组帧）→ `im-runtime.ts`（按账号管理连接）。消息落 `core` 的 `im_messages` 表（`messageId` 唯一键去重）。开关 `BF_IM=1`（默认关）；`operations.sendReply` 未注入网关时仍 `UNSUPPORTED`（任务转 `needs_review`，不假成功）。**未做**：自动发货、多账号并行、图片/语音、重连补拉历史、真机验收 |
 | 文案 skill（改写 + 合规审核） | ✅ 2 个 skill | `.agents/skills/xianyu-listing-copy`、`.agents/skills/xianyu-listing-audit`；**已被 DSH 自动发现**（provider 只扫 `.dsh/skills` / `.agents/skills`，2026-10-22 实测），可被 agent 直接调用 |
 | 文案风格注入（面板 + `xy_copy_plan`） | ✅ 真机（面板）/ 单测（工具） | 面板内「文案」分区（`PANEL_TABS` 六分区之一）：5 档语言风格（plain/warm/professional/urgent/story）、填商品名/价格/成色，组出 `xy_copy_plan` 参数 JSON；工具把风格约束渲染成提示词。**都只产出请求/提示词，不调模型** |
 | 品类模板 + 字段勾选（「打印机」面板） | ✅ 单测（面板 + 模板守卫） | `plugin-ops/src/category-templates.js`：6 个品类（数码/电脑/服饰/家居/图书资料/其他）各带规格字段，通用字段 10 项；rpc `copy.templates` 下发（client 不复刻副本），面板「文案」tab 改为「选品类 → 勾字段 → 填值 → 选风格 → 生成参数」。勾选语义：必填锁定、品类规格默认选中可取消、**未勾选/未填的字段不进提示词**；`reason` / `usedMonths` 已补进 skill `input-schema.json` 与 `xy_copy_plan`（第 2 段的事实来源）。**未真机验证（纯前端 + 纯常量，无写路径）** |
@@ -53,21 +53,21 @@ P2 自动发货押后到发布这条线跑顺再切。
 ## 3. 质量基线（可复现）
 
 ```
-node scripts/test-all.mjs     # 1151 tests / 1151 pass / 56 suites / 104 个测试文件 / ~22s
+node scripts/test-all.mjs     # 1204 tests / 1204 pass / 67 suites / 112 个测试文件 / ~23s
 ```
 
 | 范围 | 用例数 | 备注 |
 | --- | --- | --- |
-| core | 190 | 队列（含 batchId/批次统计/requeue）、仓储、策略、限流熔断、账号级发布间隔、凭据、脱敏、配置、settings 存储、发货规则引擎、**商家行情快照（含结构特征列 v5）** |
-| daemon | 335 | HTTP、CLI、执行器、worker、路由、账号导入、账号摘要、**登录态校验（`online` 判定 / 错误分类 / 固定中文文案 / cookie 线索脱敏）**、**账号生命周期（`account-state.ts` 状态文件 / `account-session.ts` 单飞+5s 冷却 / `account-lifecycle.ts` 切换与退出 / `account-keepalive.ts` 定时器与 picker / 导入时写 `meta.expires`）**、参考采集、settings 路由、批次统计、CDP 发布、dry-run 开关、发布侧风控、任务事件流 |
+| core | 196 | 队列（含 batchId/批次统计/requeue）、仓储、策略、限流熔断、账号级发布间隔、凭据、脱敏、配置、settings 存储、发货规则引擎、**商家行情快照（含结构特征列 v5）**、**IM 消息表 v6（`im_messages`：`messageId` 唯一键去重 / lastPeer / count）** |
+| daemon | 376 | HTTP、CLI、执行器、worker、路由、账号导入、账号摘要、**登录态校验（`online` 判定 / 错误分类 / 固定中文文案 / cookie 线索脱敏）**、**账号生命周期（`account-state.ts` 状态文件 / `account-session.ts` 单飞+5s 冷却 / `account-lifecycle.ts` 切换与退出 / `account-keepalive.ts` 定时器与 picker / 导入时写 `meta.expires`）**、参考采集、settings 路由、批次统计、CDP 发布、dry-run 开关、发布侧风控、任务事件流、**IM（token 解析 / ws 适配器 / 客户端握手与重连 / 运行时装配 / `BF_IM` 开关 / 集成：默认关 + 开启后 blocked 不影响 /status）** |
 | channel-mtop | 110 | 纯函数（含参考解析、卖点词、**文案结构 / 主图构成特征**） |
 | channel-cdp | 108 | 假连接与假页面回放（分类下拉按 AI 推荐刷新/虚拟列表滚动、风控探测） |
 | channel-guanjia | 62 | 纯函数 |
-| channel-im | 32 | 帧解析 / 归一化 / 状态机 |
+| channel-im | 38 | 帧解析 / 归一化 / 状态机 / **发送帧（`sendFrame` + `buildSendMessageFrame`）** |
 | plugin-ops | 280 | 插件契约、**工具注册中间件（spec 校验 / read-confirm 分桶 / 按参数判定写 / 统一 ask 门禁）**、草稿校验、批量入队与 pacing、文案风格注入、账号摘要、**账号表 7 列（切换 / 退出 / 添加 / 登录态剩余 / 保活；verify 徽标、10 分钟缓存、5s 冷却 cached）**、参考报告渲染、host rpc 桥（19 端点，含 `accounts.activate` / `accounts.logout`）、**webServer 兼容路由回退**、**daemon 自动拉起（冷却/单飞/回环守卫）+ 面板内启停（停止需二次确认）**、**异常唤醒（事件去重/合并/提示语、游标定基线、无 agent 不轮询、失败不刷屏）**、client bundle（面板内 6 个模块 tab、**工作流树 `events.list` 增量轮询**、**发布页写操作（入队/重试/设置保存，两次确认）+ 任务表 3 秒轮询**、**账号表 7 列 + 切换/退出/添加/保活（27 个 data-role：保活一个开关按钮 + 状态行 + 托管浏览器状态行；自动检测 10 分钟缓存）**） |
 | scripts | 31 | daemon 常驻服务（参数/状态机/日志尾）16 + 发布真机验收脚本（参数/草稿/批次判定/PNG 生成）15 |
 | integration | 3 | 插件 client ↔ 真 daemon 端到端；**采集链路（解析 → confirm 门禁 → 入库 → 读回）** |
-| **合计** | **1151** | ops-bundle 无测试（只声明组合） |
+| **合计** | **1204** | ops-bundle 无测试（只声明组合） |
 
 - 类型检查：**6 个 TS 包** tsc 0 错误（core / daemon / channel-mtop / channel-cdp / channel-guanjia / channel-im）。
   **plugin-ops 与 ops-bundle 是纯 ESM JS，无 tsconfig，不在类型检查覆盖内**——改这两个包只能靠测试。
@@ -182,15 +182,18 @@ node scripts/test-all.mjs     # 1151 tests / 1151 pass / 56 suites / 104 个测�
 
 **没做 / 等拍板**：①建议价系数只有成色一维（无类目/品牌分档，无一档以上成色细修），偏保守；②分位用最近秩不插值，小样本会给库里真实出现过的价格，但可能不是最优点；③`titleLength` 用码点计数，与 channel-mtop 的 `titleChars`（UTF-16）在 emoji 上可能差 1；④高频词只来自标题（库里不存描述原文，这是红线决定的）；⑤真机样本量仍小（自己店 3 件 + 他人店 1 家 3 件），建议价锚点弱；要更稳就得多采几家/多件（每次 ≤60 件、串行，注意账号风控）；⑥`xy_copy_plan` 的市场简报目前靠调用方传 `marketCategoryId`，没有「按草稿类目自动找样本」的默认推断；⑦类目简报仍会把不同形态的货（PDF 电子版 vs 实体笔记）混在一个池子里——现在只在跨度 ≥3 倍时给提醒，没有自动按形态/价格分池（需要先有「形态」字段或价格区间参数）。
 
-### 4.2 下一步备选：P2 自动发货（等发布线跑顺再切）
+### 4.2 下一步：P2 自动发货（P2.1 IM 已接线；P2.2 未做）
 
-**三块地基已就位**：规则引擎（`core/src/delivery.ts`，21 tests，4 种动作 + 红线词拦截）、IM 协议事实（[im-protocol.md](im-protocol.md) 已写成可施工规格：注册/心跳/ACK/`/r/MessageSend/sendByReceiverScope`/解密顺序）、消息解析（`channel-im` 32 tests）。
-**卡点**：①订单源完全没有依据——`docs` 里「订单」0 命中，订单列表/确认发货接口未抓包；②IM websocket 客户端未写（协议有、实现无）。
+**P2.1 已完成（2026-10-26，代码 + 测试；真机待验收）**：`packages/daemon/src/im-{token,transport,client,runtime}.ts` + `core/src/im-messages.ts`（表 v6，`messageId` 唯一键去重）+ `channel-im` 的 `sendFrame` / `buildSendMessageFrame`。接线点：`operations.sendReply` 委托注入的 IM 网关（未注入仍 `UNSUPPORTED`，任务转 `needs_review` 而不是假成功）；`runtime.ts` 装配 `imRuntime`，`refreshAccounts()` 后 `startAll`，`close()` 先停 IM 再停 worker；CLI `BF_IM=1`/`true` 才开（默认关：避免测试/离线/只跑发布时主动连 wss、暴露登录态与风控面）。协议细节见 [im-protocol.md](im-protocol.md) §9。
+
+**P2.1 已知缺口（别当成已完成）**：①重连后不按 `pts` 续传，断线期消息没有补拉（候选接口 `mtop.taobao.idlemessage.pc.user.query`，未验证）；②不做「收包静默判死」——内置 WebSocket 不能设 `ping_interval`，服务端空闲时也不保证回包，半开连接只能等下次发送失败/close 事件再退避重连；③只落文本消息，图片/语音/卡片更新不解析；④单账号无代理（内置 WebSocket 的 per-call dispatcher 被忽略，分账号代理要换 `ws@8` + `https-proxy-agent`）；⑤**真机未验收**：真实买家会话、滑块/风控路径都没在真实环境跑过；⑥面板与 `xy_*` 工具还没有「回复」入口，reply 任务目前只能经 `POST /tasks` 手工入队。
+
+**P2.2 自动发货的卡点**：①订单源仍无依据——`docs` 里「订单」0 命中，订单列表/确认发货接口未抓包（调研给出候选端点：`mtop.taobao.idle.trade.merchant.sold.get` 已售单分页、`mtop.taobao.idle.logistic.consign.dummy` 无需物流发货、闲管家开放平台 `/api/open/order/ship`，**均未验证**）；②发货幂等与「崩溃中断绝不重发」的状态机未写（调研已给出可照抄的状态机：`pending/message_sending/message_sent/platform_confirming/unknown/failed/success` + `retry_safe`/`lease_until`，**崩溃中断且租约过期必须强制 `unknown` + `retry_safe=0`，绝不自动重发**）。
 
 | 步骤 | 做什么 | 验收 |
 | --- | --- | --- |
 | **P2.0 半自动** | 规则命中 → 面板展示建议动作与文案 → 人工确认 → 入队 | 手填买家消息能出命中规则与建议文案；确认后队列有任务 |
-| **P2.1 IM 接线** | websocket 长连（15s 心跳、逐帧 ACK、token 过期分流）+ 消息解密落库 + 发送帧 | 真实小号能给买家发一条文本；消息表唯一键去重 |
+| **P2.1 IM 接线** | websocket 长连（15s 应用层心跳、逐帧 ACK、token 过期分流）+ 消息落库 + 发送帧 | **代码/测试已绿（1204 tests）**；待真机：真实小号能给买家发一条文本、消息表唯一键去重 |
 | **P2.2 自动发货** | 订单源（先 CDP 读「我卖出的」兜底）+ 发卡 + 状态回写 + 幂等 `uniqueCode` | 一个测试订单从付款到发货全自动，重复触发不双发 |
 
 > 不建议跳过 P2.0：**发货是写操作且直接触达买家**，先让人确认一轮，把文案与规则调对再放开。
@@ -263,6 +266,7 @@ node scripts/test-all.mjs     # 1151 tests / 1151 pass / 56 suites / 104 个测�
 - **闲鱼发布页「分类」不可搜索、候选只有 ~10 个**（2026-10-22 真机）：候选来自 `mtop.taobao.idle.kgraph.property.recommend`，入参是标题/描述/图片；先把图传完、把文案写进描述区，推荐才会按文案刷新（实测「学习笔记」会在填完「高数笔记…」后出现）。顺序反了就只能拿到图片猜出来的类目（如「女士包」）。
 - **antd 下拉的两个坑（2026-10-21/22 真机定位）**：①选项在 body 级 portal，关闭后节点不销毁（只加 `ant-select-dropdown-hidden`），全页扫 `.ant-select-item-option` 会点到旧/别的 Select 的选项；②**对选项 `scrollIntoView` 会滚动主页面**（实测 scrollY 94→29），下拉随之重排，可信点击被当成「点了外面」→ 值没变。取坐标时页面不能滚；判「已打开」只认 `.ant-select-open` + `aria-expanded=true`（本机 appear 动画永远停在 prepare）。③点击后 `selection-item` 更新有延迟（6ms 还是旧值、23ms 才变），回读要等。
 - DSH 沙箱造的 workspace junction 是坏的（`realpathSync` 返回链接自身）；重建用 `fs.rmdirSync` + `fs.symlinkSync(...,'junction')`，**删 node_modules 下链接绝不能用 `rm -rf`**（会跟随 junction 删真源码，已发生过一次）。
+- **node:test 用例漏关长连接 = 进程被定时器吊住，表现为 `exit 1` + 零输出**：`packages/daemon/test/im-runtime.test.ts` 首版就是这样——断言失败路径没走到 `stop()`，ImClient 的心跳/退避定时器让测试进程不退出，最后被工具超时杀掉，输出缓冲全丢，看起来像「测试文件根本没跑」。修复模式固定为 `it('...', async (t) => { const setup = createSetup(); t.after(() => setup.runtime.stop()) })`（失败路径也必然关连接），定位时先 `node --test --test-name-pattern=...` 单跑。
 - **不要用 `read` 读出整文件再 `write` 回去**：2026-10-23 下午 `packages/plugin-ops/client.js`（783 行）这样操作后被截成 609 行，尾部整段丢失、`node --check` 报 `Unexpected end of input`。改文件只用 `edit` / `ops_replace` 或 Node `fs` 读 + 局部替换；真丢了可以从 DSH 会话日志恢复（`~/.dsh/sessions/--D-Github-big~0020fish--/<sessionId>/session.v4.jsonl.zstd` 是多帧拼接 zstd，Node 的 zstd 只解第一帧，得按 `scanZstdFrames` 逐帧解）。
 - `scripts/typecheck.mjs` 在本沙箱因 `spawnSync node.exe EPERM` 报错，用 DSH checkout 的 tsc 直接跑（命令见 [handoff.md](handoff.md) §4）。
 - Hindsight 本机不可用（daemon 起不来、Python 无网），不要调 `hindsight_*`。

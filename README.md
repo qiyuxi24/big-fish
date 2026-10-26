@@ -8,8 +8,8 @@
 
 - 已真机跑通：登录态导入 / 扫码登录 / 令牌自动刷新 / 取商家与全量商品 / 详情落库（`probe`）/ 擦亮（`polish`）/ **CDP 单件发布（3 次，均已下架；受网页端类目限制）** / 分类选择（`category.ts`，按 AI 推荐刷新重试）/ 面板内模块 tab（桌面端 GUI 实拍）/ 面板 rpc 只读轮询（单测 + 隔离 dev host 打补丁后实拍；桌面端受宿主 bug 阻塞，见 STATUS §5）/ `GET /accounts` 账号只读摘要 / `POST /reference` 参考采集（单件只读统计）/ **队列批量 dry-run 2 条同批（2026-10-22，批次 `b-e2e-mvj3aedp`，2/2 done，含一次 RATE_LIMITED 退避）**。
 - 只有单测（没真机）：**批量真提交**、失败任务重放（`xy_task_retry`）、发布侧风控识别、账号级 pacing（默认 180s）、面板内写类按钮（导入/扫码/重试/入队/改设置）。
-- 未做：发布前处理（设置页接 rpc、生图）、采集 R2 自有商品搬家（待拍板）、自动发货（`deliver`）、IM 收发（`reply`）；面板写类按钮（通道已有，缺二次确认 UI）。
-- 质量基线：`node scripts/test-all.mjs` = **780 tests / 780 pass**（31 suites / 79 files）；6 个 TS 包 tsc 0 错误。
+- 未做：发布前处理（设置页接 rpc、生图）、采集 R2 自有商品搬家（待拍板）、自动发货（`deliver`）；IM 收发（`reply`）代码+测试已落地（P2.1：wss 长连 / 消息落库 / 发文本，`BF_IM=1` 才连），**真机未验收**；面板写类按钮（通道已有，缺二次确认 UI）。
+- 质量基线：`node scripts/test-all.mjs` = **1204 tests / 1204 pass**（67 suites）；6 个 TS 包 tsc 0 错误。
 
 👉 **现状、能力矩阵、下一步与待决策项全部在 [docs/STATUS.md](docs/STATUS.md)——读那一篇就够。**
 
@@ -32,7 +32,7 @@
 
 ```sh
 pnpm install --offline --ignore-scripts   # 本机 registry 不可达，必须离线装；运行时零第三方依赖
-node scripts/test-all.mjs                 # 780 tests / 780 pass（单进程顺序跑，沙箱禁止 spawn）
+node scripts/test-all.mjs                 # 1204 tests / 1204 pass / 67 suites（单进程顺序跑，沙箱禁止 spawn）
 node packages/daemon/src/cli.ts --data-dir .scratch/daemon --port 47001   # 起 daemon（含 worker）
 node scripts/dsh-dev.mjs --fresh          # 隔离 DSH Web（含侧边栏栏位）到 127.0.0.1:47080
 node scripts/dsh-dump.mjs --smoke         # 在隔离 DSH_HOME 里真装配插件

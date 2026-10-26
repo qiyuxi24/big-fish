@@ -91,7 +91,7 @@ openStore({path: config.dbPath})
 | `polish` | write | mtop 擦亮 2.0 | ✅ 已通 |
 | `publish` | write | CDP 发布步骤机（`channel-cdp`） | ⚠️ 默认 dry-run；`--submit` / `BF_PUBLISH_SUBMIT=1` 才走真链路。2026-10-21 起真机单件跑通多次（首次 itemId `1093817229436`，记录见 §13.6；次数与证据以 [STATUS.md](STATUS.md) 为准）；只验证「学习笔记」一条类目路径，不等于可批量发布 |
 | `deliver` | write | IM/闲管家 | ⛔ `UNSUPPORTED`（P2） |
-| `reply` | write | IM | ⛔ `UNSUPPORTED`（P2） |
+| `reply` | write | IM 长连（`im-runtime`） | 🟡 P2.1 代码+测试（`BF_IM=1` 才连、默认关；下行先 ACK 再落库；`sendReply` 走 `sendByReceiverScope`）；**真机未验收** |
 
 `publish` 入口先跑 `checkListing`（`packages/core/src/policy.ts`：标题/描述长度、价格区间、违禁词 38 条、违禁类目 20 条、首图方形、图片数量），`error` 级问题直接 `VALIDATION` + `details.issues`，不消耗通道预算。**刻意的 `UNSUPPORTED` 不是 bug**：宁可失败也不留「假成功」的已发布假象。
 
@@ -101,6 +101,7 @@ openStore({path: config.dbPath})
 - 步骤机在 `packages/channel-cdp/src/publish.ts`：打开发布页 → 上传图片（`DOM.setFileInputFiles`，等价用户选文件）→ 文案（contenteditable 富文本走 `Input.insertText`，普通 input 走原生 setter + `input` 事件）→ [选择分类（草稿给 `category` 时才跑）] → 计价方式 → 价格/包邮 → 地址（真实键入触发联想，按候选匹配点选并回读表单）→ 必填项预检（分类/所在地非空）→ 提交并验证（URL 含 item id 或页面出现「发布成功」，超时按失败处理且**不自动重试**）。dry-run 在提交前收尾。
 - 装配在 `packages/daemon/src/cdp-publish.ts`：先读浏览器 `unb` 与期望账号比对（防发错号）→ 开空白页跑步骤机 → 返回 `{accountId,dryRun,itemId?,href,durationMs}`。
 - 安全默认：`submit=false` 只填表不点提交；CLI `npm run daemon:publish -- --draft <草稿.json> [--account-id X] [--chrome-port 9222] [--screenshots dir] [--submit]`，daemon 队列发布要 `BF_PUBLISH_SUBMIT=1`（另支持 `BF_CHROME_PORT`、`BF_PUBLISH_SCREENSHOTS`，截图默认 `<data-dir>/publish-shots`）。
+- IM 长连（P2.1）默认**不连**：`BF_IM=1` 才起 wss（mtop 取 accessToken → `/reg` → 1s 后 ackDiff → 15s 心跳；下行先 ACK 再落库；`sendReply` 走 `/r/MessageSend/sendByReceiverScope`）。实现入口 `packages/daemon/src/im-runtime.ts`，已知缺口见 [STATUS.md](STATUS.md) §4.2。
 - 选择器与填写方式已在真机（Edge 155 + CDP 9222，用户大号 `2206569289277`）校准；选择器表、填写原理、**地址搜索限制**、**类目支持矩阵**与**真发布记录**见 §13。2026-10-21 起已用该账号完成端到端真发布（首次 itemId `1093817229436`），见 §13.5。**注意：这个账号不是测试小号**（AGENTS §5），真发必须一次一件、用户点头。
 
 ## 7. IPC 契约
@@ -193,7 +194,7 @@ queued ──lease──► leased ──ack──► done
 
 - **publish 真提交跑通过 3 次、都是单件（用户大号 `2206569289277`，均已下架）**：步骤机与 daemon 通道都在（§6.1），2026-10-21 首次成功（§13.5，`1093817229436`），随后 itemId `1091938715735` 在分类选择修复后又跑通一次（CLI 直发）；另有一次走队列路径（`POST /tasks` → worker → `1091940243200`）。3 次都只验证了「学习笔记」这一条类目路径，真提交需 `--submit` / `BF_PUBLISH_SUBMIT=1` 且必须由用户点头。**别把「单件跑通」当成「可以批量发」。**
 - **发布页地址搜索在 CDP 下不可用**：联想请求能发出、响应正常，但候选列表 UI 不回显，只能从「常用地址/附近地址」里匹配（§13.3）。类目：页面 AI 自动识别，草稿可用 `category` 覆盖；**网页端只支持部分类目**，不支持时立即失败（§13.5）。
-- **发货未实现、IM 已提交未接线**：`deliver/reply` 仍是 `UNSUPPORTED`；`packages/channel-im` 已提交（32 tests：帧解析/消息归一化/会话状态机）但**未接 daemon**（daemon 无该依赖），websocket 长连/消息发送/鉴权握手均未实现；协议与规则见 [im-protocol.md](im-protocol.md)、[delivery-rules.md](delivery-rules.md)。
+- **发货未实现、IM 已接线（P2.1）**：`deliver` 仍是 `UNSUPPORTED`；`reply` 已接 IM 长连（`packages/daemon/src/im-runtime.ts` + `im-client.ts` / `im-transport.ts` / `im-token.ts`，消息落 `im_messages`），**`BF_IM=1` 才连、默认关**；真机未验收，缺口（重连不按 pts 补拉历史、无收包静默判死、只文本消息、单账号无代理）见 [STATUS.md](STATUS.md) §4.2；协议与规则见 [im-protocol.md](im-protocol.md)、[delivery-rules.md](delivery-rules.md)。
 - **登录态导入与扫码登录均已实现**：导入走 `npm run daemon:import-account`（或 `POST /accounts/import`、插件 `xy_import_account`），从带 `--remote-debugging-port=9222` 的浏览器读 cookie；扫码走 `npm run daemon:login` / `POST /accounts/login`，轮询到 `unb` + `_m_h5_tk` 齐备才算成功（默认超时 180s）。两者都写 `CredentialStore`（AES-256-GCM），accountId 默认取 cookie 里的 `unb`。
 - **侧边栏面板内的模块 tab（2026-10-21 纠正）**：插件只注册 `sidebar.panellist` + `main` 两个插槽；主面板内部用 `PANEL_TABS` 切 6 个分区——自动发布（默认）/ 账号 / 文案 / 采集 / 概览 / 诊断（见 `plugin-ops/client.js` 的 `PANEL_TABS` 与 `PanelBody` 分发）。**不注册会话顶部 tab**（`conversation.view` 与「点侧边栏进面板」互斥，试过后已移除）。面板不读凭据、不调模型，需要执行的动作交给 agent 调工具或 daemon；但**状态是真实数据**：走 host rpc 通道 `/bigfish`（ADR 0004）每 3 秒轮询 `health`/`status`/`accounts`/`settings.get`/`tasks.list`/`batches.get` 六个只读端点（任一失败整块降级成「未连接后台」），另有 `events.list` 独立驱动「工作流树」：把 `task.state`/`task.step` 事件聚合成「批次 → 任务 → 步骤」，直接回答「现在在干嘛」（3 秒增量拉取，`since` 游标，失败只降级这一块）。DSH 宿主没有「面板按钮调 host 工具」的公开 API，但 rpc 桥可以直接调 daemon 只读端点：**账号 tab 已是动态表格**（账号 / 登录状态 / 最近检测 / 凭据更新 / 字段数 / 操作），进 tab 自动跑一次 `accounts.verify`（模块级 60s 缓存，手动「检测」无视缓存），失败只落该行徽标不降级整页；「重新导入」「扫码登录」是写类，点两次才发 `confirm:true`（第一次只上膛改文案）。发布批量 tab 仍只产出参数 JSON（执行交给 agent 调 `xy_publish_batch`），顶部「操作入口」两个按钮仍 disabled。⚠️ 该通道直连在 DSH 0.1.5-rc.2 上**注册必失败**（宿主 `connection` 插件用自己 ctx 注册 `webServer`，`rpc-host.ts:80`/`:178-181`，inject 只有 `['credentials']`）；插件已自动回退到自建 `webServer` 兼容路由（`plugin-ops/src/host-route.js`，信封/状态码与宿主一致、鉴权 fail-closed），宿主修好后自动优先走官方通道。详见 [adr/0004-client-host-rpc.md](adr/0004-client-host-rpc.md) §已知阻塞。另有**异常唤醒**（2026-10-23）：插件侧 `setTimeout` 链每 10s 增量拉 `events.list`（启动先翻页定基线，不把历史失败当新告警），命中 `task.state` 的 `failed`/`needs_review` 时按事件 id 去重、多条合并成一条中文 notice，用宿主公开扩展点 `agent.followup()` 注入最近创建的顶层会话；不调 LLM、不写外部系统，配置 `enableAlerts` 可关，无 agent 时不 arm（`plugin-ops/src/alerts.js` + `src/alert-watch.js`）。
 - **没有打包**：Electron/headless 分发形态待用户决策。

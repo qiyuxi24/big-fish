@@ -1,6 +1,6 @@
 # 闲鱼 IM 协议事实（P1.1 资产）
 
-> 状态（2026-10-21）：`packages/channel-im` 已提交（`7a01bbf`，32 tests），但**尚未接 daemon**（无 websocket 长连/发送/鉴权握手）；本文是协议事实 + P2 设计依据，当前状态见 [STATUS.md](STATUS.md)。
+> 状态（2026-10-26）：**已接进 daemon（P2.1）**——`channel-im` 帧层 + `daemon/im-token.ts` / `im-transport.ts` / `im-client.ts` / `im-runtime.ts`，消息落 `im_messages` 表，发文本回复走 `operations.sendReply`；`BF_IM=1` 才连，**真机验收未做**。本文是协议事实 + P2 设计依据，当前状态见 [STATUS.md](STATUS.md)，实现缺口见本文 §9。
 > 目标：把研究阶段从三个开源实现里读出的闲鱼 IM（钉钉 lwp 长连接）协议事实，沉淀成 P2 的 reply / deliver 执行器可以直接照做的规格。
 > 依据：`research/notes/B-im.md`（三仓只读分析，逐条带 file:line）；行号已用归档源码 `research/tmp/xianyu-*.tgz`（内存解压、只读）二次核对，仓库前缀写作 `<repo>/<相对路径>`。
 > 边界：只记录协议事实与我们自己的流程设计，**不含任何 GPL/AGPL 源码片段**。三仓全部 copyleft（见 `research/notes/B-im.md:88-91`）——协议事实不受版权保护可独立重写，但注释、轨迹 JSON、prompt 文案一律不搬。
@@ -238,3 +238,14 @@ loop{ 15s /! 心跳 ；每条下行先 ACK 再入队 ；业务帧 }
 4. 限频/429 的**帧级表现**未观察到，只见错误码文案；P2 先按 `challenge` + 退避处理。
 5. `is_sync_package` 之后的离线补发行为未实测；首注册时的历史消息洪峰需要限速消费。
 6. 三仓心跳帧都不带业务字段；若服务端后续要求上报 `pts`，需重新核对。
+
+## 9. 实现状态（2026-10-26，P2.1）
+
+**已落地（代码 + 测试，证据以 [STATUS.md](STATUS.md) §4.2 为准）**：`daemon/im-token.ts`（mtop 取 accessToken；风控 `RISK_CONTROL` 带 `punishUrl`、登录失效 `AUTH_EXPIRED` 分流，其余按可重试网络错误）、`im-transport.ts`（Node 内置 WebSocket 适配器；文本帧 + 生命周期）、`im-client.ts`（握手 `/reg` → 1s 后 `ackDiff` → 15s 心跳；下行**先 ACK 再落库**；`sendReply` 组 `sendByReceiverScope` 帧；风控/失效 → `blocked` + `challenge` 事件、**不自动过滑块**；断线指数退避重连）、`im-runtime.ts`（按账号管理连接，`BF_IM=1` 才开）；消息表 `core` 的 `im_messages`（`messageId` 唯一键去重，出站 id 前缀 `out:`）。ACK 帧回显 `mid/sid/app-key/ua/dt`。
+
+**未做（别当成已完成）**：
+1. **重连后不按 `pts` 续传**：重新 `/reg` + 新 pts，断线期消息没有补拉（候选接口 `mtop.taobao.idlemessage.pc.user.query`，未验证）。
+2. **不做收包静默判死**：内置 WebSocket 不能设 `ping_interval`，而服务端空闲时不一定回包，按静默判死会误杀健康连接；半开连接只能等下次 `send` 抛错或 `close` 事件，再由退避重连兜底。
+3. **只有文本消息**：图片/语音/卡片更新不落库（卡片更新的 `msg["1"]` 字符串形态已知，解析层未做）。
+4. **单账号无代理**：内置 WebSocket 的 per-call dispatcher 被忽略，分账号代理需换 `ws@8` + `https-proxy-agent`。
+5. **真机未验收**：真实买家会话、滑块/风控路径都没在真实环境跑过。
