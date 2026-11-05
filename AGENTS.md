@@ -36,7 +36,8 @@
 | `packages/channel-guanjia` | TS 库 | `core`；闲管家开放平台客户端（MIT 移植），**不含 placeOrder** |
 | `packages/channel-im` | TS 库 | `core`；IM 帧解析 / 消息归一化 / 会话状态机 / 下行 MessagePack；**已接 daemon**（`BF_IM=1` 才连，`GET /im/status` + `POST /im/reply`） |
 
-- 包名统一 `@bigfish/*`。
+- 源码包名统一 `@bigfish/*`；本机 DSH profile 的 junction / `cordis.yml` / client loader id 都在用，**不要改成无 scope**。npm 上发布的是 `bigfish-plugin-ops` + `bigfish-ops-bundle`（`@bigfish` scope 归第三方 bigfish.tv，发不进去），由 `scripts/build-publish.mjs <version>` 在发布时生成整体自洽的改名快照；见 [ADR 0008](docs/adr/0008-npm-publish-snapshot.md) 与 [发布说明](docs/publishing.md)。
+- **⏳ 待用户有空手动做（本机 agent 做不了）**：npm 首次发布——本机无 npm 登录态，且 `npm trust` 要求「包已存在」，OIDC 建不出第一版。发布流水线已就位（[workflow](.github/workflows/publish.yml)）；包名 `bigfish-plugin-ops` / `bigfish-ops-bundle`，步骤见 [docs/publishing.md](docs/publishing.md) §「首次发布」。
 - 语言边界：`core`/`daemon` 用 TS（Node 24 直接跑，无构建）；`plugin-ops`/`ops-bundle` 用纯 ESM JS + JSDoc（它们被宿主直接 import，见 ADR 0002）。
 - **运行时零第三方依赖**。新增依赖必须先写 ADR：说明为什么 node 内置不够、体积多少、离线安装怎么办。
 - **禁止跨包相对路径 import**（`../../daemon/src/...`）；跨包只走包名。

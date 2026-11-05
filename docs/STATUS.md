@@ -215,6 +215,7 @@ node scripts/test-all.mjs     # 1313 tests / 1313 pass / 70 suites / ~28s
 10. **（仍未答）批量真提交授权**：见第 6 条——等你点头才能动真格。
 11. （已按你的要求落地）**账号保活已开启**：daemon 定时器 + 面板一个开关按钮（2026-10-23 19:10 真机开启，间隔 5 分钟；真实 tick 已落到 `account-state.json` 的 `source=keepalive`）。还想请你定两件小事：①要不要把间隔调到 10–30 分钟（每次都是真调 `user.page.head`，账号级风控敏感）②要不要做「失效时面板标红 + 推 notice」。
 12. **老凭据 / 扫码登录的登录态剩余显示「—」**：要补齐有两个办法——①再导入一次（写 `meta.expires`）②daemon 启动时对当前账号自动 verify 一次（会真打一次 `head`）。选 ② 我可以做成启动预热，代价是每次开机多一次 mtop 调用。
+13. **⏳ npm 首次发布（等你有空手动做，本机 agent 做不了）**：发布流水线已全部就位并推送（`fa7848b`：[OIDC workflow](../.github/workflows/publish.yml) / [发布脚本](../scripts/build-publish.mjs) / [runbook](publishing.md) / [ADR 0008](adr/0008-npm-publish-snapshot.md) / LICENSE）。包名 **`bigfish-plugin-ops` + `bigfish-ops-bundle`**（不是 `@bigfish/*`：scope 归第三方）。阻断：本机无 npm 登录态，且 `npm trust` 要求「包已存在」，OIDC 建不出第一版 ⇒ 需你在普通终端 `npm login` 后手动发一次 `0.1.0`、配一次 Trusted Publisher，之后打 tag 全自动。完整命令见 [docs/publishing.md](publishing.md) §「首次发布」。
 
 
 ### 4.4 施工队列（2026-10-23 凌晨讨论产出，按依赖排序）
