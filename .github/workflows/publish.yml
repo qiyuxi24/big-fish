@@ -1,0 +1,77 @@
+# 用 npm Trusted Publishing (OIDC) 把两个包发到 npmjs.org。
+#
+# 为什么用 OIDC 而不是 NODE_AUTH_TOKEN：用户 2026-11-05 拍板；setup-node v5 起
+# 移除了 NODE_AUTH_TOKEN 哑元，OIDC 不受影响（actions/setup-node README 原文）。
+# 代价：必须在 npmjs.com 网页为本 workflow 配置 Trusted Publisher，且
+# owner / repo / workflow 文件名三者精确匹配，否则 publish 会 E404。
+#
+# 本文件名 .github/workflows/publish.yml 就是 npm 侧要填的 workflow file，别改。
+name: Publish to npm (OIDC)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '要发布的 semver，如 0.1.0'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # OIDC：npm 用 GitHub 签发的 ID token 换取短期发布凭据
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          # 缓存投毒可能泄露含 OIDC token 的凭据（setup-node advanced-usage.md）。
+          package-manager-cache: false
+
+      # npm Trusted Publishing 要求 npm >= 11.5.1；Node 24 自带 11.x，这里显式兜底，
+      # 避免 runner 镜像里的旧 npm 让「权限配对却仍发布失败」。
+      - name: Ensure npm >= 11.5.1
+        run: |
+          npm i -g npm@^11.5.1
+          npm --version
+
+      - name: Derive version
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            v="$INPUT_VERSION"
+          else
+            v="${REF_NAME#v}"
+          fi
+          if ! printf '%s' "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::非法的 semver: $v"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      # 源码里的包名是 @bigfish/*（live DSH profile 在用），发布名是无 scope 的
+      # bigfish-plugin-ops / bigfish-ops-bundle。生成自洽快照，不改源码身份。
+      - name: Build publish snapshots
+        run: node scripts/build-publish.mjs "${{ steps.version.outputs.version }}"
+
+      # 顺序不能反：ops-bundle 依赖 plugin-ops，先发被依赖的那个。
+      # 不设 NODE_AUTH_TOKEN；npm 自己用 OIDC 换凭据，并自动附带 provenance。
+      - name: Publish bigfish-plugin-ops
+        working-directory: .scratch/publish/plugin-ops
+        run: npm publish
+
+      - name: Publish bigfish-ops-bundle
+        working-directory: .scratch/publish/ops-bundle
+        run: npm publish
