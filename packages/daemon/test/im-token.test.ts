@@ -100,8 +100,10 @@ describe('fetchImAccessToken', () => {
     assert.ok(call !== undefined)
     const url = new URL(call.url)
     assert.ok(url.pathname.includes('mtop.taobao.idlemessage.pc.login.token'), '必须打取 token 的 mtop 接口')
+    assert.equal(url.searchParams.get('sessionOption'), 'AutoLoginOnly', '不带 sessionOption 会被判 RGV587 风控')
     assert.equal(url.searchParams.get('accountSite'), 'xianyu')
     assert.equal(url.searchParams.get('queryToken'), 'sm')
+    assert.equal(url.searchParams.get('smToken'), 'tok', 'smToken 取 _m_h5_tk 前半段')
     assert.ok(url.searchParams.get('sign') !== null, 'mtop 请求必须带签名')
 
     const data = requestData(call.body)

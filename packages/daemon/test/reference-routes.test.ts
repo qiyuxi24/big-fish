@@ -108,6 +108,6 @@ describe('POST /reference', () => {
     const harness = await createHarness(t)
     const response = await harness.rawRequest({ method: 'GET', path: '/reference' })
     assert.equal(response.status, 405)
-    assert.equal(errorOf(response).code, 'VALIDATION')
+    assert.equal(errorOf(response).code, 'METHOD_NOT_ALLOWED')
   })
 })

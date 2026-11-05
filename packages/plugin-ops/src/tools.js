@@ -17,18 +17,21 @@ import { DaemonError } from './client.js'
 import { CONDITIONS, COPY_STYLE_IDS, planCopy } from './copy.js'
 import {
   formatAccountLine,
+  formatCapabilities,
   formatMarketBrief,
   formatReferenceReport,
   formatStatus,
   formatTaskLine,
+  formatTaskListNextSteps,
   formatTime,
   readAccountSummary,
   readImportedAccount,
   readMarketBrief,
   readReferenceReport,
+  nextStepFor,
   toCopyMarketHints,
 } from './tool-format.js'
-import { NO_PARAMS, TASK_KINDS, TASK_STATES, taskEnqueueIsWrite, textTool } from './tool-kit.js'
+import { NO_PARAMS, TASK_KINDS, TASK_STATES, taskEnqueueIsWrite, textTool, requireString, requireEnum, readLimit, requireAnyOf } from './tool-kit.js'
 import { publishToolSpecs } from './tool-specs-publish.js'
 
 /**
@@ -75,9 +78,13 @@ export function buildTools(deps) {
           lines.push(`health: OK v${health.version} pid=${health.pid} uptime=${Math.round((health.uptimeMs ?? 0) / 1000)}s`)
           const status = await client.status()
           lines.push(`auth: OK，队列 ${JSON.stringify(status.queue ?? {})}`)
+          const capabilities = formatCapabilities(status.capabilities)
+          if (capabilities !== undefined) lines.push(capabilities)
         } catch (error) {
           if (!(error instanceof DaemonError)) throw error
           lines.push(`health/auth: ❌ [${error.code}] ${error.message}`)
+          // 与其它工具共用同一张「下一步」表：ping 是排障第一步，它自己更应该指路。
+          lines.push('→ ' + nextStepFor(error.code))
         }
         return lines.join('\n')
       },
@@ -113,7 +120,7 @@ export function buildTools(deps) {
           return [
             '凭据库里还没有可用账号。',
             '导入：xy_import_account（从带 --remote-debugging-port 的 Chrome 读登录态，需人工确认）',
-            '扫码：在仓库里跑 npm run daemon:login（打开登录页等扫码）',
+            '扫码：在仓库里跑 pnpm daemon:login（打开登录页等扫码）',
           ].join('\n')
         }
         const lines = ['共 ' + accounts.length + ' 个账号：', ...accounts.map(formatAccountLine)]
@@ -132,14 +139,30 @@ export function buildTools(deps) {
         properties: {
           state: { type: 'string', enum: TASK_STATES, description: '只看某个状态。' },
           kind: { type: 'string', enum: TASK_KINDS, description: '只看某个种类。' },
-          limit: { type: 'integer', minimum: 1, maximum: 200, description: '最多返回多少条，默认 20。' },
+          limit: { type: 'integer', minimum: 1, maximum: 200, description: '最多返回多少条，默认 10；要翻页再显式调大。' },
         },
         additionalProperties: false,
       },
       async handler(args) {
-        const tasks = await client.listTasks({ state: args.state, kind: args.kind, limit: args.limit ?? 20 })
-        if (!Array.isArray(tasks) || tasks.length === 0) return '队列里没有符合条件的任务。'
-        return `共 ${tasks.length} 条：\n` + tasks.map(formatTaskLine).join('\n')
+        const limit = readLimit(args, 10, 200)
+        const tasks = await client.listTasks({ state: args.state, kind: args.kind, limit })
+        // 「共 N 条」曾经等于本轮取回条数，用户会误以为队列就这么长；总数只能问 /status。
+        let counts = ''
+        try {
+          const status = await client.status()
+          const queue = status?.queue ?? {}
+          const parts = TASK_STATES.map(state => `${state}=${queue[state] ?? 0}`)
+          counts = `队列各状态：${parts.join(' ')}\n`
+        } catch {
+          // 数不上就不数：列表本身仍然有用，不让一次额外调用拖垮整个工具。
+        }
+        if (!Array.isArray(tasks) || tasks.length === 0) {
+          return counts + '队列里没有符合条件的任务。'
+        }
+        const truncated = tasks.length >= limit ? `\n（只列前 ${limit} 条，可能还有更多；用 state 过滤或调大 limit）` : ''
+        // 导航话术从「每条都带」收成「末尾一行」，省掉重复文本（审计 §四.2）。
+        const lines = tasks.map(formatTaskLine)
+        return `${counts}取回 ${tasks.length} 条：\n` + lines.join('\n') + truncated + formatTaskListNextSteps(tasks)
       },
     }),
     textTool({
@@ -148,13 +171,13 @@ export function buildTools(deps) {
       reason: '会入队写类任务（真机写闲鱼），需要人工确认。',
       // 只读探针与 IM 回复不触碰商品数据，先不拦；publish/deliver/polish 要确认。
       writeWhen: taskEnqueueIsWrite,
-      description: '把一次运营动作排进本地队列（publish=发布、deliver=发货、polish=擦亮、reply=回复、probe=探针）。同一 dedupeKey 只会入队一次，可用于防重复发布。入队不等于已执行：真正的写闲鱼动作由 daemon 串行执行。',
+      description: '把一次运营动作排进本地队列（publish=发布、deliver=发货、polish=擦亮、reply=回复、probe=探针）。同一 dedupeKey 只会入队一次；入队不等于已执行，daemon 串行执行。发商品用 xy_publish_draft / xy_publish_batch，本工具管其它动作。\n\npayload 必填字段（缺了当场 400，不会入队）：publish=accountId/title/desc/priceCents(分)/images；deliver=accountId/orderId/content；polish=accountId/itemId；probe=accountId/itemId；reply=accountId/cid/text。',
       parameters: {
         type: 'object',
         properties: {
           kind: { type: 'string', enum: TASK_KINDS, description: '任务种类。' },
           dedupeKey: { type: 'string', minLength: 1, maxLength: 200, description: '幂等键，例如 publish:<draftId> 或 deliver:<orderId>。' },
-          payload: { type: 'object', additionalProperties: true, description: '执行器需要的载荷（草稿 id、订单号等）。' },
+          payload: { type: 'object', additionalProperties: true, description: '执行器需要的载荷。必填字段随 kind 变：publish 要 accountId/title/desc/priceCents/images，deliver 要 accountId/orderId/content，polish 与 probe 要 accountId/itemId，reply 要 accountId/cid/text。缺字段当场 400，不会入队。' },
           availableAt: { type: 'integer', description: '最早执行时间（epoch ms），用于预约延后执行。' },
           maxAttempts: { type: 'integer', minimum: 1, maximum: 10, description: '最多尝试几次，默认 3。' },
         },
@@ -162,14 +185,28 @@ export function buildTools(deps) {
         additionalProperties: false,
       },
       async handler(args) {
+        const kind = requireEnum(args, 'kind', TASK_KINDS)
+        const dedupeKey = requireString(args, ['dedupeKey'], 'dedupeKey')
         const task = await client.enqueue({
-          kind: args.kind,
-          dedupeKey: args.dedupeKey,
+          kind,
+          dedupeKey,
           payload: args.payload ?? {},
           ...(args.availableAt === undefined ? {} : { availableAt: args.availableAt }),
           ...(args.maxAttempts === undefined ? {} : { maxAttempts: args.maxAttempts }),
         })
-        return `已入队：${formatTaskLine(task)}`
+        // 回执要说清「这次是真新建，还是撞了幂等键」——后者如果被误解成「又发了一件」，
+        // 就会重复发布。daemon 的 201 响应里带 created 布尔（routes-tasks.ts）。
+        const created = task?.created
+        const head = created === false
+          ? 'ℹ️ 幂等命中：同样的 dedupeKey 之前已入队，这次没有新建（不会重复发布）。'
+          : '已入队：'
+        const lines = [head + formatTaskLine(task)]
+        if (task?.batchId !== undefined) lines.push(`批次：${task.batchId}（用 GET /batches/:id 或面板「发布」看进度）`)
+        if (typeof task?.availableAt === 'number' && task.availableAt > Date.now()) {
+          lines.push(`预约执行：${formatTime(task.availableAt)}（到点前不会动）`)
+        }
+        lines.push('进度：xy_tasks_list。')
+        return lines.join('\n')
       },
     }),
     textTool({
@@ -182,7 +219,7 @@ export function buildTools(deps) {
         properties: {
           id: { type: 'string', minLength: 1, description: '任务 id（可用 xy_tasks_list 查）。' },
           action: { type: 'string', enum: ['ack', 'fail', 'release'], description: '要执行的动作。' },
-          owner: { type: 'string', description: '租约持有者名，默认取本机主机名。' },
+          owner: { type: 'string', description: '租约持有者名；不给则自动读任务的 leaseOwner（通常是 daemon-<pid>，只有确实要冒充别的持有者时才手动指定）。' },
           error: { type: 'string', description: 'fail 时记录的错误信息。' },
           nonRetryable: { type: 'boolean', description: 'fail 时标记为不可重试（直接 failed，而不是重试/待审）。' },
         },
@@ -190,24 +227,50 @@ export function buildTools(deps) {
         additionalProperties: false,
       },
       async handler(args) {
-        const owner = args.owner ?? deps.owner ?? 'bigfish-plugin'
+        // 必填边界先挡：缺 id/action 曾经把 undefined 拼进 URL，回一句「undefined 完成」的静默空结果。
+        const id = requireString(args, ['id'], 'id')
+        const action = requireEnum(args, 'action', ['ack', 'fail', 'release'])
+        // owner 必须取「真的持有租约的那个人」，否则 ack/fail/release 永远撞 VALIDATION。
+        //
+        // 为什么不能写死一个名字：daemon worker 的 owner 是 `daemon-<pid>`（runtime.ts），
+        // 重启一次 pid 就变；插件侧猜不到，历史上默认值 'bigfish-plugin' 因此从未匹配成功，
+        // 「任务卡在 leased」这个场景事实上无解。这里先读一次任务拿真实 leaseOwner，
+        // 读不到（或不是 leased）才退回调用方给的 owner。
+        let owner = args.owner
+        if (owner === undefined) {
+          // getTask 不是所有嵌入方都会提供（测试替身/老客户端），缺了就退回显式 owner。
+          const readTask = typeof client.getTask === 'function' ? client.getTask.bind(client) : undefined
+          const current = readTask === undefined ? undefined : await readTask(id).catch(() => undefined)
+          owner = typeof current?.leaseOwner === 'string' && current.leaseOwner !== ''
+            ? current.leaseOwner
+            : deps.owner ?? 'bigfish-plugin'
+        }
         const body = {
           owner,
           ...(args.error === undefined ? {} : { error: args.error }),
           ...(args.nonRetryable === undefined ? {} : { nonRetryable: args.nonRetryable }),
         }
         try {
-          const task = await client.taskAction(args.id, args.action, body)
-          return `${args.action} 完成：${formatTaskLine(task)}`
+          const task = await client.taskAction(id, action, body)
+          return `${action} 完成（owner=${owner}）：${formatTaskLine(task)}`
         } catch (error) {
-          if (!(error instanceof DaemonError) || error.code !== 'VALIDATION') throw error
-          // ack/fail/release 都要求任务处于 leased 且 owner 匹配；插件 owner 常与 daemon worker 不同，
-          // 人工收尾 failed / needs_review 任务必然撞 VALIDATION。补一句可执行提示，免得用户原地打转。
-          throw new DaemonError(
-            'VALIDATION',
-            `${error.message}。ack/fail/release 只对 leased（worker 正在处理且 owner 匹配）的任务生效；若任务已 failed / needs_review，请用 xy_task_retry 重新排队。`,
-            { retryable: error.retryable },
-          )
+          if (!(error instanceof DaemonError)) throw error
+          if (error.code === 'NOT_FOUND') {
+            throw new DaemonError('NOT_FOUND', `${error.message}。先用 xy_tasks_list 拿到真实 id（不要凭记忆拼）`, {
+              details: error.details,
+            })
+          }
+          if (error.code !== 'VALIDATION') throw error
+          // ack/fail/release 只对 leased 任务生效。把 details 里的现场翻成人话，
+          // 让人知道是「已经跑完/已停下」还是「被别的实例拿着」。
+          const details = error.details ?? {}
+          const state = typeof details.state === 'string' ? details.state : ''
+          const actualOwner = typeof details.actualOwner === 'string' ? details.actualOwner : ''
+          const remaining = typeof details.leaseRemainingMs === 'number' ? Math.ceil(details.leaseRemainingMs / 1000) : undefined
+          const hint = state === 'leased' && actualOwner !== ''
+            ? `任务正被 ${actualOwner} 持有${remaining === undefined ? '' : `（租约还剩约 ${remaining}s）`}；等它跑完或用 xy_task_action release 放回队列。`
+            : `任务 state=${state || '未知'}，不在租约里：ack/fail/release 只对 leased 生效；failed/needs_review 用 xy_task_retry 重排，queued 会自己执行。`
+          throw new DaemonError('VALIDATION', `${error.message}。${hint}`, { details: error.details })
         }
       },
     }),
@@ -221,24 +284,70 @@ export function buildTools(deps) {
         type: 'object',
         properties: {
           taskId: { type: 'string', minLength: 1, description: '任务 id（可用 xy_tasks_list 过滤 state=failed / needs_review 查）。' },
+          id: { type: 'string', minLength: 1, description: '任务 id，taskId 的兼容别名；两者都给时以 taskId 为准。' },
         },
-        required: ['taskId'],
+        anyOf: [{ required: ['taskId'] }, { required: ['id'] }],
         additionalProperties: false,
       },
       async handler(args) {
-        // client 没暴露 retry：request 是它的公共出口，为一条路由再扩一份 API 不值当（client.js 也不在本任务写盘范围）。
-        const task = await client.request(`/tasks/${encodeURIComponent(args.taskId)}/retry`, { method: 'POST', body: {} })
+        // 参数名归一：历史上三个工具各叫 taskId / id / dedupeKey，传错名字不报错，
+        // undefined 被拼进 URL、daemon 回空对象，formatTaskLine 再拼成「已重新排队： |  | 」
+        // 的静默空结果（审计 §1.3）。这里同时接受 taskId 与 id，缺一即 VALIDATION。
+        const taskId = requireString(args, ['taskId', 'id'], 'taskId（或 id）')
+        // client 没暴露 retry：request 是它的公共出口，为一条路由再扩一份 API 不值当。
+        const task = await client.request(`/tasks/${encodeURIComponent(taskId)}/retry`, { method: 'POST', body: {} })
         return `已重新排队：${formatTaskLine(task)}`
+      },
+    }),
+    textTool({
+      name: 'xy_circuit_reset',
+      access: 'confirm',
+      reason: '会把账号从熔断表里摘掉，下一次写操作会立刻真的打到闲鱼；熔断本来就是防连击的刹车，解除必须人工确认。',
+      description: '手动复位某个账号的熔断状态（只在本地状态表里摘掉记录，不触达闲鱼）。熔断由发布侧风控命中或连续失败触发，默认 600 秒冷却；确实确认过没问题（例如上次是误判）再用本工具提前解除。用 xy_status 看哪些账号在熔断。',
+      parameters: {
+        type: 'object',
+        properties: {
+          accountId: { type: 'string', minLength: 1, maxLength: 64, description: '要复位的账号 id（xy_accounts_list / xy_status 里能看到）。' },
+        },
+        required: ['accountId'],
+        additionalProperties: false,
+      },
+      async handler(args) {
+        const accountId = requireString(args, ['accountId'], 'accountId')
+        const result = await client.resetCircuit(accountId)
+        if (result?.reset === false) {
+          return [
+            `账号 ${accountId} 其实不在熔断表里（daemon 没有加载熔断器）。`,
+            '→ 如果 xy_status 里仍显示熔断，先跑 xy_ping 确认连的是哪个 daemon。',
+          ].join('\n')
+        }
+        return [
+          `已复位账号 ${accountId} 的熔断。`,
+          '下一步：xy_status 确认 circuits 为空；再发写类任务前，先想清楚上次为什么被熔断（风控命中通常要等 30 分钟以上）。',
+        ].join('\n')
       },
     }),
     textTool({
       name: 'xy_items_list',
       access: 'read',
-      description: '列出本地已知的商品（P0 阶段为空表；P1 由抓取/发布结果落库）。',
-      parameters: NO_PARAMS,
-      async handler() {
-        const items = await client.listItems()
-        if (!Array.isArray(items) || items.length === 0) return '本地还没有商品记录（P1 接入抓取与发布后填充）。'
+      description: '列出本地已知的商品（发布结果与探测结果落库）。可按账号/状态过滤——多账号时务必带上 accountId，否则会把别的号的商品混进来，后续擦亮/探测会带错账号。',
+      parameters: {
+        type: 'object',
+        properties: {
+          accountId: { type: 'string', minLength: 1, maxLength: 64, description: '只看某个账号的商品；多账号场景建议总是带上。' },
+          state: { type: 'string', enum: ['online', 'offline', 'unknown'], description: '只看某个上架状态。' },
+          limit: { type: 'integer', minimum: 1, maximum: 500, description: '最多返回多少条，默认 20；要翻页再显式调大。' },
+        },
+        additionalProperties: false,
+      },
+      async handler(args) {
+        const limit = readLimit(args, 20, 500)
+        const items = await client.listItems({ accountId: args.accountId, state: args.state, limit })
+        if (!Array.isArray(items) || items.length === 0) {
+          const filter = args.accountId === undefined ? '' : `账号 ${args.accountId} 下`
+          // 空库指路压成一行：商品来源两条路用一句话说完（审计 §四.5）。
+          return `本地还没有${filter}商品记录（来自 xy_publish_draft/xy_publish_batch 入队落库，或 xy_task_enqueue(kind="probe") 探测）。`
+        }
         return items
           .map(item => `${item.itemId} | ${item.accountId} | ${item.state} | ¥${(item.priceCents / 100).toFixed(2)} | ${item.title}`)
           .join('\n')
@@ -265,14 +374,14 @@ export function buildTools(deps) {
         return [
           `已导入账号 ${account.accountId}：${account.savedFieldCount} 条登录态字段已加密落盘（source=${account.source}）。`,
           `导入时间：${formatTime(account.updatedAt)}`,
-          '下一步：xy_status 确认账号出现在 daemon 的 accounts 里；发布前先用 xy_publish_draft 的 dry-run 校准。',
+          '下一步：xy_status 确认账号已接入；发布前先跑 xy_publish_draft 的 dry-run 校准。',
         ].join('\n')
       },
     }),
     textTool({
       name: 'xy_copy_plan',
       access: 'read',
-      description: '按选定的语言风格，把商品事实组装成「listing 文案生成请求」：产出注入好的提示词（skill + 风格约束 + 事实 + 输出契约 + 待补项）。只读、不调模型、不写文件——拿到提示词后由你按 .agents/skills/xianyu-listing-copy 出草稿 JSON，再走 xy_publish_draft。',
+      description: '按选定的语言风格，把商品事实组装成「listing 文案生成请求」：产出注入好的提示词（skill + 风格约束 + 事实 + 输出契约 + 待补项）。只读、不调模型、不写文件；出草稿 JSON 后可交给 xy_publish_draft 的 draft 参数（无需落盘）。',
       parameters: {
         type: 'object',
         properties: {
@@ -319,9 +428,14 @@ export function buildTools(deps) {
         anyOf: [{ required: ['itemIds'] }, { required: ['sellerId'] }],
         additionalProperties: false,
       },
-      timeoutMs: 100_000,
+      // 工具总超时必须宽于 client 的 HTTP 超时（90s，20 件串行、每件一次 mtop），
+      // 否则工具层先被掐断时拿不到 client 的 NETWORK 错误码，只剩一句笼统的「超时」。
+      // 120s 给 30s 余量：client 一定先失败并带回可执行的原因。
+      timeoutMs: 120_000,
       async handler(args) {
-        const input = { accountId: args.accountId }
+        const accountId = requireString(args, ['accountId'], 'accountId')
+        requireAnyOf(args, ['itemIds', 'sellerId'])
+        const input = { accountId }
         if (args.itemIds !== undefined) input.itemIds = args.itemIds
         if (args.sellerId !== undefined) input.sellerId = args.sellerId
         return formatReferenceReport(readReferenceReport(await client.collectReferences(input)))
@@ -330,12 +444,12 @@ export function buildTools(deps) {
     textTool({
       name: 'xy_market_brief',
       access: 'read',
-      description: '市场简报：把已入库的他人商品快照聚合成价格带（p25/p50/p75）、按成色的建议价、标题/描述结构、主图规格与高频词。只读、不触达闲鱼、不下载图片、不含他人原句。先用 xy_reference_collect 或面板「采集」把人家的在售商品入库，再来取简报；之后用 xy_copy_plan 带 marketCategoryId/marketSellerId 把简报写进文案提示词。',
+      description: '市场简报：把已入库的他人商品快照聚合成价格带（p25/p50/p75）、按成色的建议价、标题/描述结构、主图规格与高频词。只读、不触达闲鱼、不下载图片、不含他人原句。先用 xy_reference_collect 或面板「采集」入库，再取简报；用 xy_copy_plan 可把简报写进文案提示词。',
       parameters: {
         type: 'object',
         properties: {
           categoryId: { type: 'string', minLength: 1, maxLength: 64, description: '只看该闲鱼类目（seller_items.category_id）；不传则看全部已采集商品。' },
-          sellerId: { type: 'string', minLength: 1, maxLength: 20, description: '只看该商家的商品；与 categoryId 同时给时两个条件都要满足。' },
+          sellerId: { type: 'string', minLength: 1, maxLength: 20, description: '只看该商家的商品；与 categoryId 二选一（两个都给 daemon 会报 VALIDATION）。' },
           limit: { type: 'integer', minimum: 1, maximum: 500, description: '最多取多少条样本，默认 200。' },
           condition: { type: 'string', enum: CONDITIONS, description: '你的商品成色；给了才出建议价（同一市场里成色不同价格不同）。' },
         },

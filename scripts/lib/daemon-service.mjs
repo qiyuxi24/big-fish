@@ -23,6 +23,16 @@ export const DEFAULT_LOG_TAIL = 40
 export const DEFAULT_STATUS_TAIL = 10
 /** `--tail` 上限：只读尾部，不该把整份日志倒进终端。 */
 export const MAX_LOG_TAIL = 1000
+/**
+ * 读日志时最多读文件末尾这么多字节。
+ *
+ * 为什么要封顶：`logTail` 过去是 `readFileSync(整个文件)` 再切尾。daemon 的 stdout 是
+ * `openSync(path,'a')` 直写，没有任何轮转，过夜跑能把日志顶到几百 MB——那时 `pnpm daemon:status`
+ * 自己会先卡住甚至 OOM。64KB 足够装下 1000 行普通日志。
+ */
+export const MAX_LOG_READ_BYTES = 64 * 1024
+/** 日志超过这个大小就在 start 时轮转成 `.1`（只保留一份历史）。 */
+export const MAX_LOG_BYTES = 8 * 1024 * 1024
 /** pid 文件名（放在状态目录的 run/ 下）。 */
 export const PID_FILE_NAME = 'daemon.pid'
 
@@ -213,23 +223,35 @@ export function daemonArgs(input) {
 
 /**
  * 存活判定：pid 文件 + 进程存在 + /health 可达，三者组合出唯一状态。
+ *
+ * 判定顺序是这里最要紧的东西：只要健康检查有应答就说明有 daemon 活着，
+ * 所以「pid 进程已死 + 端口有应答」必须报 unmanaged（真实 pid 取自健康响应），
+ * 不能报 stale-pid——后者会被 stop 当成「没什么可停的」直接 return 0。
  * @param {{pidRecord: object | undefined, processAlive: boolean, health: {ok: boolean, pid?: number, port?: number, error?: string} | undefined}} input
  * @returns {{state: 'running' | 'unhealthy' | 'unmanaged' | 'stale-pid' | 'not-running', pid?: number, port?: number}}
  */
 export function evaluateServiceState(input) {
   const record = input.pidRecord
-  if (record !== undefined) {
-    if (input.processAlive !== true) return { state: 'stale-pid', pid: record.pid, ...(record.port === undefined ? {} : { port: record.port }) }
+  if (record !== undefined && input.processAlive === true) {
     const port = record.port ?? input.health?.port
     if (input.health?.ok === true) return { state: 'running', pid: record.pid, ...(port === undefined ? {} : { port }) }
     return { state: 'unhealthy', pid: record.pid, ...(port === undefined ? {} : { port }) }
   }
+  // pid 记录指向的进程已经不在时，不能直接判「没在跑」：另一个实例（面板拉起的、手动起的）
+  // 可能正占着端口在应答。先信 /health，按「有人应答但没登记」报真实 pid——
+  // 顺序写反会让最常见组合（pid 残留 + daemon 活着）永远落进最坏的分支。
   if (input.health?.ok === true) {
+    // pid 只信健康响应：pid 文件里的那个已经确认死了，拿它当「真实 pid」会误导 stop。
+    const pid = input.health.pid
+    const port = input.health.port ?? record?.port
     return {
       state: 'unmanaged',
-      ...(input.health.pid === undefined ? {} : { pid: input.health.pid }),
-      ...(input.health.port === undefined ? {} : { port: input.health.port }),
+      ...(pid === undefined ? {} : { pid }),
+      ...(port === undefined ? {} : { port }),
     }
+  }
+  if (record !== undefined) {
+    return { state: 'stale-pid', pid: record.pid, ...(record.port === undefined ? {} : { port: record.port }) }
   }
   return { state: 'not-running' }
 }
@@ -265,6 +287,24 @@ export function formatUptime(ms) {
   const restMinutes = minutes % 60
   if (hours < 24) return String(hours) + 'h ' + String(restMinutes) + 'm'
   return String(Math.floor(hours / 24)) + 'd ' + String(hours % 24) + 'h'
+}
+
+/**
+ * 人类可读的字节数：只给一位小数，日志/数据库大小够用。
+ * @param {number} bytes
+ * @returns {string}
+ */
+export function formatBytes(bytes) {
+  const value = Math.max(0, Math.floor(bytes))
+  if (value < 1024) return String(value) + 'B'
+  const units = ['KB', 'MB', 'GB']
+  let scaled = value / 1024
+  let unit = 0
+  while (scaled >= 1024 && unit < units.length - 1) {
+    scaled /= 1024
+    unit += 1
+  }
+  return scaled.toFixed(1) + units[unit]
 }
 
 function splitFlag(raw) {

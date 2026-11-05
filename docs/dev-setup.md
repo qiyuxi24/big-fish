@@ -19,7 +19,7 @@ pnpm install --offline --ignore-scripts
 ## 测试与类型检查
 
 ```sh
-node scripts/test-all.mjs                   # 全量（27 suites，约 12s）
+node scripts/test-all.mjs                   # 全量（69 suites / 115 个文件 / 1283 例，约 25s）
 node scripts/test-all.mjs packages/core     # 只跑某个包（按路径前缀过滤）
 node scripts/test-all.mjs integration       # 只跑跨层集成测试
 ```
@@ -72,15 +72,15 @@ node packages/daemon/src/cli.ts --data-dir .scratch/daemon --port 47001
 
 ## 常驻运行（过夜跑）
 
-前台 `npm run daemon` 关终端即丢现场；需要过夜跑时用 `scripts/daemon-service.mjs`（detached 子进程 + 日志文件 + pid 文件）：
+前台 `pnpm daemon` 关终端即丢现场；需要过夜跑时用 `scripts/daemon-service.mjs`（detached 子进程 + 日志文件 + pid 文件）：
 
 ```sh
-npm run daemon:start                          # 后台起，等 /health 就绪后打印 pid/端口/日志路径
-npm run daemon:status                         # pid + 进程 + /health 三判据，附带 uptime 与日志尾部
-npm run daemon:logs                           # 看日志尾部（默认 40 行；-- --tail 100 调整）
-npm run daemon:stop                           # 优雅停止（超时强杀），并确认端口释放
-npm run daemon:restart                        # stop + start
-npm run daemon:start -- --port 47002 --data-dir .scratch/daemon-live
+pnpm daemon:start                          # 后台起，等 /health 就绪后打印 pid/端口/日志路径
+pnpm daemon:status                         # pid + 进程 + /health 三判据，附带 uptime 与日志尾部
+pnpm daemon:logs                           # 看日志尾部（默认 40 行；-- --tail 100 调整）
+pnpm daemon:stop                           # 优雅停止（超时强杀），并确认端口释放
+pnpm daemon:restart                        # stop + start
+pnpm daemon:start -- --port 47002 --data-dir .scratch/daemon-live
 ```
 
 - 状态目录（pid + 日志）默认 `%LOCALAPPDATA%\bigfish`，非 Windows 用 `~/.bigfish`：pid 在 `run/daemon.pid`（JSON：pid/port/host/startedAt/dataDir/logPath），日志在 `logs/daemon.log`（daemon 的结构化 JSON 行原样落盘）。
@@ -90,8 +90,21 @@ npm run daemon:start -- --port 47002 --data-dir .scratch/daemon-live
 - 退出码：`0` 成功 / `1` 失败（`status` 在 daemon 未运行时也返回 1，便于脚本判断） / `2` 参数错误。
 - 停止语义：POSIX 发 `SIGTERM`，daemon 的 handler 会先停 worker（release 在飞任务）再关 HTTP/store，是真正的优雅退出。**Windows 无法向别的进程投递可捕获信号**：先尝试 `taskkill /PID <pid> /T`（控制台程序一般失败），回落 `TerminateProcess`，相当于崩溃退出；10s 未退出再 `taskkill /T /F` 强杀。因此 Windows 上 stop 依赖 crash-safe 设计：SQLite WAL + 队列任务租约（60s TTL）保证重启后能恢复，不会重复发布（uniqueCode 幂等）。
 - `logs` 只读尾部、不 `-f` 跟随，避免占住终端；`--tail` 最多 1000 行。
-- daemon 是 detached 子进程：关掉当前终端不会带走它；需要停止用 `npm run daemon:stop`（或 `status` 拿 pid 后手动结束）。
-- 真机验证（隔离数据与状态，避免打扰已导入账号）：`npm run daemon:start -- --port 47999 --data-dir .scratch/svc/data --state-dir .scratch/svc/state` → `status` 看到 pid / 端口 / uptime → `stop` 确认「端口已释放」。
+- daemon 是 detached 子进程：关掉当前终端不会带走它；需要停止用 `pnpm daemon:stop`（或 `status` 拿 pid 后手动结束）。
+- 真机验证（隔离数据与状态，避免打扰已导入账号）：`pnpm daemon:start -- --port 47999 --data-dir .scratch/svc/data --state-dir .scratch/svc/state` → `status` 看到 pid / 端口 / uptime → `stop` 确认「端口已释放」。
+
+### 不知道东西在哪就跑 `pnpm doctor`
+
+```sh
+pnpm doctor                    # 一屏体检：目录 / token / db / settings / 凭据 / pid / 日志 / chrome-profile
+pnpm doctor --json             # 同一份数据给脚本读
+pnpm doctor --tail 50          # 多打几行日志尾部
+```
+
+- **只读**：不启动 daemon、不改任何文件。退出码 `0` 全正常 / `1` 有要修的或建议看一眼的 / `2` 参数错。
+- 它算的是**同一套路径**（`resolveServicePaths` + `resolveDataRoot`），所以 `doctor` 说日志在哪，`daemon:logs` 读的就是那个文件。
+- 会主动报的坑：状态目录 ≠ 数据目录、pid 残留、端口有 daemon 但没有 pid 登记（`unmanaged`，CLI 看不见它）、`settings.json` 解析失败（会让 daemon 起不来）、wal 比主库还大（进程被强杀过）、**两份 `chrome-profile` 并存**（旧版 `~/.bigfish` 遗物，登录态不共享还白占几百 MB）。
+- 日志按 8MB 滚动一次（`<状态目录>/logs/daemon.log` → `.1`），滚动发生在 `start` 之前——Windows 上运行中的 daemon 持有句柄，rename 会失败。
 
 ### 面板打开时宿主自动拉起（不用先跑命令）
 
@@ -176,7 +189,7 @@ node scripts/dsh-install.mjs --uninstall   # 撤销（备份文件保留）
 | daemon 起不来，退出码 1 | 端口占用 / 非回环 host / 数据目录不可写 | 看 stderr 的第一行；`--print-config` 核对路径 |
 | 插件返回 `[UNAUTHORIZED]` | token 文件缺失或路径不一致 | 核对 `--token-path` 与插件 `tokenPath` 配置 |
 | 任务一直 `failed` 且错误含 `UNSUPPORTED` | 该操作还没接通道（publish/deliver/reply） | 预期行为，见 architecture §6/§11 |
-| 任务 `failed` 且错误含 `登录态`/`AUTH_EXPIRED` | 没往凭据库写过该账号，或凭据过期 | 先跑 `npm run daemon:import-account`（从浏览器导入 cookie）或 `npm run daemon:login`（扫码登录，已实现） |
+| 任务 `failed` 且错误含 `登录态`/`AUTH_EXPIRED` | 没往凭据库写过该账号，或凭据过期 | 先跑 `pnpm daemon:import-account`（从浏览器导入 cookie）或 `pnpm daemon:login`（扫码登录，已实现） |
 | `ExperimentalWarning: SQLite` | `node:sqlite` 是实验 API | 正常，忽略 |
 | `bundle <url> loaded without registering "<id>"` | `client.js` 里 `__ModuleLoader__.load({id})` 与包名不一致 | id 必须等于 loader entry 包名 |
 | `layout.selectPanel: main panel "bigfish" is not registered` | 只注册了 `sidebar.panellist` 没注册 `main` | 两个插槽成对注册（见 client-plugin-sidebar.md） |

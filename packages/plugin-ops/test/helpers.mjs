@@ -48,6 +48,7 @@ export function createFakeClient(overrides = {}) {
     listTasks: record('listTasks'),
     listEvents: record('listEvents'),
     enqueue: record('enqueue'),
+    getTask: record('getTask'),
     taskAction: record('taskAction'),
     request: record('request'),
     listItems: record('listItems'),
@@ -62,6 +63,8 @@ export function createFakeClient(overrides = {}) {
     collectSeller: record('collectSeller'),
     listSellers: record('listSellers'),
     listSellerItems: record('listSellerItems'),
+    resetCircuit: record('resetCircuit'),
+    checkPolicy: record('checkPolicy'),
   }
 }
 

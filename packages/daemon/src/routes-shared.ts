@@ -55,11 +55,18 @@ export function parseSince(raw: string): number {
   return Number(raw)
 }
 
-/** 构造 404 错误：code 用 VALIDATION（core 没有 NOT_FOUND 码，HTTP 状态已表达语义）。 */
+/**
+ * 构造 404 错误。
+ *
+ * code 必须与 HTTP 状态一致（NOT_FOUND ↔ 404）：core 早就有 NOT_FOUND 码，
+ * 早先这里用 VALIDATION 是「core 没有 404 码」年代的遗留注释，后果是
+ * 调用方拿到 404 + VALIDATION，会把它当成「参数写错」去改参数，
+ * 而正确动作是「先列出来拿到真实 id」。details 里带上 id 便于直接比对。
+ */
 export function taskNotFound(id: string): XianyuError {
-  return new XianyuError({ code: 'VALIDATION', message: '任务不存在：' + id })
+  return new XianyuError({ code: 'NOT_FOUND', message: '任务不存在：' + id, details: { id, resource: 'task' } })
 }
 
 export function batchNotFound(batchId: string): XianyuError {
-  return new XianyuError({ code: 'VALIDATION', message: '批次不存在：' + batchId })
+  return new XianyuError({ code: 'NOT_FOUND', message: '批次不存在：' + batchId, details: { id: batchId, resource: 'batch' } })
 }

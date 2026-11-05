@@ -155,6 +155,12 @@ export interface ApiError {
   message: string
   /** 可重试提示；false 表示重试无意义。 */
   retryable: boolean
+  /**
+   * 结构化上下文（可选）：失败的字段名、在飞的任务 id、冷却剩余毫秒等。
+   * 为什么要在信封里带上：agent 拿到 `code + message` 只能猜，拿到 details 才能自己修。
+   * 出站前已过 redact，不得写入 cookie / token 一类凭据。
+   */
+  details?: Record<string, unknown>
 }
 
 /** daemon 健康与状态快照。 */
@@ -173,4 +179,24 @@ export interface DaemonStatus {
     failed: number
     errors: number
   }
+  /**
+   * 这条 daemon 真实具备的写能力。
+   *
+   * 为什么要有：入队接口对所有 kind 都回 201，`deliver` 却必然 failed、`publish` 没开
+   * BF_PUBLISH_SUBMIT 时也必然 failed。agent 拿不到这个信息就只能「先入队再等失败」，
+   * 把一次确定性的拒绝变成一次脏任务。这里把「现在到底能做什么」在 /status 里说清楚。
+   */
+  capabilities?: DaemonCapabilities
+}
+
+/** daemon 当前装配了哪些写通道（读接口总是可用，不在此列）。 */
+export interface DaemonCapabilities {
+  /** publish: submit=真提交；dry-run=只填表；off=未装配。 */
+  publish: 'submit' | 'dry-run' | 'off'
+  /** polish 走 mtop 写接口，凭据齐备即可用。 */
+  polish: boolean
+  /** deliver 目前没有任何执行器实现，恒 false。 */
+  deliver: boolean
+  /** reply 需要 BF_IM=1 且账号 IM 连接 ready。 */
+  reply: boolean
 }

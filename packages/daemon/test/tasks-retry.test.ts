@@ -30,12 +30,13 @@ describe('daemon POST /tasks/:id/retry 路由', () => {
     assert.equal(h.queue.get(id)?.state, 'failed', '未授权请求不得改动任务')
   })
 
-  it('任务不存在 → 404 VALIDATION，错误信息带 id', async (t) => {
+  it('任务不存在 → 404 NOT_FOUND，错误信息带 id', async (t) => {
     const h = await createHarness(t)
     const response = await h.rawRequest({ method: 'POST', path: '/tasks/no-such-task/retry' })
     assert.equal(response.status, 404)
     const error = errorOf(response)
-    assert.equal(error.code, 'VALIDATION')
+    assert.equal(error.code, 'NOT_FOUND')
+    assert.deepEqual(error.details, { id: 'no-such-task', resource: 'task' })
     assert.match(error.message, /任务不存在/)
   })
 

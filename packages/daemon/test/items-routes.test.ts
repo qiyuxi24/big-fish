@@ -74,6 +74,17 @@ describe('daemon /items 路由', () => {
     assert.deepEqual(status2.accounts, [])
   })
 
+  it('/status.capabilities 如实反映装配了哪些写通道', async (t) => {
+    const off = await createHarness(t, { capabilities: () => ({ publish: 'off', polish: false, deliver: false, reply: false }) })
+    const status = dataOf(await off.rawRequest({ method: 'GET', path: '/status' })) as { capabilities: Record<string, unknown> }
+    assert.deepEqual(status.capabilities, { publish: 'off', polish: false, deliver: false, reply: false })
+
+    // 未注入时不带该字段（对老测试/最小装配保持兼容）。
+    const bare = await createHarness(t)
+    const bareStatus = dataOf(await bare.rawRequest({ method: 'GET', path: '/status' })) as Record<string, unknown>
+    assert.equal(bareStatus.capabilities, undefined)
+  })
+
   it('/status.circuits 反映熔断；POST /circuits/reset 解除并回显 reset:true', async (t) => {
     const h = await createHarness(t)
     const breaker = new CircuitBreaker({ path: h.config.circuitPath, now: () => 1_700_000_000_000 })

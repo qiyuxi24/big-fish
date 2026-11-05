@@ -14,7 +14,7 @@ import { createFakeClient, createFakeCtx } from './helpers.mjs'
 
 const config = { daemonUrl: 'http://127.0.0.1:47001', tokenPath: '/tmp/daemon.token' }
 
-/** 15 个真实工具的规格（定义 + access + reason/writeWhen）。 */
+/** 真实工具的规格（定义 + access + reason/writeWhen）；数量断言见各用例。 */
 function makeSpecs() {
   return buildTools({ client: createFakeClient({}), config })
 }
@@ -48,13 +48,14 @@ function makeSpec(patch = {}) {
   return { ...base, ...patch, definition: { ...base.definition, ...patch.definition } }
 }
 
-test('写类判定：只有 publish/deliver/polish 入队需要确认', () => {
+test('写类判定：publish/deliver/polish/reply 入队都要确认', () => {
   const isWriteCall = buildWritePolicy(makeSpecs())
   assert.equal(isWriteCall('xy_task_enqueue', { kind: 'publish' }), true)
   assert.equal(isWriteCall('xy_task_enqueue', { kind: 'deliver' }), true)
   assert.equal(isWriteCall('xy_task_enqueue', { kind: 'polish' }), true)
   assert.equal(isWriteCall('xy_task_enqueue', { kind: 'probe' }), false)
-  assert.equal(isWriteCall('xy_task_enqueue', { kind: 'reply' }), false)
+  // reply 会真的给买家发一条消息，属于对外动作（不是本地状态流转）。
+  assert.equal(isWriteCall('xy_task_enqueue', { kind: 'reply' }), true)
   assert.equal(isWriteCall('xy_tasks_list', {}), false)
   // 文案请求只产出提示词，不写队列/凭据，属于读类。
   assert.equal(isWriteCall('xy_copy_plan', { productName: 'x', condition: 'new', priceYuan: '10' }), false)
@@ -93,18 +94,18 @@ test('任务重试属于写操作：会清零 attempts 并让 daemon 重放发�
   assert.equal(isWriteCall('xy_not_registered', {}), false)
 })
 
-test('access 分类：15 个工具里 5 个 confirm、10 个 read', () => {
+test('access 分类：16 个工具里 6 个 confirm、10 个 read', () => {
   const specs = makeSpecs()
   for (const spec of specs) {
     assert.ok(spec.access === 'read' || spec.access === 'confirm', spec.definition.name + ' 缺少合法 access')
   }
   const { result } = setup(specs)
-  assert.deepEqual(result.counts, { read: 10, confirm: 5 })
+  assert.deepEqual(result.counts, { read: 10, confirm: 6 })
   assert.deepEqual(
     specs.filter((spec) => spec.access === 'confirm').map((spec) => spec.definition.name).sort(),
-    ['xy_import_account', 'xy_publish_batch', 'xy_publish_draft', 'xy_task_enqueue', 'xy_task_retry'],
+    ['xy_circuit_reset', 'xy_import_account', 'xy_publish_batch', 'xy_publish_draft', 'xy_task_enqueue', 'xy_task_retry'],
   )
-  assert.equal(result.names.length, 15)
+  assert.equal(result.names.length, 16)
 })
 
 test('register 为每条规格调用一次 ctx.tools.register，names 与定义顺序一致', () => {
@@ -119,7 +120,8 @@ test('timeoutMs 缺省补 25s，显式值原样保留', () => {
   const { tools } = setup([makeSpec({ definition: { name: 'xy_no_timeout' } })])
   assert.equal(tools[0].timeoutMs, DEFAULT_TIMEOUT_MS)
   const batch = findDefinition(makeSpecs(), 'xy_publish_batch')
-  assert.equal(batch.timeoutMs, 60_000)
+  // 20 条串行 + 单条可能撞 15s HTTP 超时，60s 会在中途被掐断，让「前 N 条已入队」说不出口。
+  assert.equal(batch.timeoutMs, 120_000)
 })
 
 test('门禁为每种写操作给出各自的确认原因', () => {
@@ -177,9 +179,9 @@ test('logger 打一条注册摘要；没有 logger 时静默', () => {
   const lines = []
   setup(makeSpecs(), { logger: (line) => lines.push(line) })
   assert.equal(lines.length, 1)
-  assert.match(lines[0], /共 15 个/)
+  assert.match(lines[0], /共 16 个/)
   assert.match(lines[0], /read=10/)
-  assert.match(lines[0], /confirm=5/)
+  assert.match(lines[0], /confirm=6/)
   // 静默路径：不传 logger 不抛错，也不产生日志（调用方自己汇总）。
   assert.doesNotThrow(() => setup(makeSpecs()))
 })
@@ -195,7 +197,7 @@ test('dispose 解绑门禁监听，之后不再触发', () => {
 test('gate=false 时不注册门禁监听，但工具照常注册', () => {
   const { listeners, tools, result } = setup(makeSpecs(), { gate: false })
   assert.equal(listeners.size, 0)
-  assert.equal(tools.length, 15)
+  assert.equal(tools.length, 16)
   assert.equal(typeof result.dispose, 'function')
 })
 

@@ -120,6 +120,16 @@ describe('CLI 运行', () => {
     assert.match(output.stdout.join('\n'), /用法/)
   })
 
+  // 回归：publish 是唯一会真写闲鱼的子命令，也曾经是唯一 `--help` 报错退出 2 的子命令
+  // （validateCommandFlags 先跑，缺 --draft 直接 fail）。帮助必须在必填校验之前短路。
+  it('每个子命令的 --help 都是退出码 0（含 publish）', async () => {
+    for (const command of ['import-account', 'login', 'publish'] as const) {
+      const { io, output } = capture()
+      assert.equal(await runCli([command, '--help'], EMPTY_ENV, io), 0, command)
+      assert.match(output.stdout.join('\n'), /用法/, command)
+    }
+  })
+
   it('用法错误退出码 2', async () => {
     for (const argv of [['--nope'], ['--port', 'abc'], ['--port', '65536']]) {
       const { io, output } = capture()

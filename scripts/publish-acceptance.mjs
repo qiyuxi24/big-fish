@@ -254,7 +254,7 @@ async function resolveAccount(client, requested) {
   const status = await client.get('/status')
   const accounts = status?.data?.accounts ?? status?.accounts ?? []
   if (!Array.isArray(accounts) || accounts.length === 0) {
-    throw new Error('daemon 里没有已导入账号：先 npm run daemon:import-account 或面板里导入登录态')
+    throw new Error('daemon 里没有已导入账号：先 pnpm daemon:import-account 或面板里导入登录态')
   }
   return String(accounts[0])
 }

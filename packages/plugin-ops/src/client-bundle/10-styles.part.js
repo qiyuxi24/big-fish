@@ -51,6 +51,18 @@
       textarea: { width: '100%', boxSizing: 'border-box', resize: 'vertical', marginTop: '8px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
       okText: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' }, badText: { fontSize: '12px', color: 'var(--dsw-alias-label-danger, #c0392b)' }, goodText: { fontSize: '12px', color: 'var(--dsw-alias-label-success, #1a7f37)' }, warnText: { fontSize: '12px', color: 'var(--dsw-alias-label-warning, #9a6700)' },
       small: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' }, actions: { display: 'flex', gap: '6px', flexWrap: 'wrap' },
+      /** 行内小按钮（复制命令 / 复制 id）：表格里塞 4 个也不撑宽列。 */
+      chipMini: { fontSize: '11px', padding: '2px 8px', borderRadius: '999px', cursor: 'pointer', border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)' },
+      /** 「上膛」态：虚线边 + 警告色，与普通可用按钮在视觉上拉开距离（点两次才生效的写动作）。 */
+      armedButton: { fontSize: '13px', padding: '6px 14px', borderRadius: '8px', cursor: 'pointer', border: '1px dashed var(--dsw-alias-label-warning, #9a6700)', background: 'var(--dsw-alias-bg-l3)', color: 'var(--dsw-alias-label-warning, #9a6700)', fontWeight: 600 },
+      /** 表格行内的操作按钮：比 S.button 小一号，7 列表格放得下 4 个。 */
+      rowButton: { fontSize: '12px', padding: '4px 8px', borderRadius: '6px', cursor: 'pointer', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-l2)', color: 'var(--dsw-alias-label-primary)' },
+      mono: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
     }
     /** 置灰态：与可用按钮同形，光标与透明度明确「点不动」（S.button 现在表示可用）。 */
     S.offButton = { ...S.button, cursor: 'not-allowed', opacity: 0.55, color: 'var(--dsw-alias-label-secondary)' }
+    /** 行内按钮的两个派生态（禁用 / 上膛），写法同 S.offButton。 */
+    S.rowOffButton = { ...S.rowButton, cursor: 'not-allowed', opacity: 0.5, color: 'var(--dsw-alias-label-secondary)' }
+    S.rowArmedButton = { ...S.rowButton, border: '1px dashed var(--dsw-alias-label-warning, #9a6700)', color: 'var(--dsw-alias-label-warning, #9a6700)', fontWeight: 600 }
+    /** 复制失败时给的手动兜底提示（剪贴板在部分宿主里不可用）。 */
+    S.manualHint = { fontSize: '11px', color: 'var(--dsw-alias-label-warning, #9a6700)', marginTop: '6px' }

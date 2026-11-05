@@ -11,6 +11,13 @@ test('默认配置：本机 47001、token 在数据根下、15s 超时、门禁�
   assert.ok(config.tokenPath.endsWith('daemon.token'))
 })
 
+test('enabled 总开关：默认开启，可关，非布尔 fail loud', () => {
+  assert.equal(normalizeConfig({}).enabled, true)
+  assert.equal(normalizeConfig({ enabled: false }).enabled, false)
+  assert.equal(normalizeConfig({ enabled: true }).enabled, true)
+  assert.throws(() => normalizeConfig({ enabled: 'no' }), /enabled/)
+})
+
 test('daemonUrl 末尾斜杠被规范化掉，tokenPath/dataDir 可覆盖', () => {
   const config = normalizeConfig({ daemonUrl: 'http://127.0.0.1:9999/', tokenPath: '/tmp/x.token' })
   assert.equal(config.daemonUrl, 'http://127.0.0.1:9999')

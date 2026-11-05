@@ -53,7 +53,7 @@ function summaryLine(plan) {
 function nextStepLines(plan) {
   if (plan.mode === 'enqueue') {
     return [
-      '下一步：xy_tasks_list（kind=publish）看队列；卡住或待审的任务用 xy_task_action 处理。',
+      '下一步：xy_tasks_list（kind=publish）看队列；failed / needs_review 用 xy_task_retry 重新排队，leased 卡死（租约不释放）才用 xy_task_action release。',
       '⚠ 只有 daemon 以 BF_PUBLISH_SUBMIT=1 启动才会真提交；否则任务会以 UNSUPPORTED 直接失败（failed，不是 needs_review），不会假装成功。',
     ]
   }

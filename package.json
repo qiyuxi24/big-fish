@@ -21,6 +21,7 @@
     "daemon:restart": "node scripts/daemon-service.mjs restart",
     "daemon:status": "node scripts/daemon-service.mjs status",
     "daemon:logs": "node scripts/daemon-service.mjs logs",
+    "doctor": "node scripts/doctor.mjs",
     "accept:publish": "node scripts/publish-acceptance.mjs",
     "dsh:dump": "node scripts/dsh-dump.mjs",
     "dsh:dev": "node scripts/dsh-dev.mjs",

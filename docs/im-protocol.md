@@ -1,6 +1,6 @@
 # 闲鱼 IM 协议事实（P1.1 资产）
 
-> 状态（2026-10-26）：**已接进 daemon（P2.1）**——`channel-im` 帧层 + `daemon/im-token.ts` / `im-transport.ts` / `im-client.ts` / `im-runtime.ts`，消息落 `im_messages` 表，发文本回复走 `operations.sendReply`；`BF_IM=1` 才连，**真机验收未做**。本文是协议事实 + P2 设计依据，当前状态见 [STATUS.md](STATUS.md)，实现缺口见本文 §9。
+> 状态（2026-10-26）：**已接进 daemon（P2.1）**——`channel-im` 帧层 + `daemon/im-token.ts` / `im-transport.ts` / `im-client.ts` / `im-runtime.ts`，消息落 `im_messages` 表，发文本回复走 `operations.sendReply`；`BF_IM=1` 才连；真机握手 `ready` 已验（2026-10-26），**收/发真实消息仍未验**（等第二个闲鱼号）。下行解码已补 MessagePack 并用真实推送样例逐字段核对（§3.3、§9）。本文是协议事实 + P2 设计依据，当前状态见 [STATUS.md](STATUS.md)，实现缺口见本文 §9。
 > 目标：把研究阶段从三个开源实现里读出的闲鱼 IM（钉钉 lwp 长连接）协议事实，沉淀成 P2 的 reply / deliver 执行器可以直接照做的规格。
 > 依据：`research/notes/B-im.md`（三仓只读分析，逐条带 file:line）；行号已用归档源码 `research/tmp/xianyu-*.tgz`（内存解压、只读）二次核对，仓库前缀写作 `<repo>/<相对路径>`。
 > 边界：只记录协议事实与我们自己的流程设计，**不含任何 GPL/AGPL 源码片段**。三仓全部 copyleft（见 `research/notes/B-im.md:88-91`）——协议事实不受版权保护可独立重写，但注释、轨迹 JSON、prompt 文案一律不搬。
@@ -62,6 +62,7 @@ loop{ 15s /! 心跳 ；每条下行先 ACK 再入队 ；业务帧 }
 - 成功判定：`ret` 含 `SUCCESS::调用成功` 且 `data.accessToken` 非空。
 - **同一响应常下发 `Set-Cookie`**：必须解析合并回 cookie jar 并落库，否则下次签名用的 `_m_h5_tk` 是旧的（刷新会换 cookie）。
 - 被风控时 `data.url` 存在、`accessToken` 不存在，该 url 是惩罚页（§5.2），不是错误码。普通 mtop 侧也用它取 IM token（xianyu-super-butler/utils/manual_captcha.py:97；xianyu-auto-reply/common/services/im_token_api.py）。
+- **这是独立频控点（2026-10-26 真机实测）**：短时间反复调用会稳定回 `FAIL_SYS_USER_VALIDATE | RGV587_ERROR::SM`，而同一账号的 `session.sync`/`user.query` 照常成功——不是账号被封，是接口级限流。冷却期内不要带退避循环重试；读会话/未读可先用 `session.sync` 轮询（不需要 token）。
 
 ### 1.4 mtop 签名（所有 mtop 接口共用）
 
@@ -117,10 +118,10 @@ loop{ 15s /! 心跳 ；每条下行先 ACK 再入队 ；业务帧 }
 推送帧真正内容在 `body.syncPushPackage.data[*].data`（字符串）：
 
 1. `base64 → utf8 → JSON.parse` 成功就用（**明文优先**，实时推送多数是明文）；
-2. 失败（非法 JSON / 二进制）才 `base64 → MessagePack decode`。SB/AR 的 `decrypt()` 即"ascii 清理 → base64 补 padding → 标准 msgpack"（XianyuAutoAgent/utils/xianyu_utils.py:287-335 + 自写 decoder :72-284；xianyu-super-butler/utils/xianyu_utils.py:358-399 + :151-355）；
+2. 失败（非法 JSON / 二进制）才 `base64 → MessagePack decode`。SB/AR 的 `decrypt()` 即"ascii 清理 → base64 补 padding → 标准 msgpack"（XianyuAutoAgent/utils/xianyu_utils.py:287-335 + 自写 decoder :72-284；xianyu-super-butler/utils/xianyu_utils.py:358-399 + :151-355）。**2026-10-26 修正：真实聊天推送就是 MessagePack**（XianYuApis 仓库公开的样例 base64 3092 字节，解出 `main["6"]["3"]["4"]=26` 的 dxCard 卡片消息），明文分支只覆盖系统提示与旧格式；判定可用首字节——`{`=0x7b / `[`=0x5b 走 JSON，否则按 msgpack 流解；
 3. 解出的对象若含 `chatType` → **系统提示消息，直接丢弃**（xianyu-auto-reply/backend-web/app/services/chat_new/push_message_parser.py:53-54）。
 
-对 Node：第 2 步用 `@msgpack/msgpack`（标准 msgpack），不要移植那份纯 Python decoder。
+对 Node：**不要引入第三方 msgpack 包**（运行时零依赖是硬约束）。已实现 `packages/channel-im/src/msgpack.ts`：`decodeMsgpackStream(bytes)` 流式解（一个 data 里可接连多条对象）、坏数据只丢弃自己、嵌套上限 32 层；`decodeMsgpack(bytes)` 只在恰好一个对象时返回。支持 nil/bool/fixint/uint8-64/int8-64/float32/64/fixstr/str/bin/array/map；ext 家族整条判失败。
 
 ### 3.4 解密后的三种消息形态
 
@@ -128,11 +129,11 @@ loop{ 15s /! 心跳 ；每条下行先 ACK 再入队 ；业务帧 }
 
 | 形态 | 判定条件 | 文本位置 | 发送者 |
 |---|---|---|---|
-| 标准聊天 | `msg["1"]` 是对象且 `msg["1"]["10"]["reminderContent"]` 非空 | `msg["1"]["6"]["3"]["5"]`（明文 JSON 串；旧格式在 `["1"]`，base64） | `msg["1"]["10"]["senderUserId"]`（去 `@goofish`） |
-| 卡片消息 | `msg["1"]["6"]["3"]` 存在 | `msg["1"]["6"]["3"]["2"]` | `msg["1"]["1"]["1"]` |
+| 标准聊天 | 正文段内层 `msg["1"]["6"]["3"]["4"]` == 1 | `msg["1"]["6"]["3"]["5"]`（明文 JSON 串；旧格式在 `["1"]`，base64） | `msg["1"]["10"]["senderUserId"]`（去 `@goofish`） |
+| 卡片消息 | 正文段内层 `["4"]` 是其它正数（**26 = dxCard** 已见真实样例） | `msg["1"]["6"]["3"]["2"]` 摘要 | `msg["1"]["1"]["1"]` 或 `msg["1"]["10"]["senderUserId"]` |
 | 卡片更新 | `msg["1"]` 是字符串且 `msg["4"]["reminderContent"]` 存在 | `msg["4"]["reminderContent"]` | `msg["4"]["senderUserId"]` |
 
-公共信封（标准聊天，:94-141）：`["1"]["2"]`=`cid`（去 `@`）、`["1"]["5"]`=毫秒时间戳、`["1"]["3"]`=`messageId`、`["1"]["10"]["reminderTitle"]` 可兜底当昵称。交易状态不靠猜文本，靠 `message["3"]["redReminder"]` 枚举：`等待买家付款` / `交易成功`（等待卖家发货）/ `交易关闭`（XianyuAutoAgent/main.py:409-451；xianyu-super-butler/XianyuAutoAsync.py:10048-10060 用它触发发货）。**deliver 执行器应以该字段为准，不要正则匹配文案。**
+公共信封（标准聊天，:94-141）：`["1"]["2"]`=`cid`（去 `@`）、`["1"]["5"]`=毫秒时间戳、`["1"]["3"]`=`messageId`、`["1"]["10"]["reminderTitle"]` 可兜底当昵称。交易状态不靠猜文本，靠 redReminder 枚举（**真实卡片消息里在 `msg["1"]["10"]["redReminder"]`，`message["3"]["redReminder"]` 只在旧形态/部分帧出现，两处都要读**）：`等待买家付款` / `交易成功`（等待卖家发货）/ `交易关闭`（XianyuAutoAgent/main.py:409-451；xianyu-super-butler/XianyuAutoAsync.py:10048-10060 用它触发发货）。**deliver 执行器应以该字段为准，不要正则匹配文案。** 另注：**不要用 `reminderContent` 是否存在来区分文本/卡片**——真实卡片消息的 `["10"]` 里也带 `reminderContent`（如「[我已拍下，待付款]」），拿它当判定条件会把卡片当文本、正文取成一整段 dxCard JSON。
 
 **3.5 去重与过滤**：按 `messageId` 去重（xianyu-auto-reply/.../message_handler.py:644-649），落库加唯一键（§6.2）；丢弃 `is_system_tip_message`（:110）与 `bizType=='IDLE_SPACE_PRICING'` 这类非聊天业务包（:602-638）；`isSelf` 用 `senderUserId == my_id`（去后缀后比较），自己发出的消息也会被推回来，不排除会导致 AI 自问自答。
 
@@ -233,7 +234,7 @@ loop{ 15s /! 心跳 ；每条下行先 ACK 再入队 ；业务帧 }
 ## 8. 证据不足 / 待核（别当成已确认）
 
 1. `ackDiff.pts` 精确语义（毫秒×1000 的同步游标）是**从三处实现一致推断**，无服务端文档；重连时能否用"已处理最大时间"回填未验证。
-2. 推送包 `data` 明文/加密的**判定边界**只看到"try 明文、except 走 msgpack"双栈兜底（xianyu-auto-reply/.../push_message_parser.py:49-60），未知是否存在"像 JSON 但需解密"的边缘。
+2. ~~推送包 `data` 明文/加密的判定边界未知~~ **已解决（2026-10-26）**：真实聊天推送是 base64(MessagePack)，系统提示/旧格式才是明文 JSON；判定用首字节 `{`/`[`。仍未知的是"像 JSON 但需解密"的边缘是否存在（样例里没见到）。
 3. 服务端是否接受 **binary ws 帧**未验证；三仓全发文本帧，按其文本帧实现即可。
 4. 限频/429 的**帧级表现**未观察到，只见错误码文案；P2 先按 `challenge` + 退避处理。
 5. `is_sync_package` 之后的离线补发行为未实测；首注册时的历史消息洪峰需要限速消费。
@@ -241,11 +242,11 @@ loop{ 15s /! 心跳 ；每条下行先 ACK 再入队 ；业务帧 }
 
 ## 9. 实现状态（2026-10-26，P2.1）
 
-**已落地（代码 + 测试，证据以 [STATUS.md](STATUS.md) §4.2 为准）**：`daemon/im-token.ts`（mtop 取 accessToken；风控 `RISK_CONTROL` 带 `punishUrl`、登录失效 `AUTH_EXPIRED` 分流，其余按可重试网络错误）、`im-transport.ts`（Node 内置 WebSocket 适配器；文本帧 + 生命周期）、`im-client.ts`（握手 `/reg` → 1s 后 `ackDiff` → 15s 心跳；下行**先 ACK 再落库**；`sendReply` 组 `sendByReceiverScope` 帧；风控/失效 → `blocked` + `challenge` 事件、**不自动过滑块**；断线指数退避重连）、`im-runtime.ts`（按账号管理连接，`BF_IM=1` 才开）；消息表 `core` 的 `im_messages`（`messageId` 唯一键去重，出站 id 前缀 `out:`）。ACK 帧回显 `mid/sid/app-key/ua/dt`。
+**已落地（代码 + 测试，证据以 [STATUS.md](STATUS.md) §4.2 为准）**：`channel-im/src/msgpack.ts`（自写零依赖 MessagePack 解码；真实推送样例 base64 3092 字节逐字段核对通过：kind=card / cid=47983389096 / messageId=3416565274542.PNM / sender=3149637063 / text=[我已拍下，待付款] / tradeStatus=awaiting_payment）；`daemon/im-token.ts`（mtop 取 accessToken；风控 `RISK_CONTROL` 带 `punishUrl`、登录失效 `AUTH_EXPIRED` 分流，其余按可重试网络错误）、`im-transport.ts`（Node 内置 WebSocket 适配器；文本帧 + 生命周期）、`im-client.ts`（握手 `/reg` → 1s 后 `ackDiff` → 15s 心跳；下行**先 ACK 再落库**；`sendReply` 组 `sendByReceiverScope` 帧；风控/失效 → `blocked` + `challenge` 事件、**不自动过滑块**；断线指数退避重连）、`im-runtime.ts`（按账号管理连接，`BF_IM=1` 才开）；消息表 `core` 的 `im_messages`（`messageId` 唯一键去重，出站 id 前缀 `out:`）。ACK 帧回显 `mid/sid/app-key/ua/dt`。
 
 **未做（别当成已完成）**：
-1. **重连后不按 `pts` 续传**：重新 `/reg` + 新 pts，断线期消息没有补拉（候选接口 `mtop.taobao.idlemessage.pc.user.query`，未验证）。
+1. **重连后不按 `pts` 续传**：重新 `/reg` + 新 pts，断线期消息没有补拉。补拉候选是帧接口 `/r/MessageManager/listUserMessages`（body `["<cid>@goofish", false, 9007199254740991, 20, false]` → `body.userMessageModels` + `hasMore`/`nextCursor`，来自 XianYuApis 的 goofish_live.py；`user.query` 是查对方昵称头像，不是历史消息），**未实现也未验证**。
 2. **不做收包静默判死**：内置 WebSocket 不能设 `ping_interval`，而服务端空闲时不一定回包，按静默判死会误杀健康连接；半开连接只能等下次 `send` 抛错或 `close` 事件，再由退避重连兜底。
 3. **只有文本消息**：图片/语音/卡片更新不落库（卡片更新的 `msg["1"]` 字符串形态已知，解析层未做）。
 4. **单账号无代理**：内置 WebSocket 的 per-call dispatcher 被忽略，分账号代理需换 `ws@8` + `https-proxy-agent`。
-5. **真机未验收**：真实买家会话、滑块/风控路径都没在真实环境跑过。
+5. **真机只验到一半**：握手到 `ready` 已验（2026-10-26，2s）；真实买家会话的收/发消息、滑块/风控路径仍未在真实环境跑过（缺第二个闲鱼号）。

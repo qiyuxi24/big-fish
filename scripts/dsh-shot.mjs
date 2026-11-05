@@ -172,7 +172,7 @@ try {
   const workflowTree = await roleText(cdp, 'workflow-tree')
   if (workflowTree === null) problems.push('概览页没有 data-role=workflow-tree（工作流区）')
   const overviewText = await cdp.evaluate('document.body.innerText')
-  for (const needle of ['待办提醒', '进程管理', '工具与命令', 'npm run daemon:import-account']) {
+  for (const needle of ['待办提醒', '进程管理', '工具与命令', 'pnpm daemon:import-account']) {
     if (!overviewText.includes(needle)) problems.push('概览页缺少「' + needle + '」')
   }
   if (await roleText(cdp, 'overview-todo') === null) problems.push('概览页没有 data-role=overview-todo（待办提醒）')

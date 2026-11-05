@@ -138,3 +138,59 @@ test('非 JSON 响应 → INTERNAL', async () => {
     await server.close()
   }
 })
+
+test('ok:false 的 details 透传到 DaemonError（模型靠它知道改哪个字段）', async () => {
+  const server = await startStubServer({
+    '/tasks/t-1/ack': { status: 409, body: { ok: false, error: { code: 'VALIDATION', message: '租约不匹配', details: { id: 't-1', actualOwner: 'daemon-77', leaseRemainingMs: 42_000 } } } },
+    '/weird': { status: 400, body: { ok: false, error: { code: 'VALIDATION', message: 'x', details: [1, 2] } } },
+  })
+  try {
+    const client = createDaemonClient({ daemonUrl: server.url, tokenPath: 'x', readFileImpl: readFileOk })
+    await assert.rejects(client.taskAction('t-1', 'ack', { owner: 'me' }), (error) => {
+      assert.equal(error.code, 'VALIDATION')
+      assert.equal(error.details.actualOwner, 'daemon-77')
+      assert.equal(error.details.leaseRemainingMs, 42_000)
+      return true
+    })
+    // 数组形态的 details 不是契约，折成空对象而不是把数组塞给上层。
+    await assert.rejects(client.request('/weird'), (error) => {
+      assert.deepEqual(error.details, {})
+      return true
+    })
+  } finally {
+    await server.close()
+  }
+})
+
+test('PUT /settings 的 clamped 不丢：夹取信息附在返回值上，面板才说得出「被压到多少」', async () => {
+  const server = await startStubServer({
+    '/settings': { body: { ok: true, data: { keepAliveIntervalMs: 60_000 }, clamped: { keepAliveIntervalMs: 30_000 } } },
+  })
+  try {
+    const client = createDaemonClient({ daemonUrl: server.url, tokenPath: 'x', readFileImpl: readFileOk })
+    const saved = await client.putSettings({ keepAliveIntervalMs: 5 })
+    assert.equal(saved.keepAliveIntervalMs, 60_000)
+    assert.deepEqual(saved.clamped, { keepAliveIntervalMs: 30_000 })
+  } finally {
+    await server.close()
+  }
+})
+
+test('listItems 把状态/账号/上限拼成查询串，避免跨账号取错商品', async () => {
+  const seen = []
+  const server = await startStubServer({ '/items': { body: { ok: true, data: [] } } })
+  try {
+    const client = createDaemonClient({
+      daemonUrl: server.url,
+      tokenPath: 'x',
+      readFileImpl: readFileOk,
+      fetchImpl: (url, init) => { seen.push(String(url)); return fetch(url, init) },
+    })
+    await client.listItems()
+    assert.equal(seen[0], server.url + '/items')
+    await client.listItems({ accountId: 'acc-1', state: 'online', limit: 10 })
+    assert.equal(seen[1], server.url + '/items?state=online&accountId=acc-1&limit=10')
+  } finally {
+    await server.close()
+  }
+})

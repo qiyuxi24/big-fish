@@ -12,7 +12,8 @@
  *
  * @module @bigfish/plugin-ops/src/daemon-supervisor
  */
-import { appendFileSync, closeSync, openSync, readFileSync, statSync } from 'node:fs'
+import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { spawn as spawnProcess } from 'node:child_process'
 
@@ -24,8 +25,12 @@ export const DEFAULT_READY_TIMEOUT_MS = 20_000
 export const READY_POLL_INTERVAL_MS = 500
 /** health 探测超时：daemon 只回一行 JSON，2 秒足够。 */
 export const DEFAULT_HEALTH_TIMEOUT_MS = 2_000
+/** pid 文件名，与 scripts/lib/daemon-service.mjs 的 PID_FILE_NAME 一致。 */
+export const PID_FILE_NAME = 'daemon.pid'
 /** 拉起失败时回读 daemon.log 的尾部字节数，把真正的错误带进日志。 */
 const LOG_TAIL_BYTES = 2048
+/** daemon.log 的轮转阈值，与 scripts/lib/daemon-service.mjs 的 MAX_LOG_BYTES 保持一致。 */
+export const DAEMON_LOG_MAX_BYTES = 8 * 1024 * 1024
 
 /** 判断是否普通对象（排除 null 与数组）。 */
 function isRecord(value) {
@@ -192,7 +197,14 @@ export function createDaemonSupervisor(options = {}) {
     ? options.tokenPath
     : (dataDir === '' ? '' : join(dataDir, 'daemon.token'))
   const logFile = dataDir === '' ? '' : join(dataDir, 'plugin.log')
-  const daemonLog = dataDir === '' ? '' : join(dataDir, 'daemon.log')
+  // 状态根（pid 文件与 daemon 日志所在地）缺省跟数据目录一致：插件默认 dataDir 就是
+  // %LOCALAPPDATA%/bigfish，与 scripts/daemon-service.mjs 的 resolveStateRoot 同源，
+  // 两边才能看到同一个 pid 文件与同一份 daemon 日志。
+  const stateRoot = typeof options.stateRoot === 'string' && options.stateRoot !== '' ? options.stateRoot : dataDir
+  const pidPath = stateRoot === '' ? '' : join(stateRoot, 'run', PID_FILE_NAME)
+  // 位置必须与 scripts/lib/daemon-service.mjs 的 resolveServicePaths 一致（<root>/logs/daemon.log）：
+  // 否则 `pnpm daemon:logs` 读的是另一个空文件——这正是 P0-2 的另一半。
+  const daemonLog = stateRoot === '' ? '' : join(stateRoot, 'logs', 'daemon.log')
   const effects = isRecord(options.effects) ? options.effects : {}
   const now = typeof effects.now === 'function' ? effects.now : Date.now
   const sleep = typeof effects.sleep === 'function'
@@ -206,12 +218,52 @@ export function createDaemonSupervisor(options = {}) {
     }
   }
   const readTail = typeof effects.readTail === 'function' ? effects.readTail : readLogTail
+  const writePid = typeof effects.writePid === 'function' ? effects.writePid : undefined
   const spawn = typeof effects.spawn === 'function' ? effects.spawn : spawnDetached
   const health = typeof effects.health === 'function' ? effects.health : undefined
   const cooldownMs = Number.isInteger(options.cooldownMs) ? options.cooldownMs : DEFAULT_START_COOLDOWN_MS
   const readyTimeoutMs = Number.isInteger(options.readyTimeoutMs) ? options.readyTimeoutMs : DEFAULT_READY_TIMEOUT_MS
   const writeLog = typeof options.writeLog === 'function' ? options.writeLog : (level, message, detail) => {
     appendLogLine(logFile, level, message, detail)
+  }
+
+  /**
+   * 拉起成功后登记 pid 文件，让 `pnpm daemon:status|stop|restart` 看得见这个实例。
+   *
+   * 字段顺序与 scripts/lib/daemon-service.mjs 的 formatPidFile 保持一致：
+   * 插件是纯 ESM JS、不 import workspace 包（AGENTS §2），只能自带一份写法。
+   *
+   * @param {{pid: number | undefined, host: string, port: number}} input
+   * @returns {string} 写入的路径（失败时为空串，拉起本身不算失败）。
+   */
+  function writePidRecord(input) {
+    if (pidPath === '') return ''
+    const pid = input.pid
+    if (!Number.isInteger(pid) || pid <= 0) {
+      writeLog('warn', '拉起成功但拿不到 daemon 的 pid，未登记 pid 文件（pnpm daemon:status 会看不到它）', { pidPath })
+      return ''
+    }
+    const record = { pid, port: input.port, host: input.host, startedAt: now() }
+    if (writePid !== undefined) {
+      // 测试注入：绝不往真实状态目录 / 真实用户目录写 pid。
+      try {
+        if (writePid(pidPath, record) !== false) return pidPath
+      } catch (error) {
+        writeLog('warn', '写 pid 文件失败：' + describe(error), { pidPath })
+        return ''
+      }
+      writeLog('warn', '写 pid 文件失败（状态目录不可写？）：pnpm daemon:status 会看不到这个实例', { pidPath })
+      return ''
+    }
+    try {
+      mkdirSync(dirname(pidPath), { recursive: true })
+      writeFileSync(pidPath, JSON.stringify(record, null, 2) + '\n')
+      return pidPath
+    } catch (error) {
+      // 状态目录只读（沙箱/权限）时不该把 daemon 已经起来这件事判成失败。
+      writeLog('warn', '写 pid 文件失败：' + describe(error), { pidPath })
+      return ''
+    }
   }
 
   let lastAttemptAt
@@ -258,7 +310,12 @@ export function createDaemonSupervisor(options = {}) {
       await sleep(READY_POLL_INTERVAL_MS)
       const probeNow = await safeProbe(probe)
       if (probeNow.ok) {
-        return finish('started', 'daemon 已拉起（pid ' + String(child?.pid ?? '?') + '），面板下一次轮询即可连上', { pid: child?.pid })
+        // 必须落 pid 文件：CLI 的 status/stop/restart 只认这个文件。不写的话
+        // 「面板拉起的 daemon」对 pnpm daemon:stop 是不存在的，stop 会撒谎说已停。
+        const healthPid = readHealthPid(probeNow.value)
+        const pid = healthPid ?? child?.pid
+        const pidFile = writePidRecord({ pid, host: endpoint.host, port: endpoint.port })
+        return finish('started', 'daemon 已拉起（pid ' + String(pid ?? '?') + '），面板下一次轮询即可连上', { pid, pidFile })
       }
       if (exit !== undefined) break
     }
@@ -316,15 +373,36 @@ async function safeProbe(probe) {
   }
 }
 
-/** GET /health：200 即在线（daemon 的 /health 不需要 token）。 */
+/**
+ * GET /health：200 即在线（daemon 的 /health 不需要 token）。
+ *
+ * 顺带把响应体里的 pid 带出来：拉起后要按「daemon 自己报的 pid」写 pid 文件，
+ * 而不是 spawn 出来的中间进程 pid（node 可能再 fork 一层）。
+ */
 async function probeHttp(daemonUrl) {
   if (daemonUrl === '') return { ok: false }
   try {
     const response = await fetch(daemonUrl + '/health', { signal: AbortSignal.timeout(DEFAULT_HEALTH_TIMEOUT_MS) })
-    return { ok: response.ok }
+    if (!response.ok) return { ok: false }
+    let body
+    try {
+      body = await response.json()
+    } catch {
+      return { ok: true }
+    }
+    const data = isRecord(body) && isRecord(body.data) ? body.data : {}
+    const pid = Number.isInteger(data.pid) ? data.pid : undefined
+    return pid === undefined ? { ok: true } : { ok: true, value: { pid } }
   } catch {
     return { ok: false }
   }
+}
+
+/** 从健康探测结果里取 daemon 自报的 pid（注入的假 health 可能只有 `{ ok: true }`）。 */
+function readHealthPid(value) {
+  if (!isRecord(value)) return undefined
+  const pid = Number(value.pid)
+  return Number.isInteger(pid) && pid > 0 ? pid : undefined
 }
 
 /**
@@ -339,6 +417,12 @@ function spawnDetached(command, args, options) {
   const logPath = options?.logPath ?? ''
   let fd
   if (logPath !== '') {
+    // 目录可能还不存在（首次拉起 / 刚升级到 logs/ 布局）：openSync('a') 不会自己建目录。
+    mkdirSync(dirname(logPath), { recursive: true })
+    // 插件这条拉起路径同样要轮转：daemon 的 stdout 是 direct-append，
+    // 缺了这一步「面板拉起的 daemon」会无限涨、而「pnpm daemon:start 拉起的」会滚，
+    // 同一个 daemon 的日志行为取决于谁拉起它——这正是要消灭的不一致。
+    rotateLogIfNeeded(logPath)
     fd = openSync(logPath, 'a')
   }
   try {
@@ -355,6 +439,25 @@ function spawnDetached(command, args, options) {
   }
 }
 
+/**
+ * 日志超过 DAEMON_LOG_MAX_BYTES 就滚成 `.1`（只留一份历史，和 scripts 侧口径一致）。
+ * 插件包零依赖、不 import core/scripts，所以这里是同一规则的最小实现。
+ *
+ * @param {string} logPath - 日志文件。
+ * @returns {{rotated: boolean, size: number}} 轮转结果。
+ */
+export function rotateLogIfNeeded(logPath) {
+  try {
+    const size = statSync(logPath).size
+    if (size <= DAEMON_LOG_MAX_BYTES) return { rotated: false, size }
+    renameSync(logPath, logPath + '.1')
+    return { rotated: true, size }
+  } catch {
+    // 文件不存在（首次拉起）或改不动名字都不该拦住启动。
+    return { rotated: false, size: 0 }
+  }
+}
+
 /** 追加一行 JSON 日志到插件日志文件；写失败不抛（日志不是主路径）。 */
 function appendLogLine(logPath, level, message, detail) {
   if (logPath === '') return
@@ -366,14 +469,28 @@ function appendLogLine(logPath, level, message, detail) {
   }
 }
 
-/** 读日志尾部：daemon 崩溃时把真正的错误带回插件日志。 */
+/**
+ * 读日志尾部：daemon 崩溃时把真正的错误带回插件日志。
+ *
+ * 只读末尾 maxBytes 字节而不是 `readFileSync(整个文件)`：daemon 的 stdout 是 direct-append、
+ * 没有任何轮转，过夜跑能到几百 MB，整读会把宿主进程拖进 GC 甚至 OOM。
+ */
 function readLogTail(logPath, maxBytes) {
+  let fd
   try {
-    const buffer = readFileSync(logPath)
-    const start = Math.max(0, buffer.length - maxBytes)
-    return buffer.subarray(start).toString('utf8').trim()
+    const size = statSync(logPath).size
+    const start = Math.max(0, size - maxBytes)
+    const buffer = Buffer.alloc(size - start)
+    fd = openSync(logPath, 'r')
+    const read = readSync(fd, buffer, 0, buffer.length, start)
+    let text = buffer.subarray(0, read).toString('utf8')
+    // 从中间切进来时首行是半行，丢掉它，免得日志里出现半截 JSON。
+    if (start > 0 && text.includes('\n')) text = text.slice(text.indexOf('\n') + 1)
+    return text.trim()
   } catch {
     return ''
+  } finally {
+    if (fd !== undefined) closeSync(fd)
   }
 }
 

@@ -72,7 +72,7 @@ export async function sendError(res: ServerResponse, status: number, error: Xian
 }
 
 /**
- * 把任意异常按 code 映射为 HTTP 状态：VALIDATION → validationStatus，其余 → 500。
+ * 把任意异常按 code 映射为 HTTP 状态：VALIDATION → validationStatus，其余按 CODE_STATUS。
  * 请求体超限这类需要 413 的错误用 details.httpStatus 覆盖。
  */
 export async function sendMappedError(
@@ -82,8 +82,25 @@ export async function sendMappedError(
   redact: RedactFn,
 ): Promise<void> {
   const xe = toXianyuError(error)
-  const status = xe.code !== 'VALIDATION' ? 500 : httpStatusOf(xe) ?? validationStatus
+  const status = httpStatusOf(xe) ?? CODE_STATUS[xe.code] ?? (xe.code === 'VALIDATION' ? validationStatus : 500)
   await sendError(res, status, xe, redact)
+}
+
+/**
+ * 错误码 → HTTP 状态（只覆盖「状态码本身带语义、且与 code 必须一致」的那几个）。
+ *
+ * 为什么：调用方先看状态码判断严重性。404 说「你要的东西不存在」、500 说「我坏了」，
+ * 是两种完全不同的下一步。2026-11-03 审计实测 `/batches/<不存在>` 返回 404 但 code=VALIDATION，
+ * 于是 agent 会去改参数而不是先去列表里拿真实 id。
+ *
+ * 刻意**不**收录的码（保持 500，由调用点决定状态码）：
+ * - VALIDATION：入队是 400、租约冲突是 409，写死会丢掉冲突语义；
+ * - UNSUPPORTED：能力未装配/未开启，插件层按 code 分流，状态码不承载信息；
+ * - UNAUTHORIZED：token 不认在 server.ts 的鉴权闸就已返回 401，走不到这里。
+ */
+const CODE_STATUS: Partial<Record<string, number>> = {
+  NOT_FOUND: 404,
+  METHOD_NOT_ALLOWED: 405,
 }
 
 /** 从错误 details 里取显式 HTTP 状态（只有超限等少数场景使用）。 */

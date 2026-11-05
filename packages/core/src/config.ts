@@ -42,6 +42,19 @@ export function defaultDataRoot(env: EnvLike = process.env): string {
 }
 
 /**
+ * 托管/自起浏览器用的 profile 目录：固定跟着数据根走。
+ *
+ * 为什么要有这个函数：过去登录（`login.ts`）默认 `~/.bigfish/chrome-profile`，而 daemon
+ * （`runtime.ts`）、CLI（`cli.ts`）都用 `<dataDir>/chrome-profile`，结果本机长出了两份 179MB + 331MB
+ * 的 profile，扫码登录进去的态和发布复用的不是同一个浏览器。这里给一个唯一算法，谁要 profile 就调它。
+ */
+export function defaultBrowserProfileDir(env: EnvLike = process.env): string {
+  // 与 loadDaemonConfig 同一套「数据根」口径：BF_DATA_DIR 优先，否则平台默认目录。
+  const root = env.BF_DATA_DIR === undefined ? defaultDataRoot(env) : assertNonEmpty('环境变量 BF_DATA_DIR', env.BF_DATA_DIR)
+  return join(root, 'chrome-profile')
+}
+
+/**
  * 加载 daemon 配置。优先级：overrides > 环境变量 > 默认值。
  * @param env 环境变量来源，默认 process.env
  * @param overrides 显式覆盖项（测试/嵌入场景）

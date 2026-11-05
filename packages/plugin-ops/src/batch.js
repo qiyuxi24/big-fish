@@ -204,7 +204,8 @@ export async function prepareBatch(args, deps = {}) {
     try {
       const draft = await loadItemDraft(source, deps.readDraftFile)
       item.draft = draft
-      item.dedupeKey = draftDedupeKey(draft)
+      // 幂等键带上账号：daemon 的 dedupe_key 是全局唯一，不带账号会让「B 号发同款」被当成重复丢单。
+      item.dedupeKey = draftDedupeKey(draft, normalized.accountId)
       // 先跑入队校验再登记键：非法条目不应占用幂等键，否则同内容的后续条目会被误判重复。
       if (normalized.mode === 'enqueue') attachEnqueueInput(item, draft, normalized.accountId)
       if (item.status === 'ok') {
@@ -305,7 +306,34 @@ async function enqueueItems(items, client, options) {
 // 渲染实现拆在 batch-format.js（守 AGENTS §3 文件 ≤400 行）；这里再导出，测试/工具层的引用点不变。
 export { formatBatchResult }
 /**
+ * 读 daemon 设置里的发布间隔，读不到就返回 undefined。
+ *
+ * 为什么要有这一层：面板「设置 → 发布间隔」写的是 daemon 的 settings.publishMinIntervalMs，
+ * 而本文件原先只读环境变量 BF_PUBLISH_MIN_INTERVAL_MS，导致用户在面板把 180s 改成 1 小时
+ * 后节奏一点没变——设置项等于撒谎。现在把它接成第三优先级来源。
+ *
+ * 失败不抛：设置读不到时退回环境变量/默认值，不该让一次批量入队因为读设置失败就整批不动。
+ *
+ * @param {object} client - daemon 客户端（可能没有 getSettings）。
+ * @returns {Promise<unknown>} 原值，交给 resolvePublishMinIntervalMs 夹取。
+ */
+async function readSettingsPublishMinIntervalMs(client) {
+  if (typeof client.getSettings !== 'function') return undefined
+  try {
+    const settings = await client.getSettings()
+    return settings === null || typeof settings !== 'object' ? undefined : settings.publishMinIntervalMs
+  } catch {
+    // 读设置是「让配置生效」的增强，不是入队的前置条件；失败静默回退。
+    return undefined
+  }
+}
+
+/**
  * 工具入口：先做纯本地计划，enqueue 模式再逐条入队，最后统一渲染。
+ *
+ * 发布间隔的优先级：显式 deps.minIntervalMs（测试/调用方指定）> 环境变量
+ * BF_PUBLISH_MIN_INTERVAL_MS（运维级覆盖）> daemon 设置 publishMinIntervalMs（面板可改）
+ * > 内置默认 180s。
  *
  * @param {Record<string, unknown>} args - 工具参数。
  * @param {{client: object, readDraftFile?: Function, now?: () => number, minIntervalMs?: unknown}} deps
@@ -315,9 +343,9 @@ export { formatBatchResult }
 export async function runBatch(args, deps) {
   const plan = await prepareBatch(args, deps)
   if (plan.mode === 'enqueue') {
-    const minIntervalMs = resolvePublishMinIntervalMs(
-      deps.minIntervalMs === undefined ? process.env.BF_PUBLISH_MIN_INTERVAL_MS : deps.minIntervalMs,
-    )
+    const fromEnv = deps.minIntervalMs === undefined ? process.env.BF_PUBLISH_MIN_INTERVAL_MS : deps.minIntervalMs
+    const rawInterval = fromEnv === undefined ? await readSettingsPublishMinIntervalMs(deps.client) : fromEnv
+    const minIntervalMs = resolvePublishMinIntervalMs(rawInterval)
     const now = typeof deps.now === 'function' ? deps.now : Date.now
     // batchId 在本批真正入队时才生成：dry-run 计划不该无端造一个 id 写进输出。
     const batchId = plan.batchId ?? generateBatchId(now())

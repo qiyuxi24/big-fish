@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { loadDaemonConfig } from '@bigfish/core'
-import type { CircuitBreaker, DaemonConfig, ItemRepository, SellerRepository, TaskEventSink, TaskRecord } from '@bigfish/core'
+import type { CircuitBreaker, DaemonCapabilities, DaemonConfig, ItemRepository, SellerRepository, TaskEventSink, TaskRecord } from '@bigfish/core'
 
 import { DaemonClient } from '../src/client.ts'
 import { startDaemon } from '../src/server.ts'
@@ -29,6 +29,7 @@ import type { SellerCollectHandler } from '../src/seller-routes.ts'
 import type { SettingsStore } from '../src/settings.ts'
 import type { AccountSummary } from '../src/account-list.ts'
 import type { BrowserStatus } from '../src/managed-browser.ts'
+import type { ImRuntime } from '../src/im-runtime.ts'
 import { FakeQueue } from './fake-queue.ts'
 
 /** 临时目录根：.scratch 已 gitignore，仓库根下便于排查残留。 */
@@ -103,6 +104,10 @@ export interface HarnessOptions {
   events?: TaskEventSink
   /** 托管浏览器状态（测试 GET /browser）；缺省时不注入，路由应返回 enabled:false。 */
   browser?: () => Promise<BrowserStatus>
+  /** IM 运行时（测试 GET /im/status 与 POST /im/reply）；缺省时不注入，回复入口应返回 UNSUPPORTED。 */
+  im?: ImRuntime
+  /** 写能力快照（测试 GET /status.capabilities）；缺省时不带该字段。 */
+  capabilities?: () => DaemonCapabilities
 }
 
 /** 建夹具；t.after 负责关服务与清理目录。 */
@@ -143,6 +148,8 @@ export async function createHarness(t: { after(fn: () => Promise<void>): void },
     ...(options.requestShutdown === undefined ? {} : { requestShutdown: options.requestShutdown }),
     ...(options.events === undefined ? {} : { events: options.events }),
     ...(options.browser === undefined ? {} : { browser: options.browser }),
+    ...(options.im === undefined ? {} : { im: options.im }),
+    ...(options.capabilities === undefined ? {} : { capabilities: options.capabilities }),
   })
   const client = new DaemonClient({ baseUrl: daemon.url, tokenPath: config.tokenPath })
   const baseUrl = daemon.url
@@ -200,8 +207,18 @@ export function dataOf(response: RawResponse): unknown {
   return envelope.data
 }
 
-/** 取失败信封里的 error；断言 ok:false。 */
-export function errorOf(response: RawResponse): { code: string; message: string; retryable: boolean } {
+/**
+ * 取失败信封里的 error；断言 ok:false。
+ *
+ * details 也一起取出来：它是 agent 唯一能看到的失败上下文（哪个 id、还剩多少秒租约），
+ * 测试里不检查 details 就等于放过「错误码对了但调用方拿不到关键信息」这类回归。
+ */
+export function errorOf(response: RawResponse): {
+  code: string
+  message: string
+  retryable: boolean
+  details: Record<string, unknown>
+} {
   const envelope = asRecord(response.body)
   if (envelope.ok !== false) throw new TypeError('期望失败信封，实际为：' + response.text)
   const error = asRecord(envelope.error)
@@ -209,7 +226,12 @@ export function errorOf(response: RawResponse): { code: string; message: string;
     code: typeof error.code === 'string' ? error.code : '',
     message: typeof error.message === 'string' ? error.message : '',
     retryable: error.retryable === true,
+    details: isRecord(error.details) ? error.details : {},
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function parseJson(text: string): unknown {

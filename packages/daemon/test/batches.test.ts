@@ -13,7 +13,7 @@ function enqueueBody(dedupeKey: string, batchId?: string): string {
   return JSON.stringify({
     kind: 'publish',
     dedupeKey,
-    payload: { accountId: 'acc-1', title: '测试商品', priceCents: 990 },
+    payload: { accountId: 'acc-1', title: '测试商品', desc: '测试描述', priceCents: 990, images: ['C:\\tmp\\a.jpg'] },
     ...(batchId === undefined ? {} : { batchId }),
   })
 }
@@ -59,12 +59,14 @@ describe('daemon 批次路由', () => {
     assert.deepEqual(items.map((item) => item.dedupeKey), ['k-a', 'k-b'])
   })
 
-  it('GET /batches/:id 未知批次 → 404 VALIDATION，信息带批次 id', async (t) => {
+  it('GET /batches/:id 未知批次 → 404 NOT_FOUND，信息带批次 id', async (t) => {
     const h = await createHarness(t)
     const response = await h.rawRequest({ method: 'GET', path: '/batches/b-nope' })
     assert.equal(response.status, 404)
     const error = errorOf(response)
-    assert.equal(error.code, 'VALIDATION')
+    // 404 必须配 NOT_FOUND：状态码与 code 说同一件事，调用方才知道该去列表核对 id 而不是改参数。
+    assert.equal(error.code, 'NOT_FOUND')
+    assert.deepEqual(error.details, { id: 'b-nope', resource: 'batch' })
     assert.match(error.message, /批次不存在/)
   })
 

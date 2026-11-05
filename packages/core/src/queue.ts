@@ -193,7 +193,9 @@ function requeueTask(ctx: QueueContext, id: string, options?: RequeueOptions): T
   const availableAt = options?.availableAt === undefined ? at : assertTimestamp(options.availableAt, 'availableAt')
   return withTransaction(ctx.db, () => {
     const task = getTask(ctx, taskId)
-    if (task === undefined) fail('VALIDATION', `requeue：任务不存在（id=${taskId}）`)
+    if (task === undefined) {
+      fail('NOT_FOUND', `requeue：任务不存在（id=${taskId}）`, { details: { id: taskId, resource: 'task' } })
+    }
     // 只收容已停下：queued 会打乱 available_at/dedupe；leased 可能正在写（再排队=双写，AGENTS 不变量 2）；done 重放=再写一次。
     if (task.state !== 'failed' && task.state !== 'needs_review') {
       fail('VALIDATION', `requeue：任务 ${taskId} 状态为 ${task.state}，只有 failed / needs_review 可以重新排队`)
@@ -289,9 +291,23 @@ function requireLease(ctx: QueueContext, id: string, owner: string, action: stri
   const taskId = assertText(id, 'id')
   const leaseOwner = assertText(owner, 'owner')
   const task = getTask(ctx, taskId)
-  if (task === undefined) fail('VALIDATION', `${action}：任务不存在（id=${taskId}）`)
+  if (task === undefined) {
+    fail('NOT_FOUND', `${action}：任务不存在（id=${taskId}）`, { details: { id: taskId, resource: 'task' } })
+  }
   if (task.state !== 'leased' || task.leaseOwner !== leaseOwner) {
-    fail('VALIDATION', `${action}：任务 ${taskId} 未被 ${leaseOwner} 持有（state=${task.state}）`)
+    // 这里刻意保留 VALIDATION 而不是改成「冲突」码：details 里带足现场信息，
+    // 调用方（工具层/面板）据此就能说清「谁拿着租约、还能拿多久」，
+    // 而不是让人对着「任务未持有」猜。
+    fail('VALIDATION', `${action}：任务 ${taskId} 未被 ${leaseOwner} 持有（state=${task.state}）`, {
+      details: {
+        id: taskId,
+        action,
+        expectedOwner: leaseOwner,
+        state: task.state,
+        ...(task.leaseOwner === undefined ? {} : { actualOwner: task.leaseOwner }),
+        ...(task.leaseUntil === undefined ? {} : { leaseUntilMs: task.leaseUntil, leaseRemainingMs: Math.max(0, task.leaseUntil - ctx.now()) }),
+      },
+    })
   }
   return task
 }

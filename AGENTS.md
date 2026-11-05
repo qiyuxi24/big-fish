@@ -8,7 +8,7 @@
 
 > **现状、能力矩阵与下一步的唯一事实源是 [`docs/STATUS.md`](docs/STATUS.md)。** 本节只留一句话状态与硬约束；不要在这里或别处重复测试数字/能力状态（历史上同一个数字出现过 6 个版本）。
 
-- **P0 → P1.2 全部完成并提交**（基线 `main @ 5ffda24`，2026-10-21）：core 契约 / daemon HTTP（13 条路由）+ SQLite 队列 + worker + 执行器 / mtop 读通道（详情、擦亮、商家 + 全量商品、参考采集）/ CDP cookie + 发布步骤机 / 登录态导入 + 扫码登录 + 令牌自动刷新 / 插件 `xy_*` 工具（当时 14 个，现 15 个）+ 侧边栏面板（6 个模块 tab）/ 2 个文案合规 skill / `channel-im` 解析层（未接线）。
+- **P0 → P1.2 全部完成并提交**（基线 `main @ 5ffda24`，2026-10-21）：core 契约 / daemon HTTP + SQLite 队列 + worker + 执行器 / mtop 读通道（详情、擦亮、商家 + 全量商品、参考采集）/ CDP cookie + 发布步骤机 / 登录态导入 + 扫码登录 + 令牌自动刷新 / 插件 `xy_*` 工具 + 侧边栏面板（6 个模块 tab）/ 2 个文案合规 skill / `channel-im` 解析层（未接线）。
 - **产品结构（用户 2026-10-21 拍板，2026-10-23 按功能重排为六个 tab）**：**一个插件**；插件入口只在侧边栏（`sidebar.panellist` + `main`），**六个 tab 按功能分三组，全部在面板内部切换**，不占会话顶部：监控=概览；准备=账号 / 采集 / 文案；作业=发布 / 商品。加模块 = `plugin-ops/src/client-bundle/01-head.part.js` 的 `PANEL_TABS` 追加**一条记录**（`id/label/group/component`，需要面板级状态再加 `pickProps`）+ 新片段；`08-panel` 的 `PanelBody` 查表渲染，**不要**再写 if 分支。**不要再注册 `conversation.view`**（主页面必须在侧边栏面板里）。
 - **真实能力边界**：`probe`/`polish` 真通 mtop；`publish` 默认 dry-run、`--submit` / `BF_PUBLISH_SUBMIT=1` 才真提交，**真机只成功过 4 次、都是单件、都是「学习笔记」类目**（3 次 CLI 直发 + 1 次队列路径；受网页端类目支持矩阵限制，前 3 次已下架、第 4 次按用户要求留 live）；批量入队 + 失败重放 + 账号级 pacing + 发布侧风控识别**都有代码、只有单测**；账号只有只读摘要（面板内导入/扫码未做，需 host rpc + ADR）；采集参考有 R1 只读统计（`POST /reference` 真机跑通单件）+「链接 → 商家商品入库」（`/resolve` / `/sellers/collect` / `GET /sellers` / `GET /sellers/:id/items` + 面板采集 tab，只落标题/价格/类目/计数/图片张数 + 结构特征（段数/句数/宽高比，不含原文与图片地址），**不下载他人图片、不照抄文案、不跨账号复制**；集成测试已通，真机已采自己店 3 件 + 他人店 3 件入库）；`deliver` 仍 `UNSUPPORTED`，`reply` 已接 IM 长连（P2.1，`BF_IM=1` 才开、默认关；消息落 `im_messages`），**只有单测/集成级证据、真机未验收**。
 - **当前主线**：先把模块拆开、一个一个做——发布（单件真机已通、批量未真机）→ 账号（只读摘要已通）→ 发布前处理（文案/生图/设置页）→ 采集参考（R1 只读统计已落地，R2 自有商品搬家待拍板）。验收口径见 `docs/auto-publish.md`，状态看 `docs/STATUS.md` §4.1。P2 自动发货押后。
@@ -34,7 +34,7 @@
 | `packages/channel-mtop` | TS 库（纯函数） | `core`；mtop 签名/信封/cookie 归一/ret 分类，不发请求 |
 | `packages/channel-cdp` | TS 库 | `core`；CDP 连接/页面/启动/发布步骤机，传输与 spawn 可注入 |
 | `packages/channel-guanjia` | TS 库 | `core`；闲管家开放平台客户端（MIT 移植），**不含 placeOrder** |
-| `packages/channel-im` | TS 库 | `core`；IM 帧解析 / 消息归一化 / 会话状态机，**未接 daemon** |
+| `packages/channel-im` | TS 库 | `core`；IM 帧解析 / 消息归一化 / 会话状态机 / 下行 MessagePack；**已接 daemon**（`BF_IM=1` 才连，`GET /im/status` + `POST /im/reply`） |
 
 - 包名统一 `@bigfish/*`。
 - 语言边界：`core`/`daemon` 用 TS（Node 24 直接跑，无构建）；`plugin-ops`/`ops-bundle` 用纯 ESM JS + JSDoc（它们被宿主直接 import，见 ADR 0002）。
@@ -46,7 +46,7 @@
 
 - Node ≥ 24、ESM only、pnpm workspace；TS 部分是 strict + `moduleResolution: NodeNext`，无构建产物（`exports` 指向 `./src/index.ts`）。
 - **禁止 `any`**；边界一律 `unknown` + 手写窄化校验函数（P0 零依赖，没有 zod，见 ADR 0002；能装依赖后再评估引入）。对外输入（工具参数、HTTP 响应、配置文件）先校验再用。
-- 错误：只用 `class XianyuError extends Error`，带稳定 `code`（`VALIDATION | AUTH_EXPIRED | RISK_CONTROL | RATE_LIMITED | CIRCUIT_OPEN | NETWORK | STORAGE | UNSUPPORTED | INTERNAL | UNAUTHORIZED | UNKNOWN`）。禁止裸 `throw "字符串"`、禁止 `catch {}` 吞异常。
+- 错误：只用 `class XianyuError extends Error`，带稳定 `code`（`VALIDATION | AUTH_EXPIRED | RISK_CONTROL | RATE_LIMITED | CIRCUIT_OPEN | NETWORK | STORAGE | UNSUPPORTED | INTERNAL | UNAUTHORIZED | NOT_FOUND | METHOD_NOT_ALLOWED | UNKNOWN`）。禁止裸 `throw "字符串"`、禁止 `catch {}` 吞异常。
 - **金额一律整数分（cent），时间一律整数毫秒**，禁止浮点相乘（mtop 字段本身就是分）。
 - 所有 IO 必须有超时（默认 15s）并透传 `AbortSignal`；重试只对幂等请求，退避用 `min(60 * 2^(n-1), 1800)` 秒。
 - 文件 ≤ 400 行、函数 ≤ 60 行。复杂分支写"为什么"，不写"做了什么"。

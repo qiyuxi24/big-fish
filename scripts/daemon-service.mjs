@@ -2,7 +2,7 @@
 /**
  * daemon 常驻管理：start / stop / restart / status / logs。
  *
- * 为什么需要它：npm run daemon 是前台阻塞进程，关终端即丢现场；本脚本用 detached 子进程 + 日志重定向
+ * 为什么需要它：pnpm daemon 是前台阻塞进程，关终端即丢现场；本脚本用 detached 子进程 + 日志重定向
  * + pid 文件把 daemon 变成「过夜跑」的常驻服务，并提供单实例保护与健康检查。
  *
  * 分层：纯逻辑在 ./lib/daemon-service.mjs（单测覆盖），副作用在 ./lib/daemon-runtime.mjs，
@@ -17,6 +17,7 @@ import {
   DEFAULT_STATUS_TAIL,
   DEFAULT_STOP_TIMEOUT_MS,
   evaluateServiceState,
+  formatBytes,
   formatUptime,
   healthUrl,
   parseServiceArgs,
@@ -34,6 +35,7 @@ import {
   readPidRecord,
   removePidFile,
   requestStop,
+  rotateLogIfNeeded,
   spawnDaemon,
   waitForExit,
   waitForPortFree,
@@ -49,11 +51,11 @@ const USAGE_TEXT = [
   'bigfish daemon 常驻管理',
   '',
   '用法（npm scripts 等价于下面这些子命令）：',
-  '  npm run daemon:start   [-- 选项]      后台启动（已有实例则复用）',
-  '  npm run daemon:stop    [-- 选项]      优雅停止（超时强杀）',
-  '  npm run daemon:restart [-- 选项]      先 stop 再 start',
-  '  npm run daemon:status  [-- 选项]      查看 pid / 端口 / uptime / 日志尾部',
-  '  npm run daemon:logs    [-- --tail N]  打印日志尾部（不跟随）',
+  '  pnpm daemon:start   [-- 选项]      后台启动（已有实例则复用）',
+  '  pnpm daemon:stop    [-- 选项]      优雅停止（超时强杀）',
+  '  pnpm daemon:restart [-- 选项]      先 stop 再 start',
+  '  pnpm daemon:status  [-- 选项]      查看 pid / 端口 / uptime / 日志尾部',
+  '  pnpm daemon:logs    [-- --tail N]  打印日志尾部（不跟随）',
   '',
   '选项：',
   '  --port PORT        监听端口，默认 47001（也可用环境变量 BF_PORT）',
@@ -99,7 +101,9 @@ async function main(argv) {
     return 0
   }
   const stateDir = options.stateDir === undefined ? undefined : resolve(options.stateDir)
-  const paths = resolveServicePaths({ stateDir })
+  // 必须把 env 透传下去：resolveServicePaths 缺省会当成 {}，win32 分支就拿不到 LOCALAPPDATA，
+  // 于是回退到 ~/.bigfish —— 和插件拉起的 daemon（%LOCALAPPDATA%/bigfish）变成两个状态根。
+  const paths = resolveServicePaths({ stateDir, env: process.env })
   if (options.command === 'start') return cmdStart(options, paths)
   if (options.command === 'stop') return cmdStop(options, paths)
   if (options.command === 'restart') return cmdRestart(options, paths)
@@ -131,13 +135,13 @@ async function cmdStart(options, paths) {
       console.log('✔ daemon 已在运行（pid ' + String(record.pid) + '），本次不重复启动')
       printAddress(recordHost, recordPort, health)
       console.log('  日志     ' + (record.logPath ?? paths.logPath))
-      console.log('  提示     npm run daemon:restart 可重启；npm run daemon:status 看详情')
+      console.log('  提示     pnpm daemon:restart 可重启；pnpm daemon:status 看详情')
       return 0
     }
     if (state.state === 'unhealthy') {
       console.log('✖ daemon 进程存在（pid ' + String(record.pid) + '）但 /health 不通：' + (health?.error ?? '未知错误'))
       printLogTail(record.logPath ?? paths.logPath, 20, '  ')
-      console.log('  建议：npm run daemon:stop 后重新 start')
+      console.log('  建议：pnpm daemon:stop 后重新 start')
       return 1
     }
     console.log('· 清理残留 pid 文件（pid ' + String(record.pid) + ' 已不存在）')
@@ -166,8 +170,15 @@ async function cmdStart(options, paths) {
   }
   if (await isPortInUse(host, port)) {
     console.log('✖ 端口 ' + String(port) + ' 已被其他进程占用（不是本 daemon）')
-    console.log('  换端口：npm run daemon:start -- --port <端口>；或先结束占用进程')
+    console.log('  换端口：pnpm daemon:start -- --port <端口>；或先结束占用进程')
     return 1
+  }
+
+  // 启动前收拾一次日志：stdout 是 direct-append、运行中没法安全 rename，
+  // 只有现在没新进程持有该文件。涨过 8MB 就滚成 .1，只留一份历史。
+  const rotated = rotateLogIfNeeded(paths.logPath)
+  if (rotated.rotated) {
+    console.log('· 日志已轮转：' + paths.logPath + ' → ' + paths.logPath + '.1（原本 ' + formatBytes(rotated.size) + '）')
   }
 
   const spawned = spawnDaemon({ repoRoot, cliPath: daemonCliPath, dataDir, port, host, logPath: paths.logPath })
@@ -197,7 +208,7 @@ async function cmdStart(options, paths) {
   console.log('  pid      ' + String(spawned.pid))
   if (dataDir !== undefined) console.log('  数据目录 ' + dataDir)
   console.log('  日志     ' + paths.logPath)
-  console.log('  停止     npm run daemon:stop')
+  console.log('  停止     pnpm daemon:stop')
   return 0
 }
 
@@ -214,7 +225,7 @@ async function cmdStop(options, paths) {
     const health = await healthCheck(host, port)
     if (health.ok) {
       console.log('daemon 未登记 pid 文件，但端口 ' + String(port) + ' 上有 /health 响应（pid ' + String(health.pid ?? '未知') + '）')
-      console.log('  先 npm run daemon:start 接管登记，或手动结束该进程')
+      console.log('  先 pnpm daemon:start 接管登记，或手动结束该进程')
       return 1
     }
     console.log('daemon 未在运行（没有 pid 文件）')
@@ -229,33 +240,62 @@ async function cmdStop(options, paths) {
   const recordHost = record.host ?? host
   const recordPort = record.port ?? port
   if (!isProcessAlive(record.pid)) {
+    // pid 文件里的进程已经没了，但端口上可能还有一个（面板拉起的那个从不登记 pid）。
+    // 这里 return 0 是最伤信任的一类谎：用户以为停了，其实它还在抢队列继续发。
+    const health = await healthCheck(recordHost, recordPort)
+    if (health.ok) {
+      console.log('· pid 文件里的进程 ' + String(record.pid) + ' 已不存在，但端口 ' + String(recordPort) + ' 上还有 daemon 在应答')
+      const livePid = health.pid
+      if (livePid === undefined) {
+        console.log('✖ 健康响应里没有 pid，无法确认归属，本次未做任何操作')
+        console.log('  建议：手动确认该端口上的进程后结束，或换端口重启')
+        return 1
+      }
+      console.log('  按端口上的实例处理（pid ' + String(livePid) + '）')
+      const code = await stopPid(livePid, { timeoutMs: options.timeoutMs, host: recordHost, port: recordPort })
+      if (code === 0) {
+        removePidFile(paths.pidPath)
+        console.log('  并清理了残留 pid 文件 ' + paths.pidPath)
+      }
+      return code
+    }
     console.log('· 进程 ' + String(record.pid) + ' 已不存在，清理残留 pid 文件')
     removePidFile(paths.pidPath)
     return 0
   }
-  console.log('· 已请求停止（pid ' + String(record.pid) + '，方式 ' + requestStop(record.pid) + '）')
-  const timeoutMs = options.timeoutMs ?? DEFAULT_STOP_TIMEOUT_MS
-  let exited = await waitForExit(record.pid, timeoutMs)
+  const code = await stopPid(record.pid, { timeoutMs: options.timeoutMs, host: recordHost, port: recordPort })
+  if (code === 0) removePidFile(paths.pidPath)
+  return code
+}
+
+/**
+ * 请求一个 pid 停止并确认端口释放（cmdStop 的两条分支共用）。
+ * @param {number} pid
+ * @param {{timeoutMs: number | undefined, host: string, port: number}} input
+ * @returns {Promise<number>}
+ */
+async function stopPid(pid, input) {
+  console.log('· 已请求停止（pid ' + String(pid) + '，方式 ' + requestStop(pid) + '）')
+  const timeoutMs = input.timeoutMs ?? DEFAULT_STOP_TIMEOUT_MS
+  let exited = await waitForExit(pid, timeoutMs)
   if (!exited) {
     console.log('· ' + String(timeoutMs) + 'ms 内未退出，强制结束')
     try {
-      forceKill(record.pid)
+      forceKill(pid)
     } catch (error) {
       console.log('· 强制结束失败：' + messageOf(error))
     }
-    exited = await waitForExit(record.pid, 3000)
+    exited = await waitForExit(pid, 3000)
   }
   if (!exited) {
-    console.log('✖ 无法结束进程 ' + String(record.pid) + '（pid 文件保留，便于排查）')
+    console.log('✖ 无法结束进程 ' + String(pid) + '（pid 文件保留，便于排查）')
     return 1
   }
-  removePidFile(paths.pidPath)
-  console.log('✔ daemon 已停止（pid ' + String(record.pid) + '）')
-  if (!(await waitForPortFree(recordHost, recordPort, 3000))) {
-    console.log('✖ 端口 ' + String(recordPort) + ' 仍被占用')
+  if (!(await waitForPortFree(input.host, input.port, 3000))) {
+    console.log('✖ 端口 ' + String(input.port) + ' 仍被占用')
     return 1
   }
-  console.log('✔ 端口 ' + String(recordPort) + ' 已释放')
+  console.log('✔ daemon 已停止（pid ' + String(pid) + '），端口 ' + String(input.port) + ' 已释放')
   return 0
 }
 
@@ -307,7 +347,7 @@ async function cmdStatus(options, paths) {
     console.log('  地址     ' + healthUrl({ host: recordHost, port: recordPort }))
     console.log('  日志     ' + logPath)
     printLogTail(logPath, tailCount, '  ')
-    console.log('  建议：npm run daemon:stop 后 npm run daemon:start')
+    console.log('  建议：pnpm daemon:stop 后 pnpm daemon:start')
     return 1
   }
   if (state.state === 'unmanaged') {
@@ -315,7 +355,7 @@ async function cmdStatus(options, paths) {
     printAddress(recordHost, recordPort, health)
     console.log('  日志     ' + logPath)
     printLogTail(logPath, tailCount, '  ')
-    console.log('  提示：执行一次 npm run daemon:start 会接管登记（不会重复启动）')
+    console.log('  提示：执行一次 pnpm daemon:start 会接管登记（不会重复启动）')
     return 0
   }
   if (state.state === 'stale-pid') {
@@ -325,14 +365,14 @@ async function cmdStatus(options, paths) {
     }
     console.log('  状态文件 ' + paths.pidPath)
     console.log('  日志     ' + logPath)
-    console.log('  提示：npm run daemon:start 会自动清理残留 pid 文件')
+    console.log('  提示：pnpm daemon:start 会自动清理残留 pid 文件')
     return 1
   }
   console.log('daemon 未在运行')
   if (existing.exists) console.log('  注意：pid 文件无法解析，start 时会自动清理：' + paths.pidPath)
   console.log('  状态文件 ' + paths.pidPath)
   console.log('  日志     ' + logPath + (existsSync(logPath) ? '' : '（还不存在）'))
-  console.log('  提示：npm run daemon:start 启动')
+  console.log('  提示：pnpm daemon:start 启动')
   return 1
 }
 
@@ -348,7 +388,7 @@ async function cmdLogs(options, paths) {
   const lines = logTail(logPath, count)
   if (lines === undefined) {
     console.log('日志文件不存在：' + logPath)
-    console.log('  提示：daemon 还没通过 npm run daemon:start 启动过')
+    console.log('  提示：daemon 还没通过 pnpm daemon:start 启动过')
     return 1
   }
   if (lines.length === 0) {

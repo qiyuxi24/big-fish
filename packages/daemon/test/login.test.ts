@@ -20,7 +20,11 @@ const NOW = 1_700_000_000_000
 const READY: CookieJar = { goofish: { unb: '12345', _m_h5_tk: 'tk-value' }, others: 2 }
 
 interface FakeClock {
-  deps: { now(): number; sleep(ms: number, signal?: AbortSignal): Promise<void> }
+  deps: {
+    now(): number
+    sleep(ms: number, signal?: AbortSignal): Promise<void>
+    verifySession(cookies: Record<string, string>, signal?: AbortSignal): Promise<boolean>
+  }
   advance(ms: number): void
   sleeps: number[]
 }
@@ -33,6 +37,8 @@ function fakeClock(start: number = NOW): FakeClock {
     sleeps,
     deps: {
       now: (): number => current,
+      // 默认「服务端认可」：老用例只关心 cookie 轮询，不该因为新增的服务端校验去真发网络请求。
+      verifySession: async (): Promise<boolean> => true,
       sleep: async (ms: number, signal?: AbortSignal): Promise<void> => {
         if (signal?.aborted === true) throw cancelled()
         sleeps.push(ms)
@@ -80,6 +86,16 @@ function assertCode(code: string) {
     return true
   }
 }
+
+/**
+ * 「浏览器已经就绪」的假实现：不真起 Chrome。
+ *
+ * 为什么每个 loginAndSave 用例都必须显式传：`login.ts` 的默认实现会去 `launchChrome`
+ * （用 ~/.bigfish/chrome-profile 这个真人 profile），在单测里等于「跑测试顺手开一个浏览器」；
+ * 端口没监听时还要白等 30s 的启动超时，于是同一份代码在「有 Chrome / 没 Chrome」的机器上
+ * 得到不同的红绿结论。
+ */
+const noBrowser = async (): Promise<() => Promise<void>> => async (): Promise<void> => {}
 
 describe('waitForLogin', () => {
   it('打开登录页并读到完整登录态后返回 jar', async () => {
@@ -190,6 +206,74 @@ describe('waitForLogin', () => {
     assert.equal(source.calls.length, 3)
   })
 
+  it('cookie 齐全但服务端不认会话 → 继续轮询，服务端认可后算登录完成', async () => {
+    const clock = fakeClock()
+    const source = reader([READY, READY])
+    let verified = 0
+    const result = await waitForLogin(
+      { timeoutMs: 5000, pollIntervalMs: 1000 },
+      {
+        ...clock.deps,
+        openLoginPage: async (): Promise<void> => {},
+        readLoginJar: source.read,
+        verifySession: async (): Promise<boolean> => {
+          verified += 1
+          return verified > 1
+        },
+      },
+    )
+    assert.deepEqual(result, READY)
+    assert.equal(source.calls.length, 2)
+    assert.equal(verified, 2)
+    assert.deepEqual(clock.sleeps, [1000])
+  })
+
+  it('服务端一直不认会话 → 超时文案指出服务端失效并让重新扫码', async () => {
+    const clock = fakeClock()
+    const source = reader(new Array(6).fill(READY))
+    await assert.rejects(
+      async () =>
+        waitForLogin(
+          { timeoutMs: 2000, pollIntervalMs: 1000 },
+          {
+            ...clock.deps,
+            openLoginPage: async (): Promise<void> => {},
+            readLoginJar: source.read,
+            verifySession: async (): Promise<boolean> => false,
+          },
+        ),
+      (error: unknown): boolean => {
+        assertCode('UNAUTHORIZED')(error)
+        const message = (error as XianyuError).message
+        assert.match(message, /服务端不认这个会话/)
+        assert.match(message, /重新扫码/)
+        return true
+      },
+    )
+    assert.equal(source.calls.length, 2)
+  })
+
+  it('校验本身失败（NETWORK）→ 立即抛，不伪装成还没扫码', async () => {
+    const clock = fakeClock()
+    const source = reader([READY])
+    await assert.rejects(
+      async () =>
+        waitForLogin(
+          { timeoutMs: 10_000, pollIntervalMs: 2000 },
+          {
+            ...clock.deps,
+            openLoginPage: async (): Promise<void> => {},
+            readLoginJar: source.read,
+            verifySession: async (): Promise<boolean> => {
+              throw new XianyuError({ code: 'NETWORK', message: '连不上登录态接口' })
+            },
+          },
+        ),
+      assertCode('NETWORK'),
+    )
+    assert.equal(source.calls.length, 1)
+  })
+
   it('非 UNAUTHORIZED 的读取失败立即抛出（不伪装成还没登录）', async () => {
     const clock = fakeClock()
     const source = reader([new XianyuError({ code: 'NETWORK', message: '连不上 DevTools（端口 9222）' })])
@@ -261,6 +345,7 @@ describe('loginAndSave', () => {
     const clock = fakeClock()
     const deps: LoginRuntimeDeps = {
       ...clock.deps,
+      ensureBrowser: noBrowser,
       openLoginPage: async (): Promise<void> => {},
       readLoginJar: async (): Promise<CookieJar> => {
         clock.advance(3000)
@@ -287,6 +372,7 @@ describe('loginAndSave', () => {
       {
         credentials,
         ...clock.deps,
+        ensureBrowser: noBrowser,
         openLoginPage: async (): Promise<void> => {},
         readLoginJar: async (): Promise<CookieJar> => {
           reads += 1
@@ -360,6 +446,7 @@ describe('loginAndSave', () => {
         },
         openLoginPage: async (): Promise<void> => {},
         readLoginJar: async (): Promise<CookieJar> => READY,
+        verifySession: async (): Promise<boolean> => true,
       },
       { port: 9333 },
     )
@@ -377,6 +464,7 @@ describe('loginAndSave', () => {
           {
             credentials,
             ...clock.deps,
+            ensureBrowser: noBrowser,
             openLoginPage: async (): Promise<void> => {},
             readLoginJar: async (): Promise<CookieJar> => {
               throw unauthorized('还没读到登录 cookie')
@@ -391,5 +479,30 @@ describe('loginAndSave', () => {
 
   it('默认超时是 180 秒', () => {
     assert.equal(DEFAULT_LOGIN_TIMEOUT_MS, 180_000)
+  })
+
+  it('忘了注入 ensureBrowser 时在单测里 fail-fast，而不是真起 Chrome 等满 30s', async (t) => {
+    // 只在 scripts/test-all.mjs（设了 BF_TEST_ALL=1）下有意义；别的跑法没有这道保护，跳过。
+    if (process.env.BF_TEST_ALL !== '1') {
+      t.skip('需要 BF_TEST_ALL=1（由 scripts/test-all.mjs 设置）')
+      return
+    }
+    const credentials = await makeStore(t)
+    const startedAt = Date.now()
+    await assert.rejects(
+      async () =>
+        loginAndSave(
+          { credentials, openLoginPage: async (): Promise<void> => {}, readLoginJar: async (): Promise<CookieJar> => READY },
+          { timeoutMs: 1000, pollIntervalMs: 1000 },
+        ),
+      (error: unknown): boolean => {
+        assert.ok(error instanceof XianyuError, '期望 XianyuError，实际 ' + String(error))
+        assert.equal(error.code, 'INTERNAL')
+        assert.match(error.message, /没注入 ensureBrowser/)
+        return true
+      },
+    )
+    // 关键断言：不能再出现「等满启动超时」的 30s 静默。
+    assert.ok(Date.now() - startedAt < 5000, '应当在毫秒级失败，实际等了 ' + String(Date.now() - startedAt) + 'ms')
   })
 })

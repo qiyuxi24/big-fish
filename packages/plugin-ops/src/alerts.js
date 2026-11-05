@@ -123,7 +123,7 @@ export function hintForEvents(events) {
     return '下一步：风控信号，先暂停自动发布并人工确认账号状态，不要连续重试（面板「自动发布」页可停 daemon）。'
   }
   if (events.some((event) => event.code === AUTH_CODE)) {
-    return '下一步：登录态可能过期，跑 `npm run daemon:import-account` 重新导入（或在面板「账号」tab 重试）。'
+    return '下一步：登录态可能过期，跑 `pnpm daemon:import-account` 重新导入（或在面板「账号」tab 重试）。'
   }
   if (events.some((event) => event.state === 'needs_review')) {
     return '下一步：任务需要人工复核，处理后在面板「自动发布」页点「重试」。'

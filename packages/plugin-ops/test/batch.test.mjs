@@ -21,8 +21,8 @@ const validDraft = { title: '测试商品', desc: '描述 A', priceCents: 1990, 
 const otherDraft = { title: '另一个商品', desc: '描述 B', priceCents: 2990, images: ['/abs/b.png'] }
 const thirdDraft = { title: '第三个商品', desc: '描述 C', priceCents: 3990, images: ['/abs/c.png'] }
 
-function keyOf(draft) {
-  return draftDedupeKey(validatePublishDraft(draft))
+function keyOf(draft, accountId) {
+  return draftDedupeKey(validatePublishDraft(draft), accountId)
 }
 
 function makeTool(deps = {}) {
@@ -98,13 +98,13 @@ test('enqueue：逐条调 daemon 入队，payload 与幂等键按单条口径，
   assert.equal(enqueues.length, 2, '批内重复的第三条不应重复入队')
   const firstInput = enqueues[0].args[0]
   assert.equal(firstInput.kind, 'publish')
-  assert.equal(firstInput.dedupeKey, keyOf(validDraft))
+  assert.equal(firstInput.dedupeKey, keyOf(validDraft, 'acc-1'))
   assert.deepEqual(firstInput.payload, { accountId: 'acc-1', title: '测试商品', desc: '描述 A', priceCents: 1990, images: ['D:\\pics\\a.png'] })
   // enqueue 入队体带账号级预约时间（availableAt），同账号第二条自动错开一个最小间隔。
   assert.equal(Number.isSafeInteger(firstInput.availableAt), true)
   const secondInput = enqueues[1].args[0]
   assert.equal(secondInput.kind, 'publish')
-  assert.equal(secondInput.dedupeKey, keyOf(otherDraft))
+  assert.equal(secondInput.dedupeKey, keyOf(otherDraft, 'acc-1'))
   assert.deepEqual(secondInput.payload, { accountId: 'acc-1', title: '另一个商品', desc: '描述 B', priceCents: 2990, images: ['/abs/b.png'] })
   assert.equal(secondInput.availableAt, firstInput.availableAt + DEFAULT_PUBLISH_MIN_INTERVAL_MS)
   assert.match(text, /#1 \[queued\] drafts\[0\].*task=abcdef01…/)

@@ -44,11 +44,11 @@ describe('daemon 生命周期路由', () => {
     assert.equal(errorOf(response).code, 'UNSUPPORTED')
   })
 
-  it('GET /shutdown → 405 VALIDATION（路径存在但方法不对）', async (t) => {
+  it('GET /shutdown → 405 METHOD_NOT_ALLOWED（路径存在但方法不对）', async (t) => {
     const h = await createHarness(t)
     const response = await h.rawRequest({ method: 'GET', path: '/shutdown' })
     assert.equal(response.status, 405)
-    assert.equal(errorOf(response).code, 'VALIDATION')
+    assert.equal(errorOf(response).code, 'METHOD_NOT_ALLOWED')
   })
 
   it('POST /shutdown 无 token → 401：关停也走鉴权，不能本机任意进程停 daemon', async (t) => {

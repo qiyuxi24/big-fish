@@ -317,9 +317,9 @@ stub `window.__ModuleLoader__.load` 捕获注册、假 `react`（`useState` **�
 ### A. 隔离 dev 实例（推荐日常改 UI 用，不碰你正在用的 DSH）
 
 ```bash
-npm run dsh:dev -- --fresh          # 造 .scratch/.dshdev 隔离 DSH_HOME 并启动，默认 47080
-npm run dsh:shot -- --hmr           # 可选：headless 自检 + 热更新断言 + 截图
-npm run dsh:dev -- --stop           # 停
+pnpm dsh:dev -- --fresh          # 造 .scratch/.dshdev 隔离 DSH_HOME 并启动，默认 47080
+pnpm dsh:shot -- --hmr           # 可选：headless 自检 + 热更新断言 + 截图
+pnpm dsh:dev -- --stop           # 停
 ```
 
 启动会打印带 token 的 URL（`http://127.0.0.1:47080/?token=…`），用浏览器打开即可。这个实例
@@ -329,9 +329,9 @@ npm run dsh:dev -- --stop           # 停
 ### B. 装进你自己的 DSH profile（日常使用，重启一次）
 
 ```bash
-npm run dsh:install                      # 默认 profile: desktop（~/.dsh/profiles/desktop）
-npm run dsh:install -- --dry-run         # 只看改动
-npm run dsh:install -- --uninstall       # 撤销
+pnpm dsh:install                      # 默认 profile: desktop（~/.dsh/profiles/desktop）
+pnpm dsh:install -- --dry-run         # 只看改动
+pnpm dsh:install -- --uninstall       # 撤销
 ```
 
 脚本做的事（`scripts/dsh-install.mjs`，幂等）：

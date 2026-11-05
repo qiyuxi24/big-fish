@@ -150,6 +150,9 @@ export function parseArgs(argv: readonly string[]): CliOptions {
 
 /** 子命令与参数交叉校验：免得用户以为 serve 模式会顺手导入账号、扫码或发布。 */
 function validateCommandFlags(options: CliOptions): void {
+  // --help 一律短路：查帮助的人还没打算执行，不该先被「缺 --draft」这类必填校验劝退。
+  // （未知参数仍在上面的解析循环里报错，所以 --help 不会掩盖拼错的 flag。）
+  if (options.help) return
   if (options.command === 'serve') {
     if (options.accountId !== undefined || options.chromePort !== undefined) {
       fail('VALIDATION', '--account-id / --chrome-port 只用于 import-account / login / publish 子命令')

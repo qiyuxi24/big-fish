@@ -135,8 +135,8 @@ if (rowIndex < 0) {
   console.error('✖ 合并后的插件树里没有 @bigfish/plugin-ops 行')
   process.exit(1)
 }
-const row = lines.slice(rowIndex - 1, rowIndex + 6).join('\n')
-for (const expected of ['daemonUrl: http://127.0.0.1:47001', 'writeGate: true']) {
+const row = lines.slice(rowIndex - 1, rowIndex + 8).join('\n')
+for (const expected of ['daemonUrl: http://127.0.0.1:47001', 'writeGate: true', 'enabled: true']) {
   if (!row.includes(expected)) {
     console.error('✖ bigfish-ops 行的 config 不符合预期，缺少：' + expected + '\n' + row)
     process.exit(1)
@@ -150,7 +150,8 @@ if (!smoke) {
   process.exit(0)
 }
 
-// 2) 真实启动：等插件 apply() 的加载日志，证明 register/门禁在真 Cordis 里通过校验。
+// 2) 真实启动（--smoke）：等插件 apply() 的加载日志，证明 register/门禁在真 Cordis 里通过校验。
+// 注意这里会真的起 dsh 进程，默认不跑；沙箱内 dev host 渲染进程起不来，属于已知限制（AGENTS.md §7.11）。
 let loaded = false
 const boot = await runDsh(['--profile', PROFILE, '--port', '0', '--no-open'], {
   timeoutMs: 90_000,
@@ -161,7 +162,7 @@ const boot = await runDsh(['--profile', PROFILE, '--port', '0', '--no-open'], {
 const combined = boot.stdout + boot.stderr
 const urlLine = combined.split(/\r?\n/).find((line) => line.startsWith('dsh web: '))
 if (loaded) {
-  console.log('✔ 真实启动：插件的 14 个工具已注册（9 read / 5 confirm，register 校验通过），writeGate 已挂载')
+  console.log('✔ 真实启动：插件的 16 个工具已注册（10 read / 6 confirm，register 校验通过），writeGate 已挂载')
   if (urlLine) console.log('  ' + urlLine)
 } else {
   console.error('✖ 真实启动没有看到插件加载日志：\n' + combined.slice(0, 4000))

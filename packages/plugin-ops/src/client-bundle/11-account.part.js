@@ -5,7 +5,11 @@
     // —— 账号管理：多账号表（切换 / 退出 / 登录态剩余 / 保活）+ 进入即检测（10 分钟内不重复）——
     const VERIFY_TTL_MS = 600_000
     const ACCOUNT_COLUMNS = ['当前', '账号', '状态', '剩余', '检测', '更新', '操作']
-    const ACCOUNT_GRID = '92px minmax(88px, 1fr) 136px 112px 100px 172px 268px'
+    /**
+     * 7 列宽度必须落在内容轴（10-styles 的 S.content.maxWidth = 860px）内，否则表格横向溢出、右侧「操作」被裁。
+     * 固定列合计 710px + 6 个 8px 间距 = 758px，剩下的由「账号」列吃掉；行内按钮换成 S.rowButton 后单列也放得下 4 个。
+     */
+    const ACCOUNT_GRID = '72px minmax(90px, 1fr) 88px 84px 80px 116px 180px'
     const ACCOUNT_CODE_LABELS = { AUTH_EXPIRED: '登录态过期', RISK_CONTROL: '风控拦截', RATE_LIMITED: '被限流', NETWORK: '网络异常', VALIDATION: '参数不合法', INTERNAL: '后台错误' }
     /** 10 分钟缓存：自动检测真调 mtop head（风控敏感），行内「检测」强制刷新。 */
     const verifyCache = new Map()
@@ -60,7 +64,16 @@
       const writes = useWrite(connection)
       const [switching, setSwitching] = React.useState('')
       const update = patch => setBoard(previous => ({ ...previous, ...patch }))
+      /** 页级：有写操作在飞（添加账户 / 保活这类整页唯一的入口才用它）。 */
       const busy = writes.state.busy || switching !== ''
+      /**
+       * 行级锁：一次写操作只该锁住它所在的那一行。以前用一个布尔 busy 把整张表 7 列 × N 行的
+       * 按钮全部置灰——多账号时想给另一行点「检测」也被拦，只能干等。
+       */
+      const rowWriting = accountId => writes.state.busyKey === 'import:' + accountId
+        || writes.state.busyKey === 'login:' + accountId
+        || writes.state.busyKey === 'logout:' + accountId
+      const rowLocked = accountId => switching === accountId || rowWriting(accountId)
       /** 只改这一行的状态：检测失败（网络/限流/风控）不降级整页。 */
       const verifyOne = async (accountId, source) => {
         if (verifyInFlight.has(accountId)) return
@@ -109,7 +122,8 @@
         return () => { alive = false }
       }, [connection])
       const switchAccount = accountId => {
-        if (busy) return
+        // 只拦「正在切另一个号 / 本行有写在跑」：别的行有写操作时切换当前账号是安全的（读侧设置）。
+        if (switching !== '' || rowWriting(accountId)) return
         setSwitching(accountId)
         void callAction(connection, 'accounts.activate', { accountId }).then(reply => {
           setSwitching('')
@@ -164,20 +178,25 @@
           hint: '再点一次「确认保存」写入保活间隔', busy: '正在保存…', done: () => '保活间隔已保存', after: reloadKeep,
         })
       }
-      const actionButton = (role, label, onClick, disabled) => h('button', { key: role, type: 'button', 'data-role': role, disabled, onClick, style: disabled ? S.offButton : S.primary }, label)
-      const rowActions = (accountId, checking) => [
-        actionButton('account-verify', checking ? '检测中…' : '检测', () => void verifyOne(accountId, 'manual'), checking || busy),
-        actionButton('account-import', writes.state.armed === 'import:' + accountId ? '确认导入' : busy ? '导入中…' : '导入', () => runRowWrite('import', accountId), busy),
-        actionButton('account-login', writes.state.armed === 'login:' + accountId ? '确认扫码' : busy ? '等待扫码…' : '扫码', () => runRowWrite('login', accountId), busy),
-        actionButton('account-logout', writes.state.armed === 'logout:' + accountId ? '确认退出登录' : busy ? '退出中…' : '退出', () => runRowWrite('logout', accountId), busy),
-      ]
+      const actionButton = (role, label, onClick, disabled, armed) => h('button', { key: role, type: 'button', 'data-role': role, disabled, onClick, style: disabled ? S.rowOffButton : armed ? S.rowArmedButton : S.rowButton }, label)
+      /** 只锁本行：别的行仍然可以点（以前 busy 是页级布尔，锁整表）。 */
+      const rowActions = (accountId, checking) => {
+        const locked = rowLocked(accountId), running = rowWriting(accountId)
+        const armedFor = kind => writes.state.armed === kind + ':' + accountId
+        return [
+          actionButton('account-verify', checking ? '检测中…' : '检测', () => void verifyOne(accountId, 'manual'), checking || locked),
+          actionButton('account-import', armedFor('import') ? '确认导入' : running && writes.state.busyKey === 'import:' + accountId ? '导入中…' : '导入', () => runRowWrite('import', accountId), locked, armedFor('import')),
+          actionButton('account-login', armedFor('login') ? '确认扫码' : running && writes.state.busyKey === 'login:' + accountId ? '等待扫码…' : '扫码', () => runRowWrite('login', accountId), locked, armedFor('login')),
+          actionButton('account-logout', armedFor('logout') ? '确认退出登录' : running && writes.state.busyKey === 'logout:' + accountId ? '退出中…' : '退出', () => runRowWrite('logout', accountId), locked, armedFor('logout')),
+        ]
+      }
       const rowOf = account => {
         const accountId = String(account.accountId ?? ''), entry = board.verifies[accountId] ?? storedEntry(account), badge = accountBadge(entry)
         const checking = entry !== undefined && entry.phase === 'checking'
         return h('div', { key: accountId, style: gridRow(ACCOUNT_GRID, false), 'data-role': 'account-row', 'data-account-id': accountId },
           h('div', { style: S.actions },
             account.active === true ? h('span', { key: 'active', style: S.goodText, 'data-role': 'account-active' }, '当前') : null,
-            h('button', { key: 'switch', type: 'button', 'data-role': 'account-switch', disabled: busy, title: '把当前账号切到 ' + accountId, onClick: () => switchAccount(accountId), style: busy ? { ...S.chip, ...S.chipOff } : S.chip }, switching === accountId ? '切换中…' : '切换')),
+            h('button', { key: 'switch', type: 'button', 'data-role': 'account-switch', disabled: switching !== '' || rowWriting(accountId), title: '把当前账号切到 ' + accountId, onClick: () => switchAccount(accountId), style: switching !== '' || rowWriting(accountId) ? { ...S.chip, ...S.chipOff } : S.chip }, switching === accountId ? '切换中…' : '切换')),
           h('span', null, accountId),
           h('span', { style: badge[1], 'data-role': 'account-status' }, badge[0]),
           h('span', { style: S.small, 'data-role': 'account-lifetime' }, formatLifetime(account.loginExpiresAt, account.loginExpiresSource)),
@@ -187,7 +206,7 @@
             h('span', { style: S.small, 'data-role': 'account-fields' }, ' · ' + String(account.savedFieldCount ?? '?') + ' 项')),
           h('div', { style: S.actions }, ...rowActions(accountId, checking)))
       }
-      const addButton = (role, kind, label) => actionButton(role, writes.state.armed === 'add:' + kind ? (kind === 'import' ? '确认导入' : '确认扫码') : label, () => runAdd(kind), busy)
+      const addButton = (role, kind, label) => actionButton(role, writes.state.armed === 'add:' + kind ? (kind === 'import' ? '确认导入' : '确认扫码') : label, () => runAdd(kind), busy, writes.state.armed === 'add:' + kind)
       const addSection = h('div', { style: S.section, 'data-role': 'account-add' },
         h('div', { style: S.sectionTitle }, '添加账户'),
         h('div', { style: S.fieldRow },
@@ -204,9 +223,9 @@
       const keepaliveSection = h('div', { style: S.section, 'data-role': 'account-keepalive' },
         h('div', { style: S.sectionTitle }, '登录保活'),
         h('div', { style: S.fieldRow },
-          h('div', { style: { ...S.buttonRow, marginTop: '0', alignSelf: 'flex-end' } }, actionButton('keepalive-toggle', keepButtonLabel, toggleKeepAlive, !keepValid || busy)),
+          h('div', { style: { ...S.buttonRow, marginTop: '0', alignSelf: 'flex-end' } }, actionButton('keepalive-toggle', keepButtonLabel, toggleKeepAlive, !keepValid || busy, writes.state.armed === 'keepalive-toggle')),
           h(Field, { label: '间隔（秒）', control: h('input', { type: 'number', min: 60, max: 3600, value: keep.seconds, 'data-role': 'keepalive-interval', onChange: event => update({ keep: { ...keep, seconds: event.target.value } }), style: S.input }) }),
-          h('div', { style: { ...S.buttonRow, marginTop: '0', alignSelf: 'flex-end' } }, actionButton('keepalive-save', writes.state.armed === 'keepalive-interval' ? '确认保存' : busy ? '保存中…' : '保存间隔', saveKeepInterval, !keepValid || busy))),
+          h('div', { style: { ...S.buttonRow, marginTop: '0', alignSelf: 'flex-end' } }, actionButton('keepalive-save', writes.state.armed === 'keepalive-interval' ? '确认保存' : busy ? '保存中…' : '保存间隔', saveKeepInterval, !keepValid || busy, writes.state.armed === 'keepalive-interval'))),
         h('div', { style: { ...S.small, marginTop: '10px' }, 'data-role': 'keepalive-state' }, keep.enabled ? '已开启：每 ' + keep.seconds + ' 秒校验登录态' : '未开启'))
       const emptyRow = h('div', { style: gridRow(ACCOUNT_GRID, false), 'data-role': 'account-empty' }, h('span', { style: { ...S.small, gridColumn: 'span 7' } }, '还没有导入账号'))
       return h('div', { style: S.section },

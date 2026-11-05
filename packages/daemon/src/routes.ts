@@ -11,6 +11,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 
 import type {
   CircuitBreaker,
+  DaemonCapabilities,
   ItemRepository,
   SellerRepository,
   TaskEventSink,
@@ -26,6 +27,7 @@ import type { BrowserStatus } from './managed-browser.ts'
 import { lifecycleRoutes } from './lifecycle.ts'
 import { sellerRoutes } from './seller-routes.ts'
 import { marketRoutes } from './routes-market.ts'
+import { policyRoutes } from './routes-policy.ts'
 import type { SellerCollectHandler } from './seller-routes.ts'
 import type { SettingsStore } from './settings.ts'
 import { accountRoutes } from './routes-accounts.ts'
@@ -36,8 +38,10 @@ import type {
   LogoutAccountHandler,
   VerifyAccountHandler,
 } from './routes-accounts.ts'
+import { imRoutes } from './routes-im.ts'
 import { itemRoutes } from './routes-items.ts'
 import type { ReferenceCollectHandler } from './routes-items.ts'
+import type { ImRuntime } from './im-runtime.ts'
 import { settingsRoutes } from './routes-settings.ts'
 import { decodeParam } from './routes-shared.ts'
 import { statusRoutes } from './routes-status.ts'
@@ -59,6 +63,8 @@ export interface RouteContext {
   circuits: CircuitBreaker | undefined
   /** worker 计数提供者；未注入时 /status 不带 worker 字段。 */
   worker: (() => WorkerCounts) | undefined
+  /** 写能力快照；未注入时 /status 不带 capabilities 字段。 */
+  capabilities: (() => DaemonCapabilities) | undefined
   /** 账号导入能力；未注入时 POST /accounts/import 返回 UNSUPPORTED。 */
   importAccount: ImportAccountHandler | undefined
   /** 扫码登录能力；未注入时 POST /accounts/login 返回 UNSUPPORTED。 */
@@ -87,6 +93,8 @@ export interface RouteContext {
   events: TaskEventSink | undefined
   /** 托管浏览器状态（扫码/导入/发布共用的那个实例）；未注入时 GET /browser 返回 enabled:false。 */
   browser: (() => Promise<BrowserStatus>) | undefined
+  /** IM 运行时（连接状态 + 回复入队）；未注入时 GET /im/status 返回 enabled:false、POST /im/reply 返回 UNSUPPORTED。 */
+  im: ImRuntime | undefined
   now: () => number
   startedAt: number
   version: string
@@ -120,6 +128,8 @@ const ROUTES: readonly Route[] = [
   ...itemRoutes,
   ...sellerRoutes,
   ...marketRoutes,
+  ...policyRoutes,
+  ...imRoutes,
   ...settingsRoutes,
   // 生命周期路由单独成文件：关停是运维动作，不跟业务读写在同一个模块里改。
   ...lifecycleRoutes,

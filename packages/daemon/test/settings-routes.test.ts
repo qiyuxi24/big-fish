@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, it } from 'node:test'
 
-import { DEFAULT_SETTINGS, readSettingsFile } from '@bigfish/core'
+import { DEFAULT_SETTINGS, PUBLISH_MIN_INTERVAL_RANGE, readSettingsFile } from '@bigfish/core'
 
 import { createHarness, dataOf, errorOf } from './harness.ts'
 import { createSettingsStore } from '../src/settings.ts'
@@ -89,18 +89,41 @@ describe('daemon GET/PUT /settings 路由', () => {
     await assert.rejects(readFile(path, 'utf8'), /ENOENT/, '校验失败不应写出 settings.json')
   })
 
-  it('PUT 未知字段 → 200 且只保留已知字段（未知字段忽略）', async (t) => {
-    const { store } = await makeStore(t)
+  // 2026-10-27 dogfood：过去未知字段被静默丢掉、仍回 200，用户拼错键名（publishMinIntervallMs）
+  // 会以为设置生效了。现在 400 并把可接受字段名列出来；合法字段一个都不写。
+  it('PUT 未知字段 → 400 VALIDATION，报错里列出可用字段，且不落盘', async (t) => {
+    const { path, store } = await makeStore(t)
     const h = await createHarness(t, { settings: store })
     const response = await h.rawRequest({
       method: 'PUT',
       path: '/settings',
       body: JSON.stringify({ nope: 1, copyStyle: 'professional' }),
     })
+    assert.equal(response.status, 400)
+    const error = errorOf(response) as { code: string; message: string }
+    assert.equal(error.code, 'VALIDATION')
+    assert.match(error.message, /nope/)
+    assert.match(error.message, /copyStyle/)
+    // 同一个请求里的合法字段也不能只写一半。
+    const after = dataOf(await h.rawRequest({ method: 'GET', path: '/settings' })) as Record<string, unknown>
+    assert.equal(after.copyStyle, DEFAULT_SETTINGS.copyStyle)
+    await assert.rejects(readFile(path, 'utf8'), /ENOENT/)
+  })
+
+  it('PUT 越界数值 → 200 夹取到合法区间，并在 clamped 里说明（不静默）', async (t) => {
+    const { store } = await makeStore(t)
+    const h = await createHarness(t, { settings: store })
+    const response = await h.rawRequest({
+      method: 'PUT',
+      path: '/settings',
+      body: JSON.stringify({ publishMinIntervalMs: 999_999_999 }),
+    })
     assert.equal(response.status, 200)
     const data = dataOf(response) as Record<string, unknown>
-    assert.equal(data.copyStyle, 'professional')
-    assert.equal(data.nope, undefined)
+    assert.equal(data.publishMinIntervalMs, PUBLISH_MIN_INTERVAL_RANGE.max, '越界值必须被夹到上限')
+    // clamped 挂在信封顶层（不是 data 里），老客户端不认识这个键也不会受影响。
+    const envelope = JSON.parse(response.text) as { clamped?: Record<string, number> }
+    assert.deepEqual(envelope.clamped, { publishMinIntervalMs: PUBLISH_MIN_INTERVAL_RANGE.max })
   })
 
   it('两次并发 PUT 串行落盘：最终文件可解析，且两个补丁都被保留', async (t) => {

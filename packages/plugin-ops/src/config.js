@@ -59,12 +59,17 @@ export function resolveDataDir(configured, env = process.env, platform = process
  *
  * @param {Record<string, unknown>} [raw] - cordis.patch.yml 里该行的 config。
  * @param {object} [ctx] - Cordis 插件上下文，用于读环境快照。
- * @returns {{daemonUrl: string, tokenPath: string, dataDir: string, timeoutMs: number, writeGate: boolean,
+ * @returns {{enabled: boolean, daemonUrl: string, tokenPath: string, dataDir: string, timeoutMs: number, writeGate: boolean,
  *   autoStartDaemon: boolean, enableAlerts: boolean, nodePath?: string, daemonEntry?: string}}
  */
 export function normalizeConfig(raw = {}, ctx) {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
     throw new TypeError('bigfish-ops: config 必须是对象')
+  }
+  // 「是否启用」是设置卡片里的总开关。false 时 apply 不注册任何工具/门禁/rpc/轮询，
+  // 于是这一轮 prompt 里连 16 个 xy_* 的 schema 都不会下发（顺带省下开场 token）。
+  if (raw.enabled !== undefined && typeof raw.enabled !== 'boolean') {
+    throw new TypeError(`bigfish-ops: enabled 必须是布尔值，收到 ${String(raw.enabled)}`)
   }
   const envUrl = resolveEnv(ctx, 'BF_DAEMON_URL') ?? resolveEnv(ctx, 'BF_DAEMON')
   const daemonUrlRaw = raw.daemonUrl ?? envUrl ?? `http://127.0.0.1:${DEFAULT_DAEMON_PORT}`
@@ -101,6 +106,7 @@ export function normalizeConfig(raw = {}, ctx) {
     throw new TypeError(`bigfish-ops: enableAlerts 必须是布尔值，收到 ${String(raw.enableAlerts)}`)
   }
   const config = {
+    enabled: raw.enabled !== false,
     daemonUrl: parsed.origin,
     tokenPath: tokenPathRaw,
     dataDir,

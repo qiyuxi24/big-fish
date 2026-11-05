@@ -35,6 +35,7 @@ import {
   parseSince,
   taskNotFound,
 } from './routes-shared.ts'
+import { validateTaskPayload } from './task-payload.ts'
 
 /**
  * 人工重新入队能力的注入签名；未注入时 POST /tasks/:id/retry 返回 UNSUPPORTED。
@@ -83,9 +84,12 @@ async function getTaskHandler(ctx: RouteContext): Promise<void> {
 
 async function enqueueHandler(ctx: RouteContext): Promise<void> {
   const body = asRecord(await readJsonBody(ctx.req), '入队请求体')
+  // 载荷形状在入队这一刻就校验：201 之后再失败等于骗人——用户以为收下了，三秒后才看到 failed。
+  // 队列层只管结构（幂等键/批次/状态机），它不知道每种 kind 的载荷长什么样。
+  validateEnqueuePayload(body)
   let receipt: EnqueueReceipt
   try {
-    // kind / dedupeKey / payload 的语义校验交给 queue：它才知道幂等键与状态机约束。
+    // kind / dedupeKey / payload 的结构校验交给 queue：它才知道幂等键与状态机约束。
     receipt = enqueueWithReceipt(ctx.queue, body as unknown as EnqueueInput)
   } catch (error) {
     await sendMappedError(ctx.res, error, 400, ctx.redact)
@@ -93,6 +97,16 @@ async function enqueueHandler(ctx: RouteContext): Promise<void> {
   }
   // created 摊平到顶层：既有调用方读 data.kind/data.id 的行为不变，新调用方靠 created 区分「新建/幂等命中」。
   await sendJson(ctx.res, 201, ok({ ...receipt.task, created: receipt.created }), ctx.redact)
+}
+
+/**
+ * 入队期的载荷校验：kind 已知才校验载荷（kind 非法交给队列报错，它的文案更准）。
+ * 校验失败直接 400，任务不落库。
+ */
+function validateEnqueuePayload(body: Record<string, unknown>): void {
+  const kind = body['kind']
+  if (typeof kind !== 'string' || !isTaskKind(kind)) return
+  validateTaskPayload(kind, body['payload'])
 }
 
 /** 老队列实现没有 enqueueWithReceipt 时退回 enqueue，并保守地报告 created=true（它确实完成了入队语义）。 */

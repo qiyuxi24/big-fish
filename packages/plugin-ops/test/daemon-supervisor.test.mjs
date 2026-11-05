@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 import {
+  DAEMON_LOG_MAX_BYTES,
   DEFAULT_START_COOLDOWN_MS,
   buildSpawnArgs,
   createDaemonSupervisor,
@@ -10,6 +13,7 @@ import {
   resolveDaemonEndpoint,
   resolveDaemonEntry,
   resolveNodeBinary,
+  rotateLogIfNeeded,
 } from '../src/daemon-supervisor.js'
 import { isNetworkFailure, withDaemonWatch } from '../src/daemon-watch.js'
 
@@ -241,6 +245,7 @@ test('ensure：spawn 抛错记为 failed，不影响调用方', async () => {
 test('ensure：拉起后轮询到就绪 → started，并带上 pid', async () => {
   const clock = fakeClock()
   const spawnCalls = []
+  const pidWrites = []
   const supervisor = createDaemonSupervisor({
     daemonUrl: DAEMON_URL,
     dataDir: DATA_DIR,
@@ -256,18 +261,70 @@ test('ensure：拉起后轮询到就绪 → started，并带上 pid', async () =
       },
       now: clock.now,
       sleep: clock.sleep,
+      writePid: (path, record) => { pidWrites.push({ path, record }) },
     },
   })
   const result = await supervisor.ensure('rpc:health')
   assert.equal(result.status, 'started')
   assert.match(result.message, /pid 777/)
-  assert.deepEqual(result.detail, { pid: 777 })
+  assert.deepEqual(result.detail, { pid: 777, pidFile: DATA_DIR + '\\run\\daemon.pid' })
   assert.equal(spawnCalls.length, 1)
   assert.equal(spawnCalls[0].node, '/usr/bin/node')
   assert.equal(spawnCalls[0].args[0], '/repo/packages/daemon/src/cli.ts')
-  assert.deepEqual(spawnCalls[0].options, { logPath: DATA_DIR + '\\daemon.log' })
+  assert.deepEqual(spawnCalls[0].options, { logPath: DATA_DIR + '\\logs\\daemon.log' })
+  // 拉起成功必须登记 pid 文件，否则 pnpm daemon:status|stop 看不见这个实例。
+  assert.deepEqual(pidWrites, [{ path: DATA_DIR + '\\run\\daemon.pid', record: { pid: 777, port: 47001, host: '127.0.0.1', startedAt: clock.value } }])
   assert.equal(supervisor.snapshot().status, 'started')
-  assert.equal(supervisor.snapshot().daemonLog, DATA_DIR + '\\daemon.log')
+  assert.equal(supervisor.snapshot().daemonLog, DATA_DIR + '\\logs\\daemon.log')
+})
+
+test('ensure：health 自报的 pid 优先于子进程 pid（node 可能再 fork 一层）', async () => {
+  const clock = fakeClock()
+  const pidWrites = []
+  const supervisor = createDaemonSupervisor({
+    daemonUrl: DAEMON_URL,
+    dataDir: DATA_DIR,
+    daemonEntry: '/repo/packages/daemon/src/cli.ts',
+    nodePath: '/usr/bin/node',
+    writeLog: () => {},
+    effects: {
+      health: healthSequence([{ ok: false }, { ok: true, value: { pid: 8888 } }]),
+      isFile: () => true,
+      spawn: () => fakeChild(777),
+      now: clock.now,
+      sleep: clock.sleep,
+      writePid: (path, record) => { pidWrites.push({ path, record }) },
+    },
+  })
+  const result = await supervisor.ensure('rpc:health')
+  assert.equal(result.status, 'started')
+  assert.equal(result.detail.pid, 8888)
+  assert.equal(pidWrites[0].record.pid, 8888)
+})
+
+test('ensure：状态目录不可写 → 仍算 started，只在日志里 warn', async () => {
+  const clock = fakeClock()
+  const warnings = []
+  const supervisor = createDaemonSupervisor({
+    daemonUrl: DAEMON_URL,
+    dataDir: DATA_DIR,
+    daemonEntry: '/repo/packages/daemon/src/cli.ts',
+    nodePath: '/usr/bin/node',
+    writeLog: (level, message) => { if (level === 'warn') warnings.push(message) },
+    effects: {
+      health: healthSequence([{ ok: false }, { ok: true }]),
+      isFile: () => true,
+      spawn: () => fakeChild(777),
+      now: clock.now,
+      sleep: clock.sleep,
+      writePid: () => false,
+    },
+  })
+  const result = await supervisor.ensure('rpc:health')
+  assert.equal(result.status, 'started')
+  assert.equal(result.detail.pidFile, '')
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0], /pid 文件/)
 })
 
 test('ensure：子进程先退出 → failed，带 exit code 与 daemon.log 尾巴', async () => {
@@ -290,7 +347,7 @@ test('ensure：子进程先退出 → failed，带 exit code 与 daemon.log 尾�
       now: clock.now,
       sleep: async (ms) => { clock.advance(ms); await new Promise((done) => setImmediate(done)) },
       readTail: (path) => {
-        assert.equal(path, DATA_DIR + '\\daemon.log')
+        assert.equal(path, DATA_DIR + '\\logs\\daemon.log')
         return 'Error: listen EADDRINUSE'
       },
     },
@@ -436,3 +493,23 @@ test('ensure：冷却期内跳过；面板按钮 force=true 时跳过冷却再�
   assert.equal(spawns, 2)
 })
 
+
+test('rotateLogIfNeeded：超过 8MB 滚成 .1，不到阈值与文件不存在都不动', async () => {
+  const base = fileURLToPath(new URL('../../.scratch/supervisor-test/', import.meta.url))
+  rmSync(base, { recursive: true, force: true })
+  mkdirSync(base, { recursive: true })
+  const logPath = join(base, 'daemon.log')
+  // 不存在：不算错，也不需要造文件。
+  assert.deepEqual(rotateLogIfNeeded(logPath), { rotated: false, size: 0 })
+  // 小文件：留着。
+  writeFileSync(logPath, 'x'.repeat(1024))
+  assert.deepEqual(rotateLogIfNeeded(logPath), { rotated: false, size: 1024 })
+  assert.equal(existsSync(logPath + '.1'), false)
+  // 超阈值：滚成 .1，原文件消失（下次 openSync 'a' 会新建）。
+  writeFileSync(logPath, 'y'.repeat(DAEMON_LOG_MAX_BYTES + 1))
+  const result = rotateLogIfNeeded(logPath)
+  assert.equal(result.rotated, true)
+  assert.equal(existsSync(logPath), false)
+  assert.equal(existsSync(logPath + '.1'), true)
+  rmSync(base, { recursive: true, force: true })
+})

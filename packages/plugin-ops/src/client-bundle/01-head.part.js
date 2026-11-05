@@ -29,10 +29,15 @@ window.__ModuleLoader__.load({
     const DEFAULT_TAB_ID = PANEL_TABS[0].id
     /** 任务种类：与 src/rpc-schema.js 的 TASK_KINDS 一致；deliver / reply 未接线，筛选里置灰只占位。 */
     const TASK_KINDS = [['publish', '发布'], ['polish', '擦亮'], ['probe', '探测'], ['deliver', '发货'], ['reply', '客服']]
-    /** 未接线的任务种类：daemon 执行器直接抛 UNSUPPORTED，面板给出口径但不给入口。 */
+    /**
+     * 面板暂不给入口的任务种类。**文案必须与 daemon 的真实能力一致**（2026-10-28 修正）：
+     * - deliver：daemon 执行器确实还是 UNSUPPORTED（缺卡密规则引擎），如实说未接线；
+     * - reply：执行器已经接了 IM 长连（P2.1），但 daemon 要 `BF_IM=1` 才开，面板还没给入口——
+     *   所以不能再说「未接线」，否则用户会以为能力不存在。
+     */
     const UNSUPPORTED_KINDS = {
-      deliver: '自动发货：未接线（缺 IM 协议与卡密规则引擎）',
-      reply: 'AI 客服：未接线（缺 wss-goofish 握手与心跳）',
+      deliver: '自动发货：执行器仍是 UNSUPPORTED（缺卡密规则引擎），先走 xy_task_action',
+      reply: 'AI 客服：已接 IM 长连，但 daemon 要 BF_IM=1 才开，面板暂不给入口',
     }
     const PUBLISH_MODES = [['dry-run', 'dry-run 只填表', '只填表，不点提交'], ['enqueue', 'enqueue 入队', '写进 daemon 队列，走审批']]
     /** 语言风格展示副本；权威定义在 src/copy.js 的 COPY_STYLES，漂移由单测守护。 */

@@ -29,7 +29,7 @@ describe('DaemonClient', () => {
     const status = await h.client.status()
     assert.deepEqual(status.queue, { queued: 0, leased: 0, done: 0, failed: 0, needs_review: 0 })
     assert.deepEqual(await h.client.listTasks(), [])
-    const record = await h.client.enqueue({ kind: 'publish', dedupeKey: 'c-1', payload: { itemId: 'i1' } })
+    const record = await h.client.enqueue({ kind: 'publish', dedupeKey: 'c-1', payload: { accountId: 'acc-1', title: 't', desc: 'd', priceCents: 990, images: ['C:\\tmp\\a.jpg'], itemId: 'i1' } })
     assert.equal(record.dedupeKey, 'c-1')
     assert.equal((await h.client.getTask(record.id)).id, record.id)
     assert.equal((await h.client.listTasks({ state: 'queued' })).length, 1)

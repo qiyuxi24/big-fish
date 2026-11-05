@@ -2,7 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { buildTools } from '../src/tools.js'
 import { createFakeClient } from './helpers.mjs'
-import { DaemonError } from '../src/client.js'
+import { DaemonError, KNOWN_CODES } from '../src/client.js'
+import { nextStepFor } from '../src/tool-format.js'
 
 const config = { daemonUrl: 'http://127.0.0.1:47001', tokenPath: '/tmp/daemon.token' }
 
@@ -12,12 +13,12 @@ function findTool(specs, name) {
   return spec.definition
 }
 
-test('注册 15 个 xy_ 工具，schema 形态合法', () => {
+test('注册 16 个 xy_ 工具，schema 形态合法', () => {
   const tools = buildTools({ client: createFakeClient({}), config })
   assert.deepEqual(tools.map((spec) => spec.definition.name).sort(), [
-    'xy_accounts_list', 'xy_copy_plan', 'xy_daemon_health', 'xy_import_account', 'xy_items_list', 'xy_market_brief',
-    'xy_ping', 'xy_publish_batch', 'xy_publish_draft', 'xy_reference_collect', 'xy_status', 'xy_task_action',
-    'xy_task_enqueue', 'xy_task_retry', 'xy_tasks_list',
+    'xy_accounts_list', 'xy_circuit_reset', 'xy_copy_plan', 'xy_daemon_health', 'xy_import_account', 'xy_items_list',
+    'xy_market_brief', 'xy_ping', 'xy_publish_batch', 'xy_publish_draft', 'xy_reference_collect', 'xy_status',
+    'xy_task_action', 'xy_task_enqueue', 'xy_task_retry', 'xy_tasks_list',
   ])
   for (const { definition: tool } of tools) {
     assert.equal(tool.parameters.type, 'object')
@@ -70,6 +71,47 @@ test('xy_status 把队列与熔断渲染成人话', async () => {
   assert.match(value.text, /queued=2/)
   assert.match(value.text, /acc-2\(RGV587\)/)
   assert.match(value.text, /65s/)
+  // 第一行必须是一句结论，而不是又一行计数。
+  assert.match(value.text.split('\n')[0], /^有失败要处理：1 条任务 failed/)
+  assert.match(value.text, /共 9 条/)
+})
+
+test('xy_status 结论行覆盖「没账号 / 全熔断 / needs_review / 空队列」四种主动作', async () => {
+  const cases = [
+    [{ accounts: [], circuits: {} }, /还没有账号/],
+    [{ accounts: ['acc-1'], circuits: { 'acc-1': 'RGV587' } }, /所有账号都在熔断中/],
+    [{ accounts: ['acc-1'], circuits: {}, queue: { queued: 0, leased: 0, done: 0, failed: 0, needs_review: 2 } }, /需要人看一眼：2 条任务在待审/],
+    [{ accounts: ['acc-1'], circuits: {}, queue: { queued: 0, leased: 0, done: 3, failed: 0, needs_review: 0 } }, /队列是空的/],
+    [{ accounts: ['acc-1'], circuits: {}, queue: { queued: 4, leased: 0, done: 0, failed: 0, needs_review: 0 } }, /4 条任务排队中/],
+  ]
+  for (const [override, pattern] of cases) {
+    const client = createFakeClient({
+      status: {
+        version: '0.1.0', uptimeMs: 1000, pid: 7,
+        queue: { queued: 0, leased: 0, done: 0, failed: 0, needs_review: 0 },
+        accounts: ['acc-1'], circuits: {},
+        ...override,
+      },
+    })
+    const value = await findTool(buildTools({ client, config }), 'xy_status').execute({}, {})
+    assert.match(value.text.split('\n')[0], pattern)
+  }
+})
+
+test('xy_status 有 worker 计数时一定显示，并标出内部错误', async () => {
+  const client = createFakeClient({
+    status: {
+      version: '0.1.0', uptimeMs: 1000, pid: 7,
+      queue: { queued: 1, leased: 2, done: 0, failed: 0, needs_review: 0 },
+      accounts: ['acc-1'], circuits: {},
+      worker: { leased: 0, done: 0, failed: 0, errors: 3, lastError: 'STORAGE: database is locked' },
+    },
+  })
+  const value = await findTool(buildTools({ client, config }), 'xy_status').execute({}, {})
+  assert.match(value.text, /worker：领到 0 \/ 完成 0 \/ 失败 0 \/ 内部错误 3/)
+  assert.match(value.text, /最近错误 STORAGE: database is locked/)
+  // 租约有货但 worker 一次没领到 = 卡住，必须点出来。
+  assert.match(value.text.split('\n')[0], /卡住了/)
 })
 
 test('xy_tasks_list 无任务与有任务两种文案', async () => {
@@ -80,10 +122,42 @@ test('xy_tasks_list 无任务与有任务两种文案', async () => {
     id: '0123456789abcdef', kind: 'publish', state: 'queued', attempts: 1, maxAttempts: 3,
     dedupeKey: 'publish:draft-1', lastError: 'RGV587', payload: {}, availableAt: 0, createdAt: 0, updatedAt: 0,
   }
-  const client = createFakeClient({ listTasks: [task] })
+  const client = createFakeClient({
+    listTasks: [task],
+    status: { version: '0.1.0', uptimeMs: 1, pid: 7, queue: { queued: 7, leased: 0, done: 0, failed: 2, needs_review: 1 }, accounts: ['a'], circuits: {} },
+  })
   const value = await findTool(buildTools({ client, config }), 'xy_tasks_list').execute({ state: 'queued' }, {})
   assert.match(value.text, /publish \| queued \| attempt 1\/3/)
-  assert.deepEqual(client.calls.at(-1).args[0], { state: 'queued', kind: undefined, limit: 20 })
+  // 全长 id 才拿得动 xy_task_retry / 才 grep 得到日志。
+  assert.match(value.text, /0123456789abcdef/)
+  // 「共 N 条」不能等于本轮取回条数：总数要来自 /status 的队列计数。
+  assert.match(value.text, /队列各状态：queued=7 leased=0 done=0 failed=2 needs_review=1/)
+  assert.match(value.text, /取回 1 条/)
+  const listCall = client.calls.find(call => call.method === 'listTasks')
+  assert.deepEqual(listCall.args[0], { state: 'queued', kind: undefined, limit: 10 })
+})
+
+test('xy_tasks_list 只给一行汇总导航，不再逐条挂命令', async () => {
+  const failed = {
+    id: 'deadbeefdeadbeef', kind: 'publish', state: 'failed', attempts: 3, maxAttempts: 3,
+    dedupeKey: 'k', payload: {}, availableAt: 0, createdAt: 0, updatedAt: 0, lastError: 'RGV587',
+  }
+  const client = createFakeClient({ listTasks: [failed] })
+  const value = await findTool(buildTools({ client, config }), 'xy_tasks_list').execute({ state: 'failed' }, {})
+  // 具体 id 仍全长给出（模型照着拼参数），但 xy_task_retry 的指路只出现一次、收在末尾。
+  assert.match(value.text, /deadbeefdeadbeef/)
+  assert.match(value.text, /\n提示：failed\/needs_review 用 xy_task_retry 重放。$/)
+  assert.equal((value.text.match(/xy_task_retry/g) ?? []).length, 1)
+})
+
+test('xy_tasks_list 触及 limit 上限时明确提示还有更多', async () => {
+  const one = {
+    id: 'aaaaaaaaaaaaaaaa', kind: 'publish', state: 'queued', attempts: 0, maxAttempts: 3,
+    dedupeKey: 'k', payload: {}, availableAt: 0, createdAt: 0, updatedAt: 0,
+  }
+  const client = createFakeClient({ listTasks: [one, { ...one, id: 'bbbbbbbbbbbbbbbb' }] })
+  const value = await findTool(buildTools({ client, config }), 'xy_tasks_list').execute({ limit: 2 }, {})
+  assert.match(value.text, /只列前 2 条/)
 })
 
 test('xy_task_enqueue 传递 kind/dedupeKey/payload 并忽略未给的字段', async () => {
@@ -114,13 +188,13 @@ test('xy_task_retry 走 POST /tasks/:id/retry，参数与返回文案可读', as
     request: () => ({ id: 'abcdef0123456789', kind: 'publish', state: 'queued', attempts: 0, maxAttempts: 3, dedupeKey: 'k', payload: {}, availableAt: 0, createdAt: 0, updatedAt: 0 }),
   })
   const tool = findTool(buildTools({ client, config }), 'xy_task_retry')
-  assert.deepEqual(tool.parameters.required, ['taskId'])
+  assert.deepEqual(tool.parameters.anyOf, [{ required: ['taskId'] }, { required: ['id'] }])
   const value = await tool.execute({ taskId: 'abc/def' }, {})
   const [pathname, init] = client.calls.at(-1).args
   assert.equal(client.calls.at(-1).method, 'request')
   assert.equal(pathname, '/tasks/abc%2Fdef/retry')
   assert.equal(init.method, 'POST')
-  assert.match(value.text, /已重新排队：abcdef01… \| publish \| queued/)
+  assert.match(value.text, /已重新排队：abcdef0123456789 \| publish \| queued/)
 })
 
 test('xy_task_action 撞 VALIDATION 时提示改走 xy_task_retry', async () => {
@@ -136,6 +210,17 @@ test('DaemonError 变成模型可读文本而不是抛错', async () => {
   const value = await findTool(buildTools({ client, config }), 'xy_status').execute({}, {})
   assert.match(value.text, /\[NETWORK\]/)
   assert.match(value.text, /可稍后重试/)
+  // 失败必须带「下一步」，否则用户只知道坏了不知道怎么办。
+  assert.match(value.text, /\n→ daemon 没起或在重启：在仓库跑 pnpm daemon:start/)
+})
+
+test('每个已知错误码都有一句下一步，且未知码不返回 undefined', () => {
+  for (const code of KNOWN_CODES) {
+    const hint = nextStepFor(code)
+    assert.equal(typeof hint, 'string')
+    assert.ok(hint.length > 8, `${code} 的下一步太短：${hint}`)
+  }
+  assert.match(nextStepFor('SOMETHING_NEW'), /未知错误码/)
 })
 
 test('xy_ping 汇总健康与鉴权两段结论', async () => {
@@ -179,7 +264,7 @@ test('xy_publish_draft 默认 dry-run：只给命令，不写队列', async () =
   const tool = findTool(buildTools({ client, config, readDraftFile: async () => JSON.stringify(validDraft) }), 'xy_publish_draft')
   const value = await tool.execute({ draftPath: 'C:/tmp/draft.json', screenshotsDir: 'C:/tmp/shots' }, {})
   assert.match(value.text, /dry-run/)
-  assert.match(value.text, /npm run daemon:publish -- --draft C:\/tmp\/draft.json --screenshots C:\/tmp\/shots/)
+  assert.match(value.text, /pnpm daemon:publish -- --draft C:\/tmp\/draft.json --screenshots C:\/tmp\/shots/)
   assert.match(value.text, /不点提交/)
   assert.match(value.text, /daemon：在线/)
   assert.equal(client.calls.some((call) => call.method === 'enqueue'), false)

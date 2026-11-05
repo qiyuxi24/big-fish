@@ -119,11 +119,17 @@ export function generateDeviceId(userId: unknown, uuid: unknown = randomUUID()):
   return uuid + '-' + accountId
 }
 
-/** 构造取 IM token 的请求要素（不签名、不发请求）。smToken 缺失时不带该参数。 */
+/**
+ * 构造取 IM token 的请求要素（不签名、不发请求）。smToken 缺失时不带该参数。
+ *
+ * sessionOption=AutoLoginOnly 必须带：2026-10-26 真机实测，缺它（以及 smToken）时该接口直接
+ * 回 FAIL_SYS_USER_VALIDATE / RGV587_ERROR::SM 风控，带全才返回 accessToken。
+ */
 export function buildImTokenRequest(input: unknown): ImTokenRequest {
   if (!isRecord(input)) fail('VALIDATION', 'buildImTokenRequest 参数必须是对象')
   const deviceId = requireText(input.deviceId, 'buildImTokenRequest.deviceId')
   const extraParams: Record<string, string> = {
+    sessionOption: 'AutoLoginOnly',
     accountSite: 'xianyu',
     queryToken: 'sm',
     sm: 'sm',

@@ -71,7 +71,7 @@
 | # | 步骤 | 现状 |
 | --- | --- | --- |
 | 1 | 自己用 `--remote-debugging-port` 起 Chrome 并登录闲鱼 | daemon 只 attach，**不会自起浏览器**（`launchChrome` 存在但全仓无调用方） |
-| 2 | 起 daemon | `npm run daemon` 前台阻塞，Ctrl+C 结束；**无服务化/自启/日志文件**（`core/src/config.ts:49-64` 无日志路径） |
+| 2 | 起 daemon | `pnpm daemon` 前台阻塞，Ctrl+C 结束；**无服务化/自启/日志文件**（`core/src/config.ts:49-64` 无日志路径） |
 | 3 | 准备登录态 | 导入（CLI/工具/HTTP）或扫码（只有 CLI/HTTP） |
 | 4 | 跑发布 | CLI 直发（绕过队列/限流/items）或队列（工具 enqueue → worker） |
 | 5 | 看结果 | `xy_tasks_list` 逐条看 state/lastError（只显示前 80 字）、`xy_status` 计数、items 表；**截图路径没有任何入口能列** |
@@ -138,7 +138,7 @@
 | 契约 | `packages/core` | 任务机、队列、凭据接口、policy、限流、熔断、delivery 规则 | daemon、channel-* |
 | 队列与 worker | `packages/daemon/src/{queue,worker}.ts` | 幂等入队、领租约、重试语义 | 所有写模块 |
 | 通道 | `packages/channel-*` | mtop / CDP / 闲管家 / IM 协议 | daemon 执行器 |
-| 工具与门禁 | `packages/plugin-ops/src/{tools,gate}.js` | 14 个 `xy_*` 工具、写操作审批 | 所有模块入口 |
+| 工具与门禁 | `packages/plugin-ops/src/{tools,tool-middleware}.js` | 15 个 `xy_*` 工具、写操作审批（`gate.js` 已删） | 所有模块入口 |
 | 面板 | `packages/plugin-ops/client.js` | `PANEL_TABS` 六分区（概览/账号/采集/文案/发布/商品，分监控·准备·作业三组） | 所有模块 UI |
 
 ## 7. 完工标准与加模块步骤

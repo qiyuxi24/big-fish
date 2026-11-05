@@ -7,9 +7,9 @@
 **P0 → P1.2 完成，当前按「一个插件 + 四个模块」重构：发布 / 账号 / 发布前处理 / 采集参考，模块 tab 在侧边栏面板内部切换（共 6 个分区，面板内实时状态走 host rpc 每 3 秒轮询）。发布：单件真提交真机 3 次 + **队列批量 dry-run 真机 2/2**；批量真提交未做。账号只读摘要；采集 R1 只读统计已真机跑通单件；P2 自动发货押后。**
 
 - 已真机跑通：登录态导入 / 扫码登录 / 令牌自动刷新 / 取商家与全量商品 / 详情落库（`probe`）/ 擦亮（`polish`）/ **CDP 单件发布（3 次，均已下架；受网页端类目限制）** / 分类选择（`category.ts`，按 AI 推荐刷新重试）/ 面板内模块 tab（桌面端 GUI 实拍）/ 面板 rpc 只读轮询（单测 + 隔离 dev host 打补丁后实拍；桌面端受宿主 bug 阻塞，见 STATUS §5）/ `GET /accounts` 账号只读摘要 / `POST /reference` 参考采集（单件只读统计）/ **队列批量 dry-run 2 条同批（2026-10-22，批次 `b-e2e-mvj3aedp`，2/2 done，含一次 RATE_LIMITED 退避）**。
-- 只有单测（没真机）：**批量真提交**、失败任务重放（`xy_task_retry`）、发布侧风控识别、账号级 pacing（默认 180s）、面板内写类按钮（导入/扫码/重试/入队/改设置）。
-- 未做：发布前处理（设置页接 rpc、生图）、采集 R2 自有商品搬家（待拍板）、自动发货（`deliver`）；IM 收发（`reply`）代码+测试已落地（P2.1：wss 长连 / 消息落库 / 发文本，`BF_IM=1` 才连），**真机未验收**；面板写类按钮（通道已有，缺二次确认 UI）。
-- 质量基线：`node scripts/test-all.mjs` = **1204 tests / 1204 pass**（67 suites）；6 个 TS 包 tsc 0 错误。
+- 只有单测（没真机）：**批量真提交**、失败任务重放（`xy_task_retry`）、发布侧风控识别、账号级 pacing（默认 180s）、面板内写类按钮（导入/扫码/重试/入队/改设置，两次点击确认已实现）。
+- 未做：发布前处理（设置页接 rpc、生图）、采集 R2 自有商品搬家（待拍板）、自动发货（`deliver`）；IM 收发（`reply`）代码+测试已落地（P2.1：wss 长连 / 消息落库 / 发文本，`BF_IM=1` 才连），**真机未验收**。
+- 质量基线：**跑 `node scripts/test-all.mjs` 看输出**（当前 1283 tests / 1283 pass / 69 suites / 114 个测试文件）；6 个 TS 包 tsc 0 错误。**不要在这里抄数字**——历史上同一个数字出现过 6 个版本，以命令输出为准。
 
 👉 **现状、能力矩阵、下一步与待决策项全部在 [docs/STATUS.md](docs/STATUS.md)——读那一篇就够。**
 
@@ -18,13 +18,13 @@
 | 包 | 形态 | 职责 |
 | --- | --- | --- |
 | `packages/ops-bundle` | 声明 `dsh.bundle.patch` 的 npm 包 | 产品组合（profile）：base + web/headless + 本仓插件 |
-| `packages/plugin-ops` | Cordis 插件（纯 ESM JS，零依赖） | 14 个 `xy_*` 工具、写操作审批门禁、侧边栏面板 + 面板内 6 个模块 tab（自动发布 / 账号 / 文案 / 采集 / 概览 / 诊断） |
+| `packages/plugin-ops` | Cordis 插件（纯 ESM JS，零依赖） | 15 个 `xy_*` 工具、写操作审批门禁、侧边栏面板 + 面板内 6 个模块 tab（概览 / 账号 / 采集 / 文案 / 发布 / 商品，分监控·准备·作业三组） |
 | `packages/daemon` | 独立 Node 进程（无 LLM） | 队列 + worker + 执行器（限流/熔断/凭据）、登录态、发布、将来的发货 |
 | `packages/core` | 纯 TS 库 | 契约与错误、SQLite 队列/商品仓储、策略校验、限流熔断、凭据加密、脱敏日志、发货规则引擎 |
 | `packages/channel-mtop` | 纯 TS 库（零依赖） | mtop 签名/信封/cookie 归一/ret 分类，详情、擦亮、商家与商品列表 |
 | `packages/channel-cdp` | 纯 TS 库（零依赖） | CDP 会话：接管真 Chrome、cookie 读取、发布步骤机 |
 | `packages/channel-guanjia` | 纯 TS 库（零依赖） | 闲管家开放平台客户端（MIT 移植，无消费者） |
-| `packages/channel-im` | 纯 TS 库（零依赖） | IM 帧解析/消息归一化/会话状态机（**未接 daemon**） |
+| `packages/channel-im` | 纯 TS 库（零依赖） | IM 帧解析/消息归一化/会话状态机（已接 daemon：`GET /im/status` + `POST /im/reply`，`BF_IM=1` 才连） |
 
 关键不变量：**日常动作不经过模型**。LLM 只处理需要判断的部分，daemon 负责确定性执行——这是性能与成本的基础。
 
@@ -32,7 +32,8 @@
 
 ```sh
 pnpm install --offline --ignore-scripts   # 本机 registry 不可达，必须离线装；运行时零第三方依赖
-node scripts/test-all.mjs                 # 1204 tests / 1204 pass / 67 suites（单进程顺序跑，沙箱禁止 spawn）
+node scripts/test-all.mjs                 # 单进程顺序跑全部测试（沙箱禁止 spawn）；数字看输出，别抄
+pnpm doctor                               # 体检：数据/状态目录、token、db、pid、日志、两份 chrome-profile
 node packages/daemon/src/cli.ts --data-dir .scratch/daemon --port 47001   # 起 daemon（含 worker）
 node scripts/dsh-dev.mjs --fresh          # 隔离 DSH Web（含侧边栏栏位）到 127.0.0.1:47080
 node scripts/dsh-dump.mjs --smoke         # 在隔离 DSH_HOME 里真装配插件

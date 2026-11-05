@@ -9,6 +9,14 @@ import type { DaemonHarness } from './harness.ts'
 
 const OWNER = 'daemon-test'
 
+/**
+ * 合法发布载荷：入队那一刻 daemon 就按 kind 校验必填字段（201 之后再失败等于骗人），
+ * 所以测「入队成功」的用例必须给全字段。少字段的用例见 payload 校验那几条。
+ */
+function publishPayload(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { accountId: 'acc-1', title: '测试商品', desc: '描述', priceCents: 990, images: ['C:\\tmp\\a.jpg'], ...extra }
+}
+
 /** 入队一个任务并领取，返回租约中的记录 id。 */
 async function enqueueAndLease(h: DaemonHarness, dedupeKey: string): Promise<string> {
   const record = h.queue.enqueue({ kind: 'publish', dedupeKey, payload: { itemId: dedupeKey } })
@@ -23,7 +31,7 @@ describe('daemon /tasks 路由', () => {
     const response = await h.rawRequest({
       method: 'POST',
       path: '/tasks',
-      body: JSON.stringify({ kind: 'publish', dedupeKey: 'item-1', payload: { itemId: 'i1', cookie: 'SECRET-COOKIE' } }),
+      body: JSON.stringify({ kind: 'publish', dedupeKey: 'item-1', payload: publishPayload({ itemId: 'i1', cookie: 'SECRET-COOKIE' }) }),
     })
     assert.equal(response.status, 201)
     const record = dataOf(response) as Record<string, unknown>
@@ -37,11 +45,11 @@ describe('daemon /tasks 路由', () => {
 
   it('同一 dedupeKey 重复入队返回同一条记录（幂等）', async (t) => {
     const h = await createHarness(t)
-    const first = await h.client.enqueue({ kind: 'deliver', dedupeKey: 'order-9', payload: { orderId: 'o9' } })
+    const first = await h.client.enqueue({ kind: 'deliver', dedupeKey: 'order-9', payload: { accountId: 'acc-1', orderId: 'o9', content: '卡密' } })
     const second = await h.rawRequest({
       method: 'POST',
       path: '/tasks',
-      body: JSON.stringify({ kind: 'deliver', dedupeKey: 'order-9', payload: { orderId: 'o9' } }),
+      body: JSON.stringify({ kind: 'deliver', dedupeKey: 'order-9', payload: { accountId: 'acc-1', orderId: 'o9', content: '卡密' } }),
     })
     assert.equal(second.status, 201)
     assert.equal((dataOf(second) as Record<string, unknown>).id, first.id)
@@ -59,6 +67,39 @@ describe('daemon /tasks 路由', () => {
     assert.match(errorOf(response).message, /kind/)
   })
 
+  it('载荷缺必填字段 → 400 且不落库（入队那一刻就说清楚，不等 worker 跑一轮）', async (t) => {
+    const h = await createHarness(t)
+    const response = await h.rawRequest({
+      method: 'POST',
+      path: '/tasks',
+      body: JSON.stringify({ kind: 'publish', dedupeKey: 'k-bad-payload', payload: { title: '缺 accountId' } }),
+    })
+    assert.equal(response.status, 400)
+    assert.equal(errorOf(response).code, 'VALIDATION')
+    assert.match(errorOf(response).message, /accountId/)
+    // 关键：任务没落库。201 之后再失败等于骗人——用户以为收下了，三秒后才看到 failed。
+    assert.equal((await h.client.listTasks()).length, 0)
+  })
+
+  it('载荷类型错（priceCents 不是整数 / images 不是数组）→ 400', async (t) => {
+    const h = await createHarness(t)
+    const bad = [
+      { ...publishPayload(), priceCents: 9.9 },
+      { ...publishPayload(), images: 'not-an-array' },
+      { ...publishPayload(), title: '' },
+    ]
+    for (const payload of bad) {
+      const response = await h.rawRequest({
+        method: 'POST',
+        path: '/tasks',
+        body: JSON.stringify({ kind: 'publish', dedupeKey: 'k-bad-' + String(bad.indexOf(payload)), payload }),
+      })
+      assert.equal(response.status, 400)
+      assert.equal(errorOf(response).code, 'VALIDATION')
+    }
+    assert.equal((await h.client.listTasks()).length, 0)
+  })
+
   it('非法 JSON → 400；超出 1 MiB 的 body → 413', async (t) => {
     const h = await createHarness(t)
     const broken = await h.rawRequest({ method: 'POST', path: '/tasks', body: '{oops' })
@@ -74,9 +115,9 @@ describe('daemon /tasks 路由', () => {
     const h = await createHarness(t)
     const missing = await h.rawRequest({ method: 'GET', path: '/tasks/nope' })
     assert.equal(missing.status, 404)
-    assert.equal(errorOf(missing).code, 'VALIDATION')
+    assert.equal(errorOf(missing).code, 'NOT_FOUND')
 
-    const record = await h.client.enqueue({ kind: 'probe', dedupeKey: 'probe-1', payload: {} })
+    const record = await h.client.enqueue({ kind: 'probe', dedupeKey: 'probe-1', payload: { accountId: 'acc-1', itemId: 'i1' } })
     const found = await h.client.getTask(record.id)
     assert.equal(found.id, record.id)
   })

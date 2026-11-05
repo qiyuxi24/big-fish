@@ -151,10 +151,11 @@ test('requeue 拒绝 queued / leased / done 状态', (t) => {
   assert.match(error.message, /only failed \/ needs_review|只有 failed \/ needs_review/)
 })
 
-test('requeue 不存在或非法的 id / options 一律 VALIDATION', (t) => {
+test('requeue 不存在的 id → NOT_FOUND；非法 id / options → VALIDATION', (t) => {
   const clock = fakeClock(START)
   const queue = setup(t, clock)
-  const missing = expectCode('VALIDATION', () => queue.requeue('no-such-task'))
+  // id 写错要能区分出来：调用方需要知道「去列表拿真实 id」，而不是「参数格式不对」。
+  const missing = expectCode('NOT_FOUND', () => queue.requeue('no-such-task'))
   assert.match(missing.message, /任务不存在/)
   expectCode('VALIDATION', () => queue.requeue(''))
   expectCode('VALIDATION', () => queue.requeue(123 as unknown as string))

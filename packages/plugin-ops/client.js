@@ -29,10 +29,15 @@ window.__ModuleLoader__.load({
     const DEFAULT_TAB_ID = PANEL_TABS[0].id
     /** 任务种类：与 src/rpc-schema.js 的 TASK_KINDS 一致；deliver / reply 未接线，筛选里置灰只占位。 */
     const TASK_KINDS = [['publish', '发布'], ['polish', '擦亮'], ['probe', '探测'], ['deliver', '发货'], ['reply', '客服']]
-    /** 未接线的任务种类：daemon 执行器直接抛 UNSUPPORTED，面板给出口径但不给入口。 */
+    /**
+     * 面板暂不给入口的任务种类。**文案必须与 daemon 的真实能力一致**（2026-10-28 修正）：
+     * - deliver：daemon 执行器确实还是 UNSUPPORTED（缺卡密规则引擎），如实说未接线；
+     * - reply：执行器已经接了 IM 长连（P2.1），但 daemon 要 `BF_IM=1` 才开，面板还没给入口——
+     *   所以不能再说「未接线」，否则用户会以为能力不存在。
+     */
     const UNSUPPORTED_KINDS = {
-      deliver: '自动发货：未接线（缺 IM 协议与卡密规则引擎）',
-      reply: 'AI 客服：未接线（缺 wss-goofish 握手与心跳）',
+      deliver: '自动发货：执行器仍是 UNSUPPORTED（缺卡密规则引擎），先走 xy_task_action',
+      reply: 'AI 客服：已接 IM 长连，但 daemon 要 BF_IM=1 才开，面板暂不给入口',
     }
     const PUBLISH_MODES = [['dry-run', 'dry-run 只填表', '只填表，不点提交'], ['enqueue', 'enqueue 入队', '写进 daemon 队列，走审批']]
     /** 语言风格展示副本；权威定义在 src/copy.js 的 COPY_STYLES，漂移由单测守护。 */
@@ -53,6 +58,17 @@ window.__ModuleLoader__.load({
      * 片段 02：草稿集解析与发布参数组装（纯数据：不联网、不碰 daemon、只组 JSON）。
      * 拼接顺序由文件名决定；单独打开不是合法模块，见 scripts/build-client.mjs。
      */
+    /**
+     * 草稿价格（单位：分）。协议字段是 `priceCents`（core 与 daemon 都只认它），
+     * 但面板早期文案与示例写的是 `price`——两个都收，避免用户按示例粘贴却被判「缺 priceCents」。
+     * 返回 NaN 表示两个都没给，交给调用方报错。
+     */
+    function draftPriceCents(draft) {
+      const raw = draft.priceCents !== undefined && draft.priceCents !== null ? draft.priceCents : draft.price
+      if (typeof raw === 'number') return raw
+      if (typeof raw === 'string' && raw.trim() !== '') return Number(raw.trim())
+      return Number.NaN
+    }
     /** 逐行解析草稿集（内联 JSON 对象或 .json 路径）：路径条目交给 host 侧读取，这里只认形状。 */
     function parseDraftLines(text) {
       return text.split('\n').map(line => line.trim()).filter(line => line !== '').map((line, index) => {
@@ -64,7 +80,9 @@ window.__ModuleLoader__.load({
         let draft
         try { draft = JSON.parse(line) } catch { return { index, kind: 'inline', ok: false, message: 'JSON 错误' } }
         if (typeof draft !== 'object' || draft === null || Array.isArray(draft)) return { index, kind: 'inline', ok: false, message: 'JSON 不是对象' }
-        const missing = ['title', 'price', 'images'].filter(key => draft[key] === undefined || draft[key] === null || draft[key] === '' || (Array.isArray(draft[key]) && draft[key].length === 0))
+        // 价格单独判：字段名两个都收，但报错统一说协议名 priceCents（否则用户不知道该改哪个键）。
+        const missing = ['title', 'images'].filter(key => draft[key] === undefined || draft[key] === null || draft[key] === '' || (Array.isArray(draft[key]) && draft[key].length === 0))
+        if (!Number.isSafeInteger(draftPriceCents(draft)) || draftPriceCents(draft) <= 0) missing.push('priceCents')
         return missing.length === 0
           ? { index, kind: 'inline', ok: true, draft, message: '通过' }
           : { index, kind: 'inline', ok: false, draft, message: '缺 ' + missing.join(' / ') }
@@ -164,22 +182,39 @@ window.__ModuleLoader__.load({
       if (Object.keys(specs).length > 0) args.specs = specs
       return { tool: 'xy_copy_plan', arguments: args }
     }
-    /** 内联草稿 → publish 任务（面板的 price 是分）；daemon 执行时 title/desc/priceCents/images 必填，缺了在这里拦下。 */
-    function buildPublishItems(results, accountId) {
+    /**
+     * 内联草稿 → publish 任务（面板的价格一律按「分」理解）；daemon 执行时 title/desc/priceCents/images 必填。
+     *
+     * shipping / address 必须带上：队列任务执行时 daemon 读不到草稿文件，
+     * 少了 address「必填项预检」必然 VALIDATION（宝贝所在地为空），任务只会 failed。
+     * 取值优先级：草稿里显式给了 > daemon 设置里的 defaultAddress / shipping。
+     * 与 host 侧 publish-flow.js 的 buildPublishEnqueueInput 保持同一口径。
+     */
+    function buildPublishItems(results, accountId, defaults) {
       const items = [], problems = []
+      const fallback = defaults === undefined || defaults === null ? {} : defaults
       for (const result of results) {
-        const draft = result.draft ?? {}, priceCents = Number(draft.price), desc = typeof draft.desc === 'string' ? draft.desc.trim() : ''
+        const draft = result.draft ?? {}, priceCents = draftPriceCents(draft), desc = typeof draft.desc === 'string' ? draft.desc.trim() : ''
         const invalid = typeof draft.title !== 'string' || draft.title.trim() === '' || desc === '' || !Number.isSafeInteger(priceCents) || priceCents <= 0 || !Array.isArray(draft.images) || draft.images.length === 0
-        if (invalid) { problems.push('第 ' + String(result.index + 1) + ' 行缺 title / desc / price / images'); continue }
+        if (invalid) { problems.push('第 ' + String(result.index + 1) + ' 行缺 title / desc / priceCents / images'); continue }
         const payload = { accountId, title: draft.title.trim(), desc, priceCents, images: draft.images }
         if (typeof draft.category === 'string' && draft.category.trim() !== '') payload.category = draft.category.trim()
-        items.push({ kind: 'publish', dedupeKey: 'publish:' + JSON.stringify([payload.title, payload.desc, priceCents, draft.images, payload.category ?? null]), payload })
+        const shipping = draft.shipping === 'free' || draft.shipping === 'none' ? draft.shipping : fallback.shipping
+        if (shipping === 'free' || shipping === 'none') payload.shipping = shipping
+        const address = typeof draft.address === 'string' && draft.address.trim() !== '' ? draft.address.trim() : fallback.address
+        if (typeof address === 'string' && address.trim() !== '') payload.address = address.trim()
+        // 幂等键带上账号：daemon 的 dedupe_key 是全局唯一，不带账号会让 B 号发同款被判成重复丢单。
+        items.push({ kind: 'publish', dedupeKey: 'publish:' + JSON.stringify([accountId, payload.title, payload.desc, priceCents, draft.images, payload.shipping ?? null, payload.address ?? null, payload.category ?? null]), payload })
       }
       return { items, problems }
     }
     /** settings 对象 → 表单初值（发布间隔按秒展示）。 */
     function settingsForm(settings) { return { interval: String(Math.round(Number(settings.publishMinIntervalMs ?? 0) / 1000)), category: String(settings.defaultCategory ?? ''), style: String(settings.copyStyle ?? COPY_STYLE_OPTIONS[0].id) } }
-    const resultLine = (result, role) => result === null ? null : h('div', { style: result.kind === 'bad' ? S.badText : result.kind === 'ok' ? S.goodText : S.small, 'data-role': role }, result.text)
+    /**
+     * 动作结果行：所有「点两次写操作」的提示都走这里。
+     * `role=status` + aria-live 让读屏把「再点一次」「已过期」「失败原因」播报出来——上膛态原本只有颜色差别。
+     */
+    const resultLine = (result, role) => result === null ? null : h('div', { style: result.kind === 'bad' ? S.badText : result.kind === 'ok' ? S.goodText : S.small, 'data-role': role, role: 'status', 'aria-live': 'polite' }, result.text)
     function gridRow(columns, head) { return { display: 'grid', gridTemplateColumns: columns, gap: '8px', alignItems: 'center', padding: '7px 0', borderBottom: '1px solid var(--dsw-alias-border-l2)', fontSize: head ? '12px' : '13px', color: head ? 'var(--dsw-alias-label-secondary)' : 'var(--dsw-alias-label-primary)' } }
     const TASK_GRID = 'minmax(110px, 1.2fr) 70px 84px 64px 92px 78px'
 
@@ -235,13 +270,29 @@ window.__ModuleLoader__.load({
         return { ok: false, message: error instanceof Error ? error.message : 'rpc 调用失败' }
       }
     }
+    /** 二次确认的有效期（毫秒）：上膛后没人再点就自动撤销，避免「点了一次就走开」留下永久的确认态。 */
+    const ARM_TIMEOUT_MS = 5000
+    /**
+     * 从 daemon.start 的返回值里挑出「为什么没起来」的证据：supervisor 失败时把
+     * { exitCode, daemonLog, tail } 塞进 detail（daemon-supervisor.js 的 finish），
+     * 面板把它原样摊出来——否则用户只能看到一句「daemon 没起来」，无从下手。
+     */
+    function startFailureDetail(value) {
+      const detail = value !== null && typeof value === 'object' ? value.detail : null
+      if (detail === null || typeof detail !== 'object') return { daemonLog: '', exitCode: null, tail: '' }
+      const path = typeof detail.daemonLog === 'string' ? detail.daemonLog : ''
+      const tail = typeof detail.tail === 'string' ? detail.tail : ''
+      const exitCode = typeof detail.exitCode === 'number' && Number.isFinite(detail.exitCode) ? detail.exitCode : null
+      return { daemonLog: path, exitCode, tail }
+    }
     /** 进程管理按钮的状态机：停止要点两次（第一次只上膛），避免误触停掉正在跑的队列。 */
     function useDaemonAction(connection) {
-      const [state, setState] = React.useState({ busy: '', stopArmed: false, notice: null })
+      const [state, setState] = React.useState({ busy: '', stopArmed: false, notice: null, value: null })
       const run = (endpoint, payload, doneText) => {
-        setState(previous => ({ ...previous, busy: endpoint, stopArmed: false, notice: null }))
+        setState(previous => ({ ...previous, busy: endpoint, stopArmed: false, notice: null, value: null }))
         void callAction(connection, endpoint, payload).then(result => {
-          setState(previous => ({ ...previous, busy: '', notice: result.ok ? { kind: 'ok', text: doneText } : { kind: 'bad', text: result.message } }))
+          // 保留 value：daemon.start 失败时，日志路径与日志尾部就藏在这里。
+          setState(previous => ({ ...previous, busy: '', value: result.ok ? result.value ?? null : null, notice: result.ok ? { kind: 'ok', text: doneText } : { kind: 'bad', text: result.message } }))
         })
       }
       const start = () => { if (state.busy !== '') return; run('daemon.start', {}, '已请求启动，等下一次轮询确认在线') }
@@ -254,20 +305,52 @@ window.__ModuleLoader__.load({
         run('daemon.stop', { confirm: true }, '已停止；队列暂停，下一次轮询转离线')
       }
       const cancelStop = () => { setState(previous => ({ ...previous, stopArmed: false, notice: null })) }
+      // 上膛后 5 秒没人再点就自动撤销（用户点了一次就走开时，不该留下一个半激活的确认态）。
+      React.useEffect(() => {
+        if (!state.stopArmed) return undefined
+        const timer = setTimeout(() => setState(previous => (previous.stopArmed ? { ...previous, stopArmed: false, notice: { kind: 'warn', text: '停止确认已过期（5 秒内没再点），要停请重新点两次' } } : previous)), ARM_TIMEOUT_MS)
+        return () => clearTimeout(timer)
+      }, [state.stopArmed])
       return { state, start, stop, cancelStop }
     }
-    /** 写类动作点两次：第一次只上膛并给提示，第二次带 confirm:true 才发（host 门禁要求）。 */
+    /**
+     * 写类动作点两次：第一次只上膛并给提示，第二次带 confirm:true 才发（host 门禁要求）。
+     * `busyKey` 是「正在跑的是哪个键」：表格里一次只该锁住那一行，别把整张表都禁掉
+     * （账号页以前用一个布尔 busy，点一次「导入」全表 4 个按钮 × N 行一起变灰）。
+     *
+     * 传 `{ confirm: false }` 表示这次调用本来就不是写操作（例如 probe 只读详情）：
+     * 一次点击直接发、也不带 confirm —— host 侧的门禁是按「这次到底写不写外部系统」判的
+     * （rpc-schema.js 的 needsConfirm），面板不该再替它多点一次。
+     *
+     * 传 `{ confirm: false, arm: true }` 表示「不需要 confirm 字段，但仍然要人点两次」：
+     * 典型是 release（只流转本地队列，不算写外部），可误点一下就会把 worker 正在处理的
+     * 任务从租约里抢走，所以面板侧仍要上膛一次。
+     */
     function useWrite(connection) {
-      const [state, setState] = React.useState({ armed: '', busy: false, result: null })
-      const run = (key, endpoint, payload, texts) => {
-        if (state.busy) return
-        if (state.armed !== key) return setState({ armed: key, busy: false, result: { kind: 'hint', text: texts.hint } })
-        setState({ armed: '', busy: true, result: { kind: 'hint', text: texts.busy } })
-        void callAction(connection, endpoint, { ...payload, confirm: true }).then(reply => {
+      const [state, setState] = React.useState({ armed: '', busy: false, busyKey: '', result: null })
+      const send = (key, endpoint, payload, texts, withConfirm) => {
+        setState({ armed: '', busy: true, busyKey: key, result: { kind: 'hint', text: texts.busy } })
+        const body = withConfirm ? { ...payload, confirm: true } : payload
+        void callAction(connection, endpoint, body).then(reply => {
           if (reply.ok && texts.after !== undefined) void texts.after(reply.value)
-          setState({ armed: '', busy: false, result: reply.ok ? { kind: 'ok', text: texts.done(reply.value), value: reply.value } : { kind: 'bad', text: truncateText(reply.message) } })
+          setState({ armed: '', busy: false, busyKey: '', result: reply.ok ? { kind: 'ok', text: texts.done(reply.value), value: reply.value } : { kind: 'bad', text: truncateText(reply.message) } })
         })
       }
+      const run = (key, endpoint, payload, texts, options) => {
+        if (state.busy) return
+        const withConfirm = options === undefined || options === null || options.confirm !== false
+        const needsArm = withConfirm || (options !== undefined && options !== null && options.arm === true)
+        if (!needsArm) return send(key, endpoint, payload, texts, false)
+        if (state.armed !== key) return setState({ armed: key, busy: false, busyKey: '', result: { kind: 'hint', text: texts.hint } })
+        send(key, endpoint, payload, texts, withConfirm)
+      }
+      // 同上：上膛态只活 5 秒，避免「点了确认重试却忘了再点」的悬空状态。
+      React.useEffect(() => {
+        if (state.armed === '') return undefined
+        const key = state.armed
+        const timer = setTimeout(() => setState(previous => (previous.armed === key ? { armed: '', busy: false, busyKey: '', result: { kind: 'hint', text: '确认已过期（5 秒内没再点），要执行请重新点两次' } } : previous)), ARM_TIMEOUT_MS)
+        return () => clearTimeout(timer)
+      }, [state.armed])
       return { state, run }
     }
     /** 从 tasks.list 找最新一条带 batchId 的任务：daemon 没有「批次列表」读端点，只能反查。 */
@@ -280,14 +363,26 @@ window.__ModuleLoader__.load({
       }
       return newest === null ? null : newest.batchId
     }
-    /** 一次轮询：5 个必需读端点全成功才算在线；批次明细失败不影响主状态。 */
+    /**
+     * 一次轮询：只有 health 决定「daemon 在不在」，其余端点各自降级。
+     *
+     * 以前是 5 个端点全成功才算在线，任意一个失败整页就变成「未连接后台（daemon 未启动）」——
+     * 而 daemon 其实好好地活着，只是 tasks.list 超时了。这种误报比真离线更气人：
+     * 用户会去重启 daemon，重启前又永远好不了（因为坏的是那个端点，不是 daemon）。
+     * 现在只有 health 失败才判离线，其余失败记进 missing，让界面说清「哪几项这轮没拉到」。
+     */
     async function readDaemon(connection) {
       const [health, status, accounts, settings, tasks] = await Promise.all([
         callRead(connection, 'health'), callRead(connection, 'status'), callRead(connection, 'accounts'),
         callRead(connection, 'settings.get'), callRead(connection, 'tasks.list', { limit: 50 })])
-      if (!health.ok || !status.ok || !accounts.ok || !settings.ok || !tasks.ok) return null
+      if (!health.ok) return null
+      const missing = []
+      if (!status.ok) missing.push('status')
+      if (!accounts.ok) missing.push('accounts')
+      if (!settings.ok) missing.push('settings')
+      if (!tasks.ok) missing.push('tasks')
       let batch = null
-      const batchId = newestBatchId(tasks.value)
+      const batchId = tasks.ok ? newestBatchId(tasks.value) : null
       if (batchId !== null) {
         const reply = await callRead(connection, 'batches.get', { id: batchId })
         const value = reply.value
@@ -295,17 +390,53 @@ window.__ModuleLoader__.load({
           batch = { batchId: String(value.batchId ?? batchId), total: Number(value.total ?? 0), counts: value.counts }
         }
       }
-      return { health: health.value, status: status.value, accounts: accounts.value, settings: settings.value, batch }
+      return {
+        health: health.value,
+        status: status.ok ? status.value : null,
+        accounts: accounts.ok ? accounts.value : [],
+        settings: settings.ok ? settings.value : null,
+        batch,
+        missing,
+      }
     }
-    /** 3 秒轮询：卸载时清定时器并阻止在途响应 setState；依赖只放 connection（句柄稳定）。 */
+    /**
+     * 3 秒轮询：卸载时清定时器并阻止在途响应 setState；依赖只放 connection（句柄稳定）。
+     *
+     * 两个约束来自「面板会长时间开着」这个事实：
+     * ①上一轮没回来就跳过这一轮——`accounts.verify`、`batches.get` 这类端点慢起来
+     *   能拖到几十秒，硬按固定节奏发只会让在途请求一层层叠上去，越卡越慢；
+     * ②连续失败要退避——daemon 挂了或宿主重启时，面板还以 3 秒一次的节奏继续敲，
+     *   除了刷日志没有用处。失败 n 次就改成每 (n+1) 个 tick 才真打一次（上限 8 个 tick），
+     *   一旦拿到成功结果立刻回到正常节奏。节奏仍是一个固定的 3 秒 interval：
+     *   退避靠「跳过」而不是重设定时器，卸载与测试里的时钟语义都不变。
+     */
+    const MAX_POLL_BACKOFF_SKIPS = 7
     function useDaemonSnapshot(connection) {
       const [snapshot, setSnapshot] = React.useState({ phase: 'loading', data: null })
       React.useEffect(() => {
         let alive = true
+        let inFlight = false
+        let failures = 0
+        let skip = 0
         const tick = () => {
+          if (!alive || inFlight) return
+          // 退避期间先空转：失败 n 次就跳过 n-1 个 tick（上限 7），拿到成功再归零。
+          if (skip > 0) { skip -= 1; return }
+          inFlight = true
           readDaemon(connection)
-            .then(data => { if (alive) setSnapshot({ phase: data === null ? 'offline' : 'ok', data }) })
-            .catch(() => { if (alive) setSnapshot({ phase: 'offline', data: null }) })
+            .then(data => {
+              if (!alive) return
+              failures = data === null ? failures + 1 : 0
+              skip = failures === 0 ? 0 : Math.min(failures - 1, MAX_POLL_BACKOFF_SKIPS)
+              setSnapshot({ phase: data === null ? 'offline' : 'ok', data })
+            })
+            .catch(() => {
+              if (!alive) return
+              failures += 1
+              skip = Math.min(failures - 1, MAX_POLL_BACKOFF_SKIPS)
+              setSnapshot({ phase: 'offline', data: null })
+            })
+            .finally(() => { inFlight = false })
         }
         tick()
         const timer = setInterval(tick, POLL_MS)
@@ -459,11 +590,44 @@ window.__ModuleLoader__.load({
         enabled ? control : null,
         enabled && typeof field.hint === 'string' ? h('div', { style: S.sectionHint }, field.hint) : null)
     }
-    /** 请求预览：把参数 JSON 摊开，便于复制或直接在对话里让模型执行。 */
+    /**
+     * 把文本塞进剪贴板：只用宿主环境自带能力（不走 DOM 直读、不碰本地存储）。
+     * 失败或环境没有剪贴板时返回 false，调用方给「手动选中复制」的兜底提示。
+     */
+    function copyText(text) {
+      try {
+        if (typeof navigator === 'undefined' || navigator === null) return Promise.resolve(false)
+        const clipboard = navigator.clipboard
+        if (clipboard === undefined || clipboard === null || typeof clipboard.writeText !== 'function') return Promise.resolve(false)
+        const written = clipboard.writeText(text)
+        if (written === undefined) return Promise.resolve(true)
+        return Promise.resolve(written).then(() => true, error => { void error; return false })
+      } catch (error) {
+        void error
+        return Promise.resolve(false)
+      }
+    }
+    /**
+     * 请求预览：JSON 摊开 + 「复制 JSON」按钮 + 只读 textarea。
+     * 之前只有 <pre>，用户只能手动拖选（长 JSON 一拖就跳），等于把请求困在面板里。
+     * 复制走 navigator.clipboard；不可用时明确提示「手动选中下面文本框复制」，不静默失败。
+     */
     function CopyPlanPreview({ request }) {
-      return h('div', { style: S.preview },
+      const [state, setState] = React.useState({ kind: '', text: '' })
+      const json = JSON.stringify(request, null, 2)
+      const onCopy = () => {
+        void copyText(json).then(ok => setState(ok
+          ? { kind: 'ok', text: '已复制到剪贴板，可直接粘给 agent 或终端' }
+          : { kind: 'bad', text: '宿主没给剪贴板权限：请手动选中下面的文本框内容复制' }))
+      }
+      return h('div', { style: S.preview, 'data-role': 'copy-preview' },
         h('div', { style: S.sectionTitle }, '生成请求已就绪'),
-        h('pre', { style: S.pre }, JSON.stringify(request, null, 2)))
+        h('div', { style: S.buttonRow },
+          h('button', { type: 'button', 'data-role': 'copy-json', title: '把这段 JSON 复制到剪贴板', onClick: onCopy, style: S.chipMini }, '复制 JSON')),
+        state.kind === '' ? null : h('div', { style: state.kind === 'ok' ? S.goodText : S.manualHint, 'data-role': 'copy-json-hint', role: 'status' }, state.text),
+        h('pre', { style: S.pre }, json),
+        // 只读 textarea：剪贴板不可用时用户还能全选复制；readOnly 保证不会被误改后当成新请求。
+        h('textarea', { readOnly: true, rows: 8, value: json, 'data-role': 'copy-json-text', 'aria-label': '生成的请求 JSON（只读）', style: S.textarea }))
     }
     /**
      * 片段 05：「文案」tab 与面板 tab 栏。
@@ -702,7 +866,7 @@ window.__ModuleLoader__.load({
             h('button', {
               type: 'button', 'data-role': 'reference-collect', disabled: !collectValid, onClick: collect,
               title: collectValid ? '写入本地库（点两次确认）' : '先解析出商家 id 并选一个账号',
-              style: collectValid ? S.primary : S.offButton,
+              style: collectValid ? (writes.state.armed === 'collect' ? S.armedButton : S.primary) : S.offButton,
             }, writes.state.armed === 'collect' ? '确认采集' : busy ? '采集中…' : '采集并入库')),
           resultLine(board.notice ?? writes.state.result, 'reference-notice')),
         h('div', { style: S.section, 'data-role': 'reference-sellers' },
@@ -775,25 +939,53 @@ window.__ModuleLoader__.load({
      * 片段 07：设置表单、daemon 状态卡、工作流树、「诊断」tab。
      * 拼接顺序由文件名决定；单独打开不是合法模块，见 scripts/build-client.mjs。
      */
-    /** 概览底部提示的工具名：只列高频入口（全量 15 个 `xy_*` 工具在工具面板里搜得到，不在这里复刻全表）。 */
-    const OVERVIEW_TOOL_NAMES = ['xy_status', 'xy_tasks_list', 'xy_items_list', 'xy_market_brief', 'xy_ping']
-    /** 概览底部提示的命令：与 package.json scripts 一一对应，改脚本要同步这里。 */
-    const OVERVIEW_COMMANDS = ['npm run daemon', 'npm run daemon:import-account', 'npm run dsh:dev -- --fresh']
-    /** 设置：发布间隔（秒）/ 默认类目 / 文案风格；保存是写类，点两次才发 settings.put，成功后重新拉 settings.get。 */
+    /**
+     * 概览底部提示的工具名：只列高频入口（全量 16 个 `xy_*` 工具在工具面板里搜得到，不在这里复刻全表）。
+     * 但「高频」要包含真正干活的发布两件套——只列读类工具会让人以为发布得去别处找。
+     */
+    const OVERVIEW_TOOL_NAMES = ['xy_status', 'xy_tasks_list', 'xy_items_list', 'xy_publish_draft', 'xy_publish_batch', 'xy_market_brief', 'xy_copy_plan', 'xy_ping']
+    /**
+     * 概览底部提示的命令：与 package.json scripts 一一对应，改脚本要同步这里。
+     *
+     * 只用 pnpm（仓库是 pnpm workspace，packageManager 字段写死 pnpm）：混 npm 会走另一份语义。
+     * 也不要给 `pnpm daemon`（= `node packages/daemon/src/cli.ts`）——它前台阻塞，贴着跑会卡住会话；
+     * 起停一律走 scripts/daemon-service.mjs 的 daemon:start / daemon:stop，看状态用 daemon:status。
+     */
+    const OVERVIEW_COMMANDS = ['pnpm daemon:start', 'pnpm daemon:status', 'pnpm daemon:logs', 'pnpm daemon:import-account', 'pnpm dsh:dev -- --fresh']
+    /**
+     * 设置：发布间隔（秒）/ 默认类目 / 文案风格；保存是写类，点两次才发 settings.put，成功后重新拉 settings.get。
+     *
+     * 默认类目允许留空：核心默认值就是 `''`（packages/core/src/settings.ts:79），留空表示「不预设」，
+     * 发布时再按下拉实际点选。以前这里要求类目非空，导致新用户第一次打开概览时「保存设置」永远是灰的——
+     * 他必须凭空编一个类目才能保存间隔与风格，而按钮变灰的原因只写在 title 里，看不到。
+     */
+    /** 夹取文案：daemon 把越界值拉到合法区间会放进 clamped，必须说出口，否则「已保存」是半句谎。 */
+    function describeClamped(value) {
+      const clamped = value !== null && typeof value === 'object' ? value.clamped : null
+      if (clamped === null || typeof clamped !== 'object') return ''
+      const parts = []
+      if (Number.isFinite(clamped.publishMinIntervalMs)) parts.push('发布间隔被压到 ' + String(Math.round(clamped.publishMinIntervalMs / 1000)) + ' 秒')
+      if (Number.isFinite(clamped.keepAliveIntervalMs)) parts.push('保活间隔被压到 ' + String(Math.round(clamped.keepAliveIntervalMs / 1000)) + ' 秒')
+      if (Number.isFinite(clamped.maxBatchItems)) parts.push('批量上限被压到 ' + String(clamped.maxBatchItems) + ' 条')
+      return parts.length === 0 ? 'daemon 把部分数值夹到了合法区间（' + Object.keys(clamped).join('、') + '），按回读值重新确认' : '已保存，但 ' + parts.join('；')
+    }
     function SettingsForm({ connection, settings }) {
       const save = useWrite(connection)
       const [form, setForm] = React.useState(settingsForm(settings))
       const seconds = Number(form.interval)
-      const valid = Number.isFinite(seconds) && seconds >= 30 && seconds <= 3600 && form.category.trim() !== ''
-      const patch = { publishMinIntervalMs: Math.round(seconds * 1000), defaultCategory: form.category.trim(), copyStyle: form.style }
+      const intervalOk = Number.isFinite(seconds) && seconds >= 30 && seconds <= 3600
+      const valid = intervalOk
+      const category = form.category.trim()
+      const patch = { publishMinIntervalMs: Math.round(seconds * 1000), defaultCategory: category, copyStyle: form.style }
       const refresh = () => { void callRead(connection, 'settings.get').then(reply => { if (reply.ok && reply.value !== null && typeof reply.value === 'object') setForm(settingsForm(reply.value)) }) }
       const change = key => event => setForm({ ...form, [key]: event.target.value })
       return h('div', { 'data-role': 'settings-form', style: S.fieldRow },
         h(Field, { label: '发布间隔（秒）', control: h('input', { type: 'number', min: 30, max: 3600, value: form.interval, onChange: change('interval'), style: S.input }) }),
-        h(Field, { label: '默认类目', control: h('input', { type: 'text', value: form.category, maxLength: 200, onChange: change('category'), style: S.input }) }),
+        h(Field, { label: '默认类目（可留空）', control: h('input', { type: 'text', value: form.category, maxLength: 200, placeholder: '留空 = 不预设，发布时再选', onChange: change('category'), style: S.input }) }),
         h(Field, { label: '文案风格', control: h('select', { value: form.style, onChange: change('style'), style: S.input }, ...COPY_STYLE_OPTIONS.map(option => h('option', { key: option.id, value: option.id }, option.label))) }),
         h('div', { style: S.buttonRow },
-          h('button', { type: 'button', 'data-role': 'settings-save', disabled: !valid || save.state.busy, title: valid ? '写盘并回读 settings' : '间隔 30–3600 秒，类目不能为空', onClick: () => save.run('settings', 'settings.put', { patch }, { hint: '再点一次「确认保存」', busy: '正在保存…', done: () => '设置已保存', after: refresh }), style: valid && !save.state.busy ? S.primary : S.offButton }, save.state.armed === 'settings' ? '确认保存' : save.state.busy ? '保存中…' : '保存设置')),
+          h('button', { type: 'button', 'data-role': 'settings-save', disabled: !valid || save.state.busy, title: valid ? '写盘并回读 settings' : '发布间隔要填 30–3600 秒', onClick: () => save.run('settings', 'settings.put', { patch }, { hint: '再点一次「确认保存」', busy: '正在保存…', done: value => describeClamped(value) === '' ? '设置已保存' : describeClamped(value), after: refresh }), style: valid && !save.state.busy ? (save.state.armed === 'settings' ? S.armedButton : S.primary) : S.offButton }, save.state.armed === 'settings' ? '确认保存' : save.state.busy ? '保存中…' : '保存设置')),
+        valid ? null : h('div', { style: S.small, 'data-role': 'settings-hint', role: 'status' }, '发布间隔要填 30–3600 秒（现在填的是「' + form.interval + '」）；默认类目可以留空。'),
         resultLine(save.state.result, 'settings-result'))
     }
     /** worker 计数（daemon 未注入 worker 时不带这一行）：回答「队列到底有没有人在领」。 */
@@ -804,29 +996,64 @@ window.__ModuleLoader__.load({
       return h('div', { style: S.cmdRow, 'data-role': 'daemon-worker' },
         h('span', { style: S.cmdLabel }, 'worker'), h('span', null, text))
     }
+    /** 一条命令 + 复制按钮：概览里的命令以前只能肉眼看，得手抄到终端。 */
+    function CommandChips({ commands }) {
+      const [state, setState] = React.useState({ copied: '', failed: '' })
+      const onCopy = command => {
+        void copyText(command).then(ok => setState(ok ? { copied: command, failed: '' } : { copied: '', failed: command }))
+      }
+      return h('div', null,
+        h('div', { style: S.cmdRow }, ...commands.map(command => h('span', { key: command, style: S.cmdRow },
+          h('code', { style: S.cmdCode }, command),
+          h('button', { type: 'button', 'data-role': 'overview-command-copy', 'data-command': command, title: '复制 ' + command, onClick: () => onCopy(command), style: S.chipMini }, state.copied === command ? '已复制' : '复制')))),
+        state.failed === '' ? null : h('div', { style: S.manualHint, 'data-role': 'overview-command-hint', role: 'status' }, '宿主没给剪贴板权限：手动选中 ' + state.failed + ' 复制'))
+    }
     /** daemon 实时状态 + 进程管理；发布页把设置摘要换成可保存的输入。 */
     function DaemonStatus({ connection, snapshot, editable }) {
       const actions = useDaemonAction(connection)
       const online = snapshot.phase === 'ok' && snapshot.data !== null
       const action = actions.state
+      // supervisor 的「没起来」不一定抛错：rpc 可能回 ok:true，但 value.status 是 failed / unavailable，
+      // 真正的证据在 value.detail（exitCode / daemonLog / tail）。两种都要摊出来，否则只剩一句「没起来」。
+      const started = action.value !== null && typeof action.value === 'object' ? action.value : null
+      const startStatus = started !== null && typeof started.status === 'string' ? started.status : ''
+      const startFailed = action.notice !== null && (action.notice.kind === 'bad' || ['failed', 'unavailable', 'disabled', 'skipped'].includes(startStatus))
+      const failure = startFailed ? startFailureDetail(action.value) : { daemonLog: '', exitCode: null, tail: '' }
+      const startMessage = started !== null && typeof started.message === 'string' ? started.message : ''
+      const noticeText = startFailed && startMessage !== '' ? startMessage : action.notice === null ? '' : action.notice.text
+      const noticeKind = startFailed ? 'bad' : action.notice === null ? '' : action.notice.kind
+      const failureBlock = failure.daemonLog === '' && failure.tail === '' && failure.exitCode === null ? null : h('div', { 'data-role': 'daemon-failure' },
+        failure.exitCode === null ? null : h('div', { style: S.small }, '退出码 ' + String(failure.exitCode)),
+        failure.daemonLog === '' ? null : h('div', { style: S.small, 'data-role': 'daemon-logfile' }, '日志：' + failure.daemonLog),
+        failure.tail === '' ? null : h('pre', { style: S.pre, 'data-role': 'daemon-logtail' }, failure.tail))
       const manage = h('div', { style: S.section, 'data-role': 'daemon-manage' },
         h('div', { style: S.sectionTitle }, '进程管理'),
         h('div', { style: S.buttonRow },
           h('button', { type: 'button', 'data-role': 'daemon-start', disabled: online || action.busy !== '', title: online ? 'daemon 已在线' : '让宿主拉起本地 daemon', onClick: actions.start, style: !online && action.busy === '' ? S.primary : S.offButton }, action.busy === 'daemon.start' ? '正在启动…' : '启动 daemon'),
-          h('button', { type: 'button', 'data-role': 'daemon-stop', disabled: !online || action.busy !== '', title: online ? '停止 daemon（会中断在飞任务）' : 'daemon 未运行', onClick: actions.stop, style: online && action.busy === '' ? S.primary : S.offButton }, action.stopArmed ? '确认停止 daemon' : action.busy === 'daemon.stop' ? '正在停止…' : '停止 daemon')),
-        action.notice === null ? null : h('div', { style: action.notice.kind === 'bad' ? S.badText : S.okText, 'data-role': 'daemon-manage-notice' }, action.notice.text))
+          h('button', { type: 'button', 'data-role': 'daemon-stop', disabled: !online || action.busy !== '', title: online ? '停止 daemon（会中断在飞任务）' : 'daemon 未运行', onClick: actions.stop, style: online && action.busy === '' ? (action.stopArmed ? S.armedButton : S.primary) : S.offButton }, action.stopArmed ? '确认停止 daemon' : action.busy === 'daemon.stop' ? '正在停止…' : '停止 daemon')),
+        // aria-live：上膛/过期/失败都要被读屏播报，不能只靠颜色。
+        noticeText === '' ? null : h('div', { style: noticeKind === 'bad' ? S.badText : noticeKind === 'warn' ? S.warnText : S.okText, 'data-role': 'daemon-manage-notice', role: 'status', 'aria-live': 'polite' }, noticeText),
+        failureBlock)
       if (snapshot.phase === 'loading') return h('div', { style: S.sectionHint, 'data-role': 'daemon-state' }, '正在连接 daemon…')
       const data = snapshot.data
       if (snapshot.phase !== 'ok' || data === null) return h('div', { 'data-role': 'daemon-state' }, h('div', { style: S.badText }, OFFLINE_TEXT), manage)
       const health = data.health ?? {}
+      const missing = Array.isArray(data.missing) ? data.missing : []
+      // 缺哪几项就直说，别拿默认值冒充真值：账号读不到 ≠ 没有账号，队列读不到 ≠ 队列是空的。
       const accounts = Array.isArray(data.accounts) ? data.accounts : []
       const readyCount = accounts.filter(account => account !== null && typeof account === 'object' && account.ready === true).length
+      // 缺哪几项就直说，别拿默认值冒充真值：账号读不到 ≠ 没有账号，队列读不到 ≠ 队列是空的。
+      const accountText = missing.includes('accounts')
+        ? '这轮没读到（不是 0 个，别照着这个以为没账号）'
+        : String(accounts.length) + ' 个账号 · ' + String(readyCount) + ' 个可写' + (accounts.length === 0 ? '（先导入登录态）' : '')
       const line = (role, label, value) => h('div', { style: S.cmdRow, 'data-role': role }, h('span', { style: S.cmdLabel }, label), h('span', null, value))
       return h('div', { style: S.section, 'data-role': 'daemon-state' },
         h('div', { style: S.sectionTitle }, 'daemon 状态'),
+        missing.length === 0 ? null : h('div', { style: S.warnText, 'data-role': 'daemon-partial', role: 'status' },
+          'daemon 在线，但这一轮有 ' + missing.length + ' 项没拉到：' + missing.join('、') + '（下面这些数字是上一轮/默认值，不是实时值）'),
         line('daemon-health', 'daemon', '在线 · v' + String(health.version ?? '?') + ' · 已运行 ' + formatUptime(health.uptimeMs)),
-        line('daemon-accounts', '账号就绪', String(accounts.length) + ' 个账号 · ' + String(readyCount) + ' 个可写' + (accounts.length === 0 ? '（先导入登录态）' : '')),
-        line('daemon-queue', '队列', describeQueue(data.status?.queue ?? {})),
+        line('daemon-accounts', '账号就绪', accountText),
+        line('daemon-queue', '队列', missing.includes('status') ? '这轮没读到队列计数' : describeQueue(data.status?.queue ?? {})),
         workerLine(data.status?.worker ?? null),
         line('daemon-batch', '最近批次', describeBatch(data.batch)),
         editable ? h(SettingsForm, { connection, settings: data.settings ?? {} }) : null,
@@ -872,17 +1099,45 @@ window.__ModuleLoader__.load({
       const lines = []
       const failed = Number(queue.failed ?? 0), review = Number(queue.needs_review ?? 0)
       if (failed > 0) lines.push({ kind: 'bad', text: '失败 ' + String(failed) + ' 条：去「发布」tab 按「失败」筛选，可重试或看失败原因' })
-      if (review > 0) lines.push({ kind: 'warn', text: '待审 ' + String(review) + ' 条：人工确认后重试（rpc 还没暴露 ack/fail/release，先用 xy_task_action）' })
+      if (review > 0) lines.push({ kind: 'warn', text: '待审 ' + String(review) + ' 条：去「发布」tab 按「待审」筛选，看清原因后点「重试」或「标记完成」' })
       for (const account of accounts) {
         const id = String(account !== null && typeof account === 'object' ? account.accountId ?? '' : '')
         if (id !== '' && account.ready !== true) lines.push({ kind: 'warn', text: '账号 ' + id + ' 凭据不完整：去「账号」tab 重新导入或扫码' })
       }
-      // 熔断是 daemon 侧自动冷却的（circuits.json），面板只报状态：重置端点还没进 rpc，不去猜。
+      // 熔断是 daemon 侧自动冷却的（circuits.json）：等得到，但风控命中后干等 10 分钟很难受。
+      // 重置入口就在下面一行按钮（circuits.reset），要人确认两次——解除刹车之后下一次写就真打到闲鱼。
       for (const [accountId, reason] of Object.entries(circuits)) {
-        lines.push({ kind: 'bad', text: '账号 ' + accountId + ' 熔断中（' + String(reason) + '）：等冷却自动放行，手动重置待 rpc 补 circuits.reset' })
+        lines.push({ kind: 'bad', text: '账号 ' + accountId + ' 熔断中（' + String(reason) + '）：等冷却自动放行，或确认无风险后点下面的「复位熔断」' })
       }
       if (lines.length === 0) return [h('div', { key: 'clear', style: S.goodText, 'data-role': 'overview-clear' }, '没有待办：队列、账号、熔断都正常')]
       return lines.map((line, index) => h('div', { key: String(index), style: line.kind === 'bad' ? S.badText : S.warnText, 'data-role': 'overview-alert' }, '· ' + line.text))
+    }
+    /**
+     * 熔断复位：没有这个按钮时，「账号被熔断」只能等 daemon 的 10 分钟冷却，
+     * 而面板此前还写着「手动重置待 rpc 补 circuits.reset」——把话说死了却没有出口。
+     * 复位本身不触达闲鱼，但它解除的是「暂停写」这道刹车，所以仍然点两次。
+     */
+    function CircuitResetRow({ connection, snapshot }) {
+      const reset = useWrite(connection)
+      if (snapshot.phase !== 'ok' || snapshot.data === null) return null
+      const circuits = snapshot.data.status !== null && typeof snapshot.data.status === 'object' && snapshot.data.status.circuits !== null && typeof snapshot.data.status.circuits === 'object' ? snapshot.data.status.circuits : {}
+      const ids = Object.keys(circuits)
+      if (ids.length === 0) return null
+      return h('div', { style: S.buttonRow, 'data-role': 'circuit-actions' },
+        ...ids.map(accountId => h('button', {
+          key: accountId, type: 'button', 'data-role': 'circuit-reset', 'data-account-id': accountId,
+          disabled: reset.state.busy,
+          title: '确认账号 ' + accountId + ' 现在安全（风控冷却够久）后再复位；复位后下一次写会真的打到闲鱼',
+          onClick: () => reset.run('circuit:' + accountId, 'circuits.reset', { accountId }, {
+            hint: '再点一次确认复位 ' + accountId + '：复位后下一次写会立刻打到闲鱼',
+            busy: '正在复位…',
+            done: value => value !== null && typeof value === 'object' && value.reset === false
+              ? 'daemon 说这个账号其实不在熔断表里（熔断器可能没加载）'
+              : '已复位 ' + accountId + '；仍要先想清楚上次为什么被熔断',
+          }),
+          style: reset.state.armed === 'circuit:' + accountId ? { ...S.chip, ...S.chipActive } : S.chip,
+        }, reset.state.armed === 'circuit:' + accountId ? '确认复位 ' + accountId : '复位熔断 ' + accountId)),
+        resultLine(reset.state.result, 'circuit-result'))
     }
     /** 概览页 = 驾驶舱（概况 + 待办 + 工作流）+ 系统区（进程管理 / 设置 / 命令）。默认落地页。 */
     function OverviewTab({ connection }) {
@@ -891,12 +1146,13 @@ window.__ModuleLoader__.load({
         h(DaemonStatus, { connection, snapshot, editable: true }),
         h('div', { style: S.section, 'data-role': 'overview-todo' },
           h('div', { style: S.sectionTitle }, '待办提醒'),
-          ...alertLines(snapshot)),
+          ...alertLines(snapshot),
+          h(CircuitResetRow, { connection, snapshot })),
         h(WorkflowTree, { connection }),
         h('div', { style: S.section, 'data-role': 'overview-commands' },
           h('div', { style: S.sectionTitle }, '工具与命令'),
           h('div', { style: S.cmdRow }, ...OVERVIEW_TOOL_NAMES.map(name => h('code', { key: name, style: S.cmdCode }, name))),
-          h('div', { style: S.cmdRow }, ...OVERVIEW_COMMANDS.map(command => h('code', { key: command, style: S.cmdCode }, command))),
+          h(CommandChips, { commands: OVERVIEW_COMMANDS }),
           h('div', { style: S.sectionHint }, '面板只走 rpc（/bigfish），不直连 daemon；daemon 默认监听 ' + DAEMON_ADDR)))
     }
 
@@ -974,16 +1230,26 @@ window.__ModuleLoader__.load({
     /**
      * 擦亮 / 探测的幂等键按「天」去重：同一天重复点不会把同一件商品塞两遍队列，
      * 第二天键变了可以再擦一次——擦亮本来就是每天一次的运营动作。
+     * 必须用**本地**日期：toISOString() 是 UTC，北京时间 00:00–08:00 会被算成前一天，
+     * 于是「今天擦过」的键与用户认知的日期错开一天（擦亮配额按自然日算）。
      */
-    const dayKey = () => new Date().toISOString().slice(0, 10)
+    const pad2 = value => String(value).padStart(2, '0')
+    const dayKey = () => { const now = new Date(); return String(now.getFullYear()) + '-' + pad2(now.getMonth() + 1) + '-' + pad2(now.getDate()) }
     /** 「商品」tab：本地商品快照 → 勾选 → 入队 polish（擦亮，写）/ probe（详情探测，读）。 */
     function ItemsView({ connection }) {
       const [board, setBoard] = React.useState({ phase: 'loading', rows: [], accounts: [], accountId: '', picked: {} })
       const job = useWrite(connection)
       const update = patch => setBoard(previous => ({ ...previous, ...patch }))
-      const loadItems = () => {
+      /**
+       * 快照必须按账号过滤后再展示：daemon 的 GET /items 支持 accountId，
+       * 但面板以前不传——于是「选中账号 B 却勾到 A 的商品」，
+       * 擦亮入队就成了 itemId(A) + accountId(B) 的错账号写操作。
+       * 选中账号变化时也要重拉，否则列表停在旧号上。
+       */
+      const loadItems = accountId => {
+        const forAccount = accountId === undefined ? board.accountId : accountId
         update({ phase: 'loading' })
-        void callRead(connection, 'items.list').then(reply => {
+        void callRead(connection, 'items.list', forAccount === '' ? {} : { accountId: forAccount }).then(reply => {
           update({ phase: reply.ok ? 'ok' : 'offline', rows: reply.ok && Array.isArray(reply.value) ? reply.value : [] })
         })
       }
@@ -995,7 +1261,7 @@ window.__ModuleLoader__.load({
           const ids = reply.value.map(row => String(row?.accountId ?? '')).filter(id => id !== '')
           setBoard(previous => ({ ...previous, accounts: ids, accountId: previous.accountId !== '' ? previous.accountId : (ids[0] ?? '') }))
         })
-        loadItems()
+        loadItems('')
         return () => { alive = false }
       }, [connection])
       const pickedIds = Object.keys(board.picked).filter(id => board.picked[id] === true)
@@ -1003,7 +1269,8 @@ window.__ModuleLoader__.load({
         : board.accountId === '' ? '先选一个账号（daemon 里没有账号就去「账号」tab 导入）'
           : pickedIds.length === 0 ? '先勾选至少一件商品' : ''
       const canRun = blocked === '' && !job.state.busy
-      const runJob = (kind, label, hint) => job.run(kind, 'batch.enqueue', {
+      // probe 是纯读（只拉详情回写快照），门禁不该让它点两次：confirm:false 会一次点击直接发。
+      const runJob = (kind, label, hint, options) => job.run(kind, 'batch.enqueue', {
         items: pickedIds.map(itemId => ({
           kind, dedupeKey: kind + ':' + itemId + ':' + dayKey(),
           payload: { accountId: board.accountId, itemId },
@@ -1012,14 +1279,16 @@ window.__ModuleLoader__.load({
         hint: '再点一次「确认' + label + '」：' + String(pickedIds.length) + ' 件进队列，daemon 按账号串行执行' + hint,
         busy: '正在入队…',
         done: value => '已入队 ' + String(Array.isArray(value?.tasks) ? value.tasks.length : pickedIds.length) + ' 条' + label + '任务',
-        after: loadItems,
-      })
+        after: () => loadItems(),
+      }, options)
       const allPicked = () => update({ picked: Object.fromEntries(board.rows.map(row => [String(row?.itemId ?? ''), true])) })
       const rowOf = row => {
         const itemId = String(row?.itemId ?? '')
         return h('div', { key: itemId, style: gridRow(ITEM_GRID, false), 'data-role': 'item-row', 'data-item-id': itemId },
           h('input', {
             type: 'checkbox', 'data-role': 'item-pick', 'data-item-id': itemId, checked: board.picked[itemId] === true,
+            // 勾选框没有可读名字时读屏只会念「复选框」：把商品名带上。
+            'aria-label': '选择商品 ' + String(row?.title ?? itemId),
             onChange: event => setBoard(previous => ({ ...previous, picked: { ...previous.picked, [itemId]: event.target.checked } })),
           }),
           h('span', { style: S.small }, String(row?.title ?? '—')),
@@ -1033,7 +1302,7 @@ window.__ModuleLoader__.load({
           h('div', { style: S.sectionTitle }, '自有商品'),
           h('div', { style: S.sectionHint }, '本地快照（probe 探测 / 发布成功后落库）。擦亮走 mtop 写接口、消耗写预算；探测只读详情并回写快照。'),
           h('div', { style: S.buttonRow },
-            h('button', { type: 'button', 'data-role': 'items-refresh', onClick: loadItems, style: S.button }, '刷新快照'),
+            h('button', { type: 'button', 'data-role': 'items-refresh', onClick: () => loadItems(), style: S.button }, '刷新快照'),
             h('button', { type: 'button', 'data-role': 'items-pick-all', onClick: allPicked, style: S.button }, '全选'),
             h('button', { type: 'button', 'data-role': 'items-pick-none', onClick: () => update({ picked: {} }), style: S.button }, '清空')),
           h('div', { style: S.fieldRow },
@@ -1042,18 +1311,23 @@ window.__ModuleLoader__.load({
                 ? h('div', { style: S.small }, '还没有导入账号（去「账号」tab）')
                 : h('select', {
                   value: board.accountId, 'data-role': 'items-account',
-                  onChange: event => update({ accountId: event.target.value }), style: S.input,
+                  // 换账号必须清掉已勾选并重拉：勾选是「这件商品」，换号后它的账号对不上了。
+                  onChange: event => {
+                    const next = event.target.value
+                    update({ accountId: next, picked: {} })
+                    loadItems(next)
+                  }, style: S.input,
                 }, ...board.accounts.map(id => h('option', { key: id, value: id }, id))),
             })),
           h('div', { style: S.buttonRow },
             h('button', {
               type: 'button', 'data-role': 'items-polish', disabled: !canRun, title: canRun ? '入队 polish：擦亮所选商品（写操作）' : blocked,
-              onClick: () => runJob('polish', '擦亮', '，失败不退还预算'), style: canRun ? S.primary : S.offButton,
+              onClick: () => runJob('polish', '擦亮', '，失败不退还预算'), style: canRun ? (job.state.armed === 'polish' ? S.armedButton : S.primary) : S.offButton,
             }, job.state.armed === 'polish' ? '确认擦亮' : job.state.busy ? '入队中…' : '擦亮所选'),
             h('button', {
-              type: 'button', 'data-role': 'items-probe', disabled: !canRun, title: canRun ? '入队 probe：读商品详情并刷新本地快照（只读）' : blocked,
-              onClick: () => runJob('probe', '探测', ''), style: canRun ? S.primary : S.offButton,
-            }, job.state.armed === 'probe' ? '确认探测' : job.state.busy ? '入队中…' : '探测详情')),
+              type: 'button', 'data-role': 'items-probe', disabled: !canRun, title: canRun ? '入队 probe：读商品详情并刷新本地快照（只读，不用二次确认）' : blocked,
+              onClick: () => runJob('probe', '探测', '', { confirm: false }), style: canRun ? S.primary : S.offButton,
+            }, job.state.busy ? '入队中…' : '探测详情')),
           resultLine(job.state.result, 'items-result')),
         h('div', { style: S.section, 'data-role': 'items-table' },
           h('div', { style: S.sectionTitle }, '商品快照 · ' + String(board.rows.length) + ' 件'),
@@ -1087,17 +1361,36 @@ window.__ModuleLoader__.load({
         }, text)
       }))
     }
-    /** 任务区：状态 / 种类筛选 + 最近 20 条；failed / needs_review 可重试（两次确认）。 */
+    /** 任务 id：全长展示 + 复制按钮（以前截断到 16 字符，重试/查日志时对不上号）。 */
+    function TaskIdCell({ id }) {
+      const [copied, setCopied] = React.useState('')
+      if (id === '') return h('span', { style: S.small }, '—')
+      // 任务 id 是 UUID 级别的长串：靠 wordBreak 换行 + title 悬停看全，别把整列撑宽（列宽 110px 起）。
+      return h('span', { style: S.actions, 'data-role': 'task-id' },
+        h('span', { style: { ...S.mono, wordBreak: 'break-all', flex: '1 1 auto', minWidth: 0 }, title: id }, id),
+        h('button', {
+          type: 'button', 'data-role': 'task-id-copy', title: '复制任务 id ' + id, style: S.chipMini,
+          onClick: () => { void copyText(id).then(ok => setCopied(ok ? '已复制' : '复制失败')) },
+        }, copied === '' ? '复制' : copied))
+    }
+    /** 任务区：状态 / 种类筛选 + 最近 20 条；failed / needs_review 可重试，leased 可放回队列（都要点两次）。 */
     function TasksTable({ connection, board, filter, onFilter, onChanged }) {
       const retry = useWrite(connection)
+      const act = useWrite(connection)
       const rowOf = task => {
         const id = String(task.id ?? ''), canRetry = task.state === 'failed' || task.state === 'needs_review'
+        // 卡在 leased 的任务：worker 崩了要等租约过期，人能做的只有 release 把它放回 queued。
+        // 面板以前没有这个入口，只剩「等 60 秒」和「去敲 xy_task_action」两条路。
+        const canRelease = task.state === 'leased'
+        const busy = retry.state.busy || act.state.busy
         return h('div', { key: id, style: gridRow(TASK_GRID, false), 'data-role': 'task-row', 'data-task-id': id },
-          h('span', null, id.slice(0, 16)), h('span', { style: S.small }, String(task.kind ?? '?')),
+          h(TaskIdCell, { id }), h('span', { style: S.small }, String(task.kind ?? '?')),
           h('span', { style: task.state === 'failed' ? S.badText : S.small }, taskStateLabel(task.state)),
           h('span', { style: S.small }, String(task.attempts ?? 0) + '/' + String(task.maxAttempts ?? '?')),
           h('span', { style: S.small }, formatAgo(task.updatedAt)),
-          canRetry ? h('button', { type: 'button', 'data-role': 'task-retry', disabled: retry.state.busy, onClick: () => retry.run('retry:' + id, 'tasks.retry', { id }, { hint: '再点一次重试 ' + id + '：会把它放回队列', busy: '正在重试…', done: () => '已重试 ' + id, after: onChanged }), style: retry.state.armed === 'retry:' + id ? { ...S.chip, ...S.chipActive } : S.chip }, retry.state.armed === 'retry:' + id ? '确认重试' : '重试') : null)
+          h('span', { style: S.actions },
+            canRetry ? h('button', { key: 'retry', type: 'button', 'data-role': 'task-retry', disabled: busy, onClick: () => retry.run('retry:' + id, 'tasks.retry', { id }, { hint: '再点一次重试 ' + id + '：会把它放回队列', busy: '正在重试…', done: () => '已重试 ' + id, after: onChanged }), style: retry.state.armed === 'retry:' + id ? S.rowArmedButton : busy ? S.rowOffButton : S.rowButton }, retry.state.armed === 'retry:' + id ? '确认重试' : '重试') : null,
+            canRelease ? h('button', { key: 'release', type: 'button', 'data-role': 'task-release', disabled: busy, title: '把它从租约里放回排队：只有确认 worker 没在处理时才点', onClick: () => act.run('release:' + id, 'tasks.action', { id, action: 'release' }, { hint: '再点一次放回队列 ' + id + '：只有确认 worker 没在处理时才这样收尾', busy: '正在放回…', done: () => '已放回队列 ' + id, after: onChanged }, { confirm: false, arm: true }), style: act.state.armed === 'release:' + id ? S.rowArmedButton : busy ? S.rowOffButton : S.rowButton }, act.state.armed === 'release:' + id ? '确认放回' : '放回队列') : null))
       }
       return h('div', { style: S.section, 'data-role': 'tasks-section' },
         h('div', { style: S.sectionTitle }, '任务 · 最近 ' + String(board.items.length) + ' 条'),
@@ -1109,11 +1402,33 @@ window.__ModuleLoader__.load({
             h('span', { style: S.fieldLabel }, '种类'),
             h(FilterChips, { value: filter.kind, options: TASK_KINDS, unsupported: UNSUPPORTED_KINDS, titleOf: '只看种类', onSelect: kind => onFilter({ ...filter, kind }) }))),
         resultLine(retry.state.result, 'task-result'),
+        resultLine(act.state.result, 'task-action-result'),
         h('div', { 'data-role': 'tasks-table' },
           h('div', { style: gridRow(TASK_GRID, true) }, ...['任务', '种类', '状态', '重试', '更新', ''].map(label => h('span', { key: label }, label))),
           ...board.items.map(rowOf),
           board.items.length === 0 ? h('div', { style: S.small, 'data-role': 'tasks-empty' }, board.phase === 'loading' ? '正在读取任务…' : '这个筛选下没有任务') : null),
-        h('div', { style: S.sectionHint }, '发货 / 客服两项灰着：daemon 执行器还没接线（deliver 缺 IM 协议与卡密规则引擎，reply 缺 wss 握手心跳）。'))
+        h('div', { style: S.sectionHint }, '发货 / 客服两项灰着：deliver 执行器仍是 UNSUPPORTED（缺卡密规则引擎）；reply 已接 IM 长连，但 daemon 要 BF_IM=1 才开，面板暂不给入口。'))
+    }
+    /**
+     * 生成好的入队参数：以前只有一个 <pre>，想拿去喂工具只能手动拖选长 JSON（一拖就跳）。
+     * 文案 tab 早就有「复制 JSON」，这里补齐，否则「生成」按钮就是个死胡同。
+     */
+    function PublishRequestPreview({ request }) {
+      const [state, setState] = React.useState({ kind: '', text: '' })
+      const json = JSON.stringify(request, null, 2)
+      const onCopy = () => {
+        void copyText(json).then(ok => setState(ok
+          ? { kind: 'ok', text: '已复制：可以粘给 agent 当 xy_publish_batch 的参数' }
+          : { kind: 'bad', text: '宿主没给剪贴板权限：请手动选中下面的文本框内容复制' }))
+      }
+      return h('div', { style: S.preview, 'data-role': 'publish-request-preview' },
+        h('div', { style: S.sectionTitle }, 'xy_publish_batch 参数已就绪'),
+        h('div', { style: S.buttonRow },
+          h('button', { type: 'button', 'data-role': 'publish-request-copy', title: '把这段 JSON 复制到剪贴板', onClick: onCopy, style: S.chipMini }, '复制 JSON')),
+        state.kind === '' ? null : h('div', { style: state.kind === 'ok' ? S.goodText : S.manualHint, 'data-role': 'publish-request-hint', role: 'status' }, state.text),
+        h('pre', { style: S.pre, 'data-role': 'publish-request' }, json),
+        // 只读 textarea 兜底：剪贴板不可用时还能全选复制。
+        h('textarea', { readOnly: true, rows: 8, value: json, 'data-role': 'publish-request-text', 'aria-label': '入队参数 JSON（只读）', style: S.textarea }))
     }
     /** 「发布」模块：草稿集 → 校验 → 入队（去重）→ 任务表跟进。 */
     function PublishBatchView({ connection }) {
@@ -1124,48 +1439,64 @@ window.__ModuleLoader__.load({
       const [generated, setGenerated] = React.useState(null)
       const [filter, setFilter] = React.useState({ state: 'all', kind: 'all' })
       const [tasks, setTasks] = React.useState({ phase: 'loading', items: [] })
+      const [address, setAddress] = React.useState('')
       const enqueue = useWrite(connection)
       const loadTasks = () => callRead(connection, 'tasks.list', taskListParams(filter)).then(reply => setTasks(tasksState(reply)))
       // 任务状态是 daemon 侧异步推进的（排队 → 执行中 → 完成/失败），只拉一次会永远停在入队瞬间，所以按 3 秒轮询。
       React.useEffect(() => { void loadTasks(); const timer = setInterval(() => { void loadTasks() }, POLL_MS); return () => clearInterval(timer) }, [connection, filter.state, filter.kind])
       const results = parseDraftLines(draftText), valid = results.filter(result => result.ok), invalid = results.filter(result => !result.ok)
-      const ready = valid.length >= 2 && invalid.length === 0
-      const blocked = results.length === 0 ? '先粘贴至少 2 条合法草稿' : invalid.length > 0 ? '有 ' + String(invalid.length) + ' 行校验不通过，先修好再生成' : '至少 2 条合法草稿才能生成（现在 ' + String(valid.length) + ' 条）'
+      // 1 条就够：真机验过的路径就是「单件」，别再逼用户凑 2 条（批量只是多行重复同一个流程）。
+      const ready = valid.length >= 1 && invalid.length === 0
+      const blocked = results.length === 0 ? '先粘贴至少 1 条合法草稿' : invalid.length > 0 ? '有 ' + String(invalid.length) + ' 行校验不通过，先修好再生成' : '至少 1 条合法草稿才能生成（现在 ' + String(valid.length) + ' 条）'
       const request = buildPublishBatchArguments(mode, results, accountId)
       const update = setter => value => { setter(value); setGenerated(null) }
       const accounts = snapshot.phase === 'ok' && snapshot.data !== null && Array.isArray(snapshot.data.accounts) ? snapshot.data.accounts : []
+      const accountsMissing = snapshot.phase === 'ok' && snapshot.data !== null && Array.isArray(snapshot.data.missing) && snapshot.data.missing.includes('accounts')
       const accountIds = accounts.map(account => String(account !== null && typeof account === 'object' ? account.accountId ?? '' : '')).filter(id => id !== '')
       const targetAccount = accountId.trim() !== '' ? accountId.trim() : accountIds.length === 1 ? accountIds[0] : ''
-      const inline = valid.filter(result => result.kind === 'inline'), plan = buildPublishItems(inline, targetAccount)
-      const enqueueBlocked = targetAccount === '' ? '先填账号 id（daemon 里有 0 个或多个账号）' : plan.problems.length > 0 ? plan.problems.join('；') : invalid.length > 0 ? '先修好校验不通过的行' : inline.length === 0 ? '至少 1 条内联草稿才能入队' : ''
+      const settings = snapshot.phase === 'ok' && snapshot.data !== null && snapshot.data.settings !== null && typeof snapshot.data.settings === 'object' ? snapshot.data.settings : null
+      // 地址优先用本页输入的，其次用设置里的默认地址：队列任务执行时 daemon 读不到草稿文件，
+      // payload 里没有 address，「必填项预检」必然 VALIDATION（宝贝所在地为空），任务只会 failed。
+      const fallbackAddress = address.trim() !== '' ? address.trim() : typeof settings?.defaultAddress === 'string' ? settings.defaultAddress : ''
+      const defaults = { shipping: typeof settings?.shipping === 'string' ? settings.shipping : undefined, address: fallbackAddress }
+      const inline = valid.filter(result => result.kind === 'inline'), plan = buildPublishItems(inline, targetAccount, defaults)
+      // 模式芯片必须真管事：以前它对按钮毫无影响，点着「dry-run 只填表」再按「校验并入队」
+      // 却直接把任务写进队列——芯片成了装饰，而且是一条静默的写操作捷径。
+      const dryRunMode = mode !== 'enqueue'
+      const enqueueBlocked = dryRunMode ? '模式是 dry-run（只填表、不写队列）：要真入队先把上面的模式切到「enqueue 入队」'
+        : targetAccount === '' ? (accountsMissing ? '这轮没读到账号列表，手动填账号 id（别以为是没账号）' : '先填账号 id（daemon 里有 0 个或多个账号）')
+          : plan.problems.length > 0 ? plan.problems.join('；') : invalid.length > 0 ? '先修好校验不通过的行' : inline.length === 0 ? '至少 1 条内联草稿才能入队' : ''
       const canEnqueue = enqueueBlocked === ''
       const submitEnqueue = () => enqueue.run('batch', 'batch.enqueue', { batchId: 'b-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8), items: plan.items }, { hint: '再点一次「确认入队」：写操作，会进 daemon 队列', busy: '正在入队…', done: value => '已入队 ' + String(value?.batchId ?? '') + ' · ' + String(plan.items.length) + ' 条', after: loadTasks })
       const batch = enqueue.state.result
       const modeButtons = PUBLISH_MODES.map(([value, label, hint]) => h('button', { key: value, type: 'button', 'data-role': 'publish-mode', 'aria-pressed': value === mode, title: hint, onClick: () => update(setMode)(value), style: value === mode ? { ...S.chip, ...S.chipActive } : S.chip }, label))
       const online = snapshot.phase === 'ok' && snapshot.data !== null
+      const statusMissing = snapshot.phase === 'ok' && snapshot.data !== null && Array.isArray(snapshot.data.missing) && snapshot.data.missing.includes('status')
       return h('div', null,
         h('div', { style: S.section, 'data-role': 'publish-backend' },
           h('div', { style: online ? S.small : S.warnText }, snapshot.phase === 'loading' ? '正在连接后台…'
-            : online ? '后台在线 · ' + describeQueue(snapshot.data.status?.queue ?? {}) + ' · 最近批次 ' + describeBatch(snapshot.data.batch)
+            : online ? '后台在线' + (statusMissing ? '（这一轮没读到队列计数）' : ' · ' + describeQueue(snapshot.data.status?.queue ?? {}) + ' · 最近批次 ' + describeBatch(snapshot.data.batch))
               : '后台未连接：入队会失败，去「概览」tab 启动 daemon')),
         h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '流水线'),
           h('div', { style: S.sectionHint }, '草稿 → 校验 → 入队（去重）→ daemon 串行发布，失败进待审 · ' + CATEGORY_MATRIX)),
         h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '草稿集'),
-          h('div', { style: S.sectionHint }, '每行一条：内联 JSON（title / desc / price（分）/ images）或 .json 路径；入队只收内联。'),
-          h('textarea', { value: draftText, rows: 6, 'data-role': 'draft-input', placeholder: '{"title":"...","desc":"...","price":990,"images":["D:/pics/1.jpg"]}', onChange: event => update(setDraftText)(event.target.value), style: { ...S.input, ...S.textarea } })),
+          h('div', { style: S.sectionHint }, '每行一条：内联 JSON（title / desc / priceCents（分，也收 price）/ images）或 .json 路径；入队只收内联。1 条即可入队。'),
+          h('textarea', { value: draftText, rows: 6, 'data-role': 'draft-input', placeholder: '{"title":"...","desc":"...","priceCents":990,"images":["D:/pics/1.jpg"]}', onChange: event => update(setDraftText)(event.target.value), style: { ...S.input, ...S.textarea } })),
         h('div', { style: S.section }, h('div', { style: S.sectionTitle }, '发布前校验'),
           ...results.map(result => h('div', { key: String(result.index), style: S.cmdRow, 'data-role': 'draft-check', 'data-ok': result.ok }, h('span', { style: S.cmdLabel }, '第 ' + String(result.index + 1) + ' 行'), h('span', { style: result.ok ? S.okText : S.badText }, result.message))),
-          h('div', { style: S.sectionHint }, '通过 ' + String(valid.length) + ' · 未通过 ' + String(invalid.length) + '（至少 2 条才能生成）')),
+          h('div', { style: S.sectionHint }, '通过 ' + String(valid.length) + ' · 未通过 ' + String(invalid.length) + '（1 条通过就能生成）')),
         h('div', { style: S.section },
           h('div', { style: S.fieldRow }, h('div', { style: S.field }, h('span', { style: S.fieldLabel }, '模式'), h('div', { style: S.chipRow }, ...modeButtons))),
           h(Field, { label: '账号（可选）', control: h('input', { type: 'text', value: accountId, placeholder: 'daemon 账号 id，默认唯一账号', onChange: event => update(setAccountId)(event.target.value), style: S.input }) }),
+          // 地址不给入口时，入队体只能是「缺 address」，执行器必填项预检必然 VALIDATION —— 用户会以为是自己草稿写错了。
+          h(Field, { label: '宝贝所在地（可选）', control: h('input', { type: 'text', value: address, placeholder: fallbackAddress !== '' && address.trim() === '' ? '默认用设置里的：' + fallbackAddress : '留空则用设置里的默认地址；可用真实地点关键词', onChange: event => setAddress(event.target.value), style: S.input }) }),
           h('div', { style: S.buttonRow },
             h('button', { type: 'button', 'data-role': 'publish-batch-submit', disabled: !ready, title: ready ? '组装 xy_publish_batch 参数 JSON' : blocked, onClick: () => setGenerated(request), style: ready ? S.primary : S.offButton }, '生成批量发布请求'),
-            h('button', { type: 'button', 'data-role': 'batch-enqueue', disabled: !canEnqueue || enqueue.state.busy, title: canEnqueue ? '把内联草稿写进 daemon 队列（写操作，点两次）' : enqueueBlocked, onClick: submitEnqueue, style: canEnqueue && !enqueue.state.busy ? S.primary : S.offButton }, enqueue.state.armed === 'batch' ? '确认入队' : enqueue.state.busy ? '入队中…' : '校验并入队')),
+            h('button', { type: 'button', 'data-role': 'batch-enqueue', disabled: !canEnqueue || enqueue.state.busy, title: canEnqueue ? '把内联草稿写进 daemon 队列（写操作，点两次）' : enqueueBlocked, onClick: submitEnqueue, style: canEnqueue && !enqueue.state.busy ? (enqueue.state.armed === 'batch' ? S.armedButton : S.primary) : S.offButton }, enqueue.state.armed === 'batch' ? '确认入队' : enqueue.state.busy ? '入队中…' : '校验并入队')),
           resultLine(batch, 'batch-result'),
           ...(batch !== null && batch.value !== undefined && Array.isArray(batch.value.tasks) ? batch.value.tasks.map((task, index) => h('div', { key: String(index), style: S.small, 'data-role': 'batch-item' }, '第 ' + String(index + 1) + ' 条 · ' + taskStateLabel(task.state) + (Array.isArray(batch.value.created) && batch.value.created[index] === false ? '（已存在，跳过）' : ''))) : [])),
         h(TasksTable, { connection, board: tasks, filter, onFilter: setFilter, onChanged: loadTasks }),
-        generated === null ? null : h('div', { style: S.preview }, h('div', { style: S.sectionTitle }, 'xy_publish_batch 参数已就绪'), h('pre', { style: S.pre, 'data-role': 'publish-request' }, JSON.stringify(generated, null, 2))))
+        generated === null ? null : h(PublishRequestPreview, { request: generated }))
     }
     /**
      * 片段 10：行内样式表（跟随 DSH 主题变量，不引入样式文件）。
@@ -1220,9 +1551,21 @@ window.__ModuleLoader__.load({
       textarea: { width: '100%', boxSizing: 'border-box', resize: 'vertical', marginTop: '8px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
       okText: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' }, badText: { fontSize: '12px', color: 'var(--dsw-alias-label-danger, #c0392b)' }, goodText: { fontSize: '12px', color: 'var(--dsw-alias-label-success, #1a7f37)' }, warnText: { fontSize: '12px', color: 'var(--dsw-alias-label-warning, #9a6700)' },
       small: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' }, actions: { display: 'flex', gap: '6px', flexWrap: 'wrap' },
+      /** 行内小按钮（复制命令 / 复制 id）：表格里塞 4 个也不撑宽列。 */
+      chipMini: { fontSize: '11px', padding: '2px 8px', borderRadius: '999px', cursor: 'pointer', border: '1px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)' },
+      /** 「上膛」态：虚线边 + 警告色，与普通可用按钮在视觉上拉开距离（点两次才生效的写动作）。 */
+      armedButton: { fontSize: '13px', padding: '6px 14px', borderRadius: '8px', cursor: 'pointer', border: '1px dashed var(--dsw-alias-label-warning, #9a6700)', background: 'var(--dsw-alias-bg-l3)', color: 'var(--dsw-alias-label-warning, #9a6700)', fontWeight: 600 },
+      /** 表格行内的操作按钮：比 S.button 小一号，7 列表格放得下 4 个。 */
+      rowButton: { fontSize: '12px', padding: '4px 8px', borderRadius: '6px', cursor: 'pointer', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-l2)', color: 'var(--dsw-alias-label-primary)' },
+      mono: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
     }
     /** 置灰态：与可用按钮同形，光标与透明度明确「点不动」（S.button 现在表示可用）。 */
     S.offButton = { ...S.button, cursor: 'not-allowed', opacity: 0.55, color: 'var(--dsw-alias-label-secondary)' }
+    /** 行内按钮的两个派生态（禁用 / 上膛），写法同 S.offButton。 */
+    S.rowOffButton = { ...S.rowButton, cursor: 'not-allowed', opacity: 0.5, color: 'var(--dsw-alias-label-secondary)' }
+    S.rowArmedButton = { ...S.rowButton, border: '1px dashed var(--dsw-alias-label-warning, #9a6700)', color: 'var(--dsw-alias-label-warning, #9a6700)', fontWeight: 600 }
+    /** 复制失败时给的手动兜底提示（剪贴板在部分宿主里不可用）。 */
+    S.manualHint = { fontSize: '11px', color: 'var(--dsw-alias-label-warning, #9a6700)', marginTop: '6px' }
     /**
      * 片段 11：「账号」tab（多账号表、登录检测缓存、保活开关）。
      * 拼接顺序由文件名决定；单独打开不是合法模块，见 scripts/build-client.mjs。
@@ -1230,7 +1573,11 @@ window.__ModuleLoader__.load({
     // —— 账号管理：多账号表（切换 / 退出 / 登录态剩余 / 保活）+ 进入即检测（10 分钟内不重复）——
     const VERIFY_TTL_MS = 600_000
     const ACCOUNT_COLUMNS = ['当前', '账号', '状态', '剩余', '检测', '更新', '操作']
-    const ACCOUNT_GRID = '92px minmax(88px, 1fr) 136px 112px 100px 172px 268px'
+    /**
+     * 7 列宽度必须落在内容轴（10-styles 的 S.content.maxWidth = 860px）内，否则表格横向溢出、右侧「操作」被裁。
+     * 固定列合计 710px + 6 个 8px 间距 = 758px，剩下的由「账号」列吃掉；行内按钮换成 S.rowButton 后单列也放得下 4 个。
+     */
+    const ACCOUNT_GRID = '72px minmax(90px, 1fr) 88px 84px 80px 116px 180px'
     const ACCOUNT_CODE_LABELS = { AUTH_EXPIRED: '登录态过期', RISK_CONTROL: '风控拦截', RATE_LIMITED: '被限流', NETWORK: '网络异常', VALIDATION: '参数不合法', INTERNAL: '后台错误' }
     /** 10 分钟缓存：自动检测真调 mtop head（风控敏感），行内「检测」强制刷新。 */
     const verifyCache = new Map()
@@ -1285,7 +1632,16 @@ window.__ModuleLoader__.load({
       const writes = useWrite(connection)
       const [switching, setSwitching] = React.useState('')
       const update = patch => setBoard(previous => ({ ...previous, ...patch }))
+      /** 页级：有写操作在飞（添加账户 / 保活这类整页唯一的入口才用它）。 */
       const busy = writes.state.busy || switching !== ''
+      /**
+       * 行级锁：一次写操作只该锁住它所在的那一行。以前用一个布尔 busy 把整张表 7 列 × N 行的
+       * 按钮全部置灰——多账号时想给另一行点「检测」也被拦，只能干等。
+       */
+      const rowWriting = accountId => writes.state.busyKey === 'import:' + accountId
+        || writes.state.busyKey === 'login:' + accountId
+        || writes.state.busyKey === 'logout:' + accountId
+      const rowLocked = accountId => switching === accountId || rowWriting(accountId)
       /** 只改这一行的状态：检测失败（网络/限流/风控）不降级整页。 */
       const verifyOne = async (accountId, source) => {
         if (verifyInFlight.has(accountId)) return
@@ -1334,7 +1690,8 @@ window.__ModuleLoader__.load({
         return () => { alive = false }
       }, [connection])
       const switchAccount = accountId => {
-        if (busy) return
+        // 只拦「正在切另一个号 / 本行有写在跑」：别的行有写操作时切换当前账号是安全的（读侧设置）。
+        if (switching !== '' || rowWriting(accountId)) return
         setSwitching(accountId)
         void callAction(connection, 'accounts.activate', { accountId }).then(reply => {
           setSwitching('')
@@ -1389,20 +1746,25 @@ window.__ModuleLoader__.load({
           hint: '再点一次「确认保存」写入保活间隔', busy: '正在保存…', done: () => '保活间隔已保存', after: reloadKeep,
         })
       }
-      const actionButton = (role, label, onClick, disabled) => h('button', { key: role, type: 'button', 'data-role': role, disabled, onClick, style: disabled ? S.offButton : S.primary }, label)
-      const rowActions = (accountId, checking) => [
-        actionButton('account-verify', checking ? '检测中…' : '检测', () => void verifyOne(accountId, 'manual'), checking || busy),
-        actionButton('account-import', writes.state.armed === 'import:' + accountId ? '确认导入' : busy ? '导入中…' : '导入', () => runRowWrite('import', accountId), busy),
-        actionButton('account-login', writes.state.armed === 'login:' + accountId ? '确认扫码' : busy ? '等待扫码…' : '扫码', () => runRowWrite('login', accountId), busy),
-        actionButton('account-logout', writes.state.armed === 'logout:' + accountId ? '确认退出登录' : busy ? '退出中…' : '退出', () => runRowWrite('logout', accountId), busy),
-      ]
+      const actionButton = (role, label, onClick, disabled, armed) => h('button', { key: role, type: 'button', 'data-role': role, disabled, onClick, style: disabled ? S.rowOffButton : armed ? S.rowArmedButton : S.rowButton }, label)
+      /** 只锁本行：别的行仍然可以点（以前 busy 是页级布尔，锁整表）。 */
+      const rowActions = (accountId, checking) => {
+        const locked = rowLocked(accountId), running = rowWriting(accountId)
+        const armedFor = kind => writes.state.armed === kind + ':' + accountId
+        return [
+          actionButton('account-verify', checking ? '检测中…' : '检测', () => void verifyOne(accountId, 'manual'), checking || locked),
+          actionButton('account-import', armedFor('import') ? '确认导入' : running && writes.state.busyKey === 'import:' + accountId ? '导入中…' : '导入', () => runRowWrite('import', accountId), locked, armedFor('import')),
+          actionButton('account-login', armedFor('login') ? '确认扫码' : running && writes.state.busyKey === 'login:' + accountId ? '等待扫码…' : '扫码', () => runRowWrite('login', accountId), locked, armedFor('login')),
+          actionButton('account-logout', armedFor('logout') ? '确认退出登录' : running && writes.state.busyKey === 'logout:' + accountId ? '退出中…' : '退出', () => runRowWrite('logout', accountId), locked, armedFor('logout')),
+        ]
+      }
       const rowOf = account => {
         const accountId = String(account.accountId ?? ''), entry = board.verifies[accountId] ?? storedEntry(account), badge = accountBadge(entry)
         const checking = entry !== undefined && entry.phase === 'checking'
         return h('div', { key: accountId, style: gridRow(ACCOUNT_GRID, false), 'data-role': 'account-row', 'data-account-id': accountId },
           h('div', { style: S.actions },
             account.active === true ? h('span', { key: 'active', style: S.goodText, 'data-role': 'account-active' }, '当前') : null,
-            h('button', { key: 'switch', type: 'button', 'data-role': 'account-switch', disabled: busy, title: '把当前账号切到 ' + accountId, onClick: () => switchAccount(accountId), style: busy ? { ...S.chip, ...S.chipOff } : S.chip }, switching === accountId ? '切换中…' : '切换')),
+            h('button', { key: 'switch', type: 'button', 'data-role': 'account-switch', disabled: switching !== '' || rowWriting(accountId), title: '把当前账号切到 ' + accountId, onClick: () => switchAccount(accountId), style: switching !== '' || rowWriting(accountId) ? { ...S.chip, ...S.chipOff } : S.chip }, switching === accountId ? '切换中…' : '切换')),
           h('span', null, accountId),
           h('span', { style: badge[1], 'data-role': 'account-status' }, badge[0]),
           h('span', { style: S.small, 'data-role': 'account-lifetime' }, formatLifetime(account.loginExpiresAt, account.loginExpiresSource)),
@@ -1412,7 +1774,7 @@ window.__ModuleLoader__.load({
             h('span', { style: S.small, 'data-role': 'account-fields' }, ' · ' + String(account.savedFieldCount ?? '?') + ' 项')),
           h('div', { style: S.actions }, ...rowActions(accountId, checking)))
       }
-      const addButton = (role, kind, label) => actionButton(role, writes.state.armed === 'add:' + kind ? (kind === 'import' ? '确认导入' : '确认扫码') : label, () => runAdd(kind), busy)
+      const addButton = (role, kind, label) => actionButton(role, writes.state.armed === 'add:' + kind ? (kind === 'import' ? '确认导入' : '确认扫码') : label, () => runAdd(kind), busy, writes.state.armed === 'add:' + kind)
       const addSection = h('div', { style: S.section, 'data-role': 'account-add' },
         h('div', { style: S.sectionTitle }, '添加账户'),
         h('div', { style: S.fieldRow },
@@ -1429,9 +1791,9 @@ window.__ModuleLoader__.load({
       const keepaliveSection = h('div', { style: S.section, 'data-role': 'account-keepalive' },
         h('div', { style: S.sectionTitle }, '登录保活'),
         h('div', { style: S.fieldRow },
-          h('div', { style: { ...S.buttonRow, marginTop: '0', alignSelf: 'flex-end' } }, actionButton('keepalive-toggle', keepButtonLabel, toggleKeepAlive, !keepValid || busy)),
+          h('div', { style: { ...S.buttonRow, marginTop: '0', alignSelf: 'flex-end' } }, actionButton('keepalive-toggle', keepButtonLabel, toggleKeepAlive, !keepValid || busy, writes.state.armed === 'keepalive-toggle')),
           h(Field, { label: '间隔（秒）', control: h('input', { type: 'number', min: 60, max: 3600, value: keep.seconds, 'data-role': 'keepalive-interval', onChange: event => update({ keep: { ...keep, seconds: event.target.value } }), style: S.input }) }),
-          h('div', { style: { ...S.buttonRow, marginTop: '0', alignSelf: 'flex-end' } }, actionButton('keepalive-save', writes.state.armed === 'keepalive-interval' ? '确认保存' : busy ? '保存中…' : '保存间隔', saveKeepInterval, !keepValid || busy))),
+          h('div', { style: { ...S.buttonRow, marginTop: '0', alignSelf: 'flex-end' } }, actionButton('keepalive-save', writes.state.armed === 'keepalive-interval' ? '确认保存' : busy ? '保存中…' : '保存间隔', saveKeepInterval, !keepValid || busy, writes.state.armed === 'keepalive-interval'))),
         h('div', { style: { ...S.small, marginTop: '10px' }, 'data-role': 'keepalive-state' }, keep.enabled ? '已开启：每 ' + keep.seconds + ' 秒校验登录态' : '未开启'))
       const emptyRow = h('div', { style: gridRow(ACCOUNT_GRID, false), 'data-role': 'account-empty' }, h('span', { style: { ...S.small, gridColumn: 'span 7' } }, '还没有导入账号'))
       return h('div', { style: S.section },
@@ -1444,6 +1806,82 @@ window.__ModuleLoader__.load({
           h('div', { style: gridRow(ACCOUNT_GRID, true) }, ...ACCOUNT_COLUMNS.map(label => h('span', { key: label }, label))),
           ...board.accounts.map(rowOf), board.phase === 'ok' && board.accounts.length === 0 ? emptyRow : null),
         resultLine(board.result ?? writes.state.result, 'account-result'))
+    }
+    /**
+     * 片段 11b：宿主设置页「BigFish 是否启用」卡片（settings.plugin.item，key=bigfish-ops）。
+     * 拼接顺序由文件名决定；单独打开不是合法模块，见 scripts/build-client.mjs。
+     *
+     * 为什么走宿主设置页而不是侧边栏：用户 2026-11-05 拍板「宿主设置页插件卡片」。
+     * host 侧（src/settings-host.js）注册同名命名空间 bigfish-ops，client 侧按同 key 注册卡片，
+     * 两者交集才显示（DSH ui-settings-plugins 的约束）。settingsScope 是可选服务：旧宿主 / CLI /
+     * 测试替身没有它时整段跳过，不影响侧边栏面板。决策见 docs/adr/0007。
+     */
+    /** 与 host 的 SETTINGS_NAMESPACE 逐字一致；client 物理隔离拿不到 host 常量，只能复制一份。 */
+    const SETTINGS_NS = 'bigfish-ops'
+
+    /** 守卫式读 settingsScope 服务：缺失返回 null，绝不因设置页把侧边栏拖垮。 */
+    function readSettingsScope(ctx) {
+      try {
+        const service = ctx === null || ctx === undefined ? undefined : ctx.settingsScope
+        if (service === null || service === undefined || typeof service.bind !== 'function') return null
+        return service
+      } catch { return null }
+    }
+
+    /** 取一次快照；坏值按「未就绪」处理，不假装知道开关状态。 */
+    function settingsSnapshot(scope) {
+      try {
+        const snapshot = scope.getSnapshot()
+        return snapshot !== null && typeof snapshot === 'object' ? snapshot : {}
+      } catch { return {} }
+    }
+
+    /** 当前是否启用：value.enabled 明确是 false 才算关，其余（含缺失）按装配层默认开。 */
+    function settingsEnabled(snapshot) {
+      const value = snapshot.value
+      return !(value !== null && typeof value === 'object' && value.enabled === false)
+    }
+
+    /**
+     * 设置卡片：一个布尔开关，点一下就通过 settingsScope.mutate 写回 ~/.dsh/settings.yaml。
+     * 订阅 scope 变化刷新显示；未 ready / 不可写时禁用按钮并说明原因（不静默）。
+     */
+    function BigFishSettingsCard(props) {
+      const scope = props.scope
+      const [snapshot, setSnapshot] = React.useState(settingsSnapshot(scope))
+      const [busy, setBusy] = React.useState(false)
+      const [error, setError] = React.useState('')
+      React.useEffect(() => {
+        if (typeof scope.subscribe !== 'function') return undefined
+        return scope.subscribe(() => setSnapshot(settingsSnapshot(scope)))
+      }, [scope])
+      const enabled = settingsEnabled(snapshot)
+      const ready = snapshot.status === 'ready'
+      const writable = ready && snapshot.writable === true
+      const toggle = () => {
+        if (busy || !writable || typeof scope.mutate !== 'function') return
+        const next = !enabled
+        const revision = snapshot.revision
+        setBusy(true)
+        setError('')
+        Promise.resolve()
+          .then(() => scope.mutate([{ op: 'set', path: ['enabled'], value: next }], revision))
+          .then(() => { setBusy(false); setSnapshot(settingsSnapshot(scope)) })
+          .catch((failure) => { setBusy(false); setError(failure instanceof Error ? failure.message : String(failure)) })
+      }
+      return h('li', { 'data-role': 'bigfish-settings-card' },
+        h('div', { style: { fontWeight: 600 } }, 'BigFish 闲鱼运营'),
+        h('p', { style: { margin: '4px 0', opacity: 0.75 } },
+          '关闭后本插件不再注册任何 xy_* 工具与写操作审批门禁，也不再占用每轮会话的工具定义 token；后台 daemon 桥接不受影响。'),
+        h('button', {
+          type: 'button',
+          'data-role': 'bigfish-enabled-toggle',
+          disabled: busy || !writable,
+          onClick: toggle,
+        }, busy ? '保存中…' : (enabled ? '已启用 · 点击停用' : '已停用 · 点击启用')),
+        !writable ? h('p', { style: { opacity: 0.7 } }, '设置服务未就绪或不可写，暂时无法切换。') : null,
+        error === '' ? null : h('p', { style: { opacity: 0.85 } }, '保存失败：' + error),
+      )
     }
     /**
      * 片段 12：连接句柄与 apply（只注册侧边栏栏位 + 主面板）。
@@ -1459,6 +1897,24 @@ window.__ModuleLoader__.load({
         name: 'sidebar.panellist', id: 'bigfish', order: 30, label: 'BigFish 闲鱼运营',
       }, BigFishIcon))
       ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: 'bigfish' }, BigFishPanel))
+      // 宿主设置页卡片走 fiber inject 等可选的 settingsScope 服务（与 dshmarket 同款）。
+      // 守卫：旧宿主 / CLI / 测试替身没有 ctx.inject 时整段跳过，绝不把侧边栏面板拖垮，
+      // 也让 client-bundle.test 的「只注册 sidebar.panellist + main」断言继续成立。
+      if (typeof ctx.inject === 'function') {
+        try {
+          ctx.inject(['settingsScope'], (scoped) => {
+            const service = readSettingsScope(scoped)
+            if (service === null || scoped.slots === undefined) return
+            const scope = service.bind({ namespace: SETTINGS_NS })
+            scoped.slots.inject('settings.plugin.item', () => scoped.slots.register({
+              name: 'settings.plugin.item', key: SETTINGS_NS,
+            }, () => h(BigFishSettingsCard, { scope })))
+          })
+        } catch (error) {
+          // 设置页是可选增强：任何异常都只让卡片缺席，不波及侧边栏主面板；但要留痕，不静默吞。
+          console.warn('bigfish: 设置卡片注册失败（侧边栏不受影响）', error instanceof Error ? error.message : String(error))
+        }
+      }
     }
     return { apply, inject: ['slots', 'connection'] }
   },

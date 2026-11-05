@@ -62,6 +62,22 @@ test('loadPublishDraft：读文件失败与 JSON 坏都收敛成 VALIDATION', as
   assert.equal(draft.priceCents, 1990)
 })
 
+test('相对路径读不到草稿时，错误文案要点明「改绝对路径」', async () => {
+  const failing = async () => { throw new Error('ENOENT') }
+  // 相对路径：最常见的失败原因，必须直接说出来，否则会反复确认文件明明存在。
+  await assert.rejects(
+    loadPublishDraft('.scratch/draft.json', failing),
+    (error) => /相对路径/.test(error.message) && /绝对路径/.test(error.message),
+  )
+  // 绝对路径（POSIX / Windows 两种）保持原来的读权限提示，不能误报成路径形态问题。
+  for (const absolute of ['/tmp/draft.json', 'D:\\big fish\\draft.json']) {
+    await assert.rejects(
+      loadPublishDraft(absolute, failing),
+      (error) => /读权限/.test(error.message) && !/相对路径/.test(error.message),
+    )
+  }
+})
+
 test('category 可选：类型不对报 VALIDATION，参与幂等键', () => {
   const withCategory = validatePublishDraft({ ...valid, category: '电子资料' })
   assert.equal(withCategory.category, '电子资料')
@@ -81,9 +97,19 @@ test('幂等键：同样内容同键，改价格换键，形态固定', () => {
   assert.notEqual(first, changed)
 })
 
+test('幂等键带账号：换账号换键（daemon 的 dedupe_key 是全局唯一，混账号会静默丢单）', () => {
+  const draft = validatePublishDraft(valid)
+  const alice = draftDedupeKey(draft, 'acc-alice')
+  const bob = draftDedupeKey(draft, 'acc-bob')
+  assert.notEqual(alice, bob, '同一个草稿在两个账号上是两个不同的发布目标')
+  assert.equal(alice, draftDedupeKey(draft, 'acc-alice'), '同账号同内容必须稳定，重放才能幂等')
+  // 不给账号时按 null 参与哈希：保持与旧键同形的兼容路径。
+  assert.match(draftDedupeKey(draft), /^publish:[0-9a-f]{8}$/)
+})
+
 test('buildPublishCommand：dry-run 不带 --submit，含空格路径加引号', () => {
   const dryRun = buildPublishCommand({ draftPath: 'C:\\tmp\\draft.json' })
-  assert.equal(dryRun, 'npm run daemon:publish -- --draft C:\\tmp\\draft.json')
+  assert.equal(dryRun, 'pnpm daemon:publish -- --draft C:\\tmp\\draft.json')
   assert.equal(dryRun.includes('--submit'), false)
 
   const full = buildPublishCommand({

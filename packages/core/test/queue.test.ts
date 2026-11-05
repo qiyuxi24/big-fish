@@ -246,7 +246,8 @@ test('租约归属不符或非 leased → VALIDATION', (t) => {
   expectCode('VALIDATION', () => queue.ack(task.id, 'daemon-b'))
   expectCode('VALIDATION', () => queue.fail(task.id, 'daemon-b', 'boom'))
   expectCode('VALIDATION', () => queue.release(task.id, 'daemon-b'))
-  expectCode('VALIDATION', () => queue.ack('missing-id', OWNER))
+  // 不存在的 id ≠ 租约不对：前者是 NOT_FOUND（让调用方去列表拿真实 id），后者是 VALIDATION。
+  expectCode('NOT_FOUND', () => queue.ack('missing-id', OWNER))
   queue.ack(task.id, OWNER)
   expectCode('VALIDATION', () => queue.ack(task.id, OWNER))
 })

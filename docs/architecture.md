@@ -34,7 +34,7 @@
 | --- | --- | --- | --- |
 | `packages/core` | TS | 无 | 领域类型与契约、错误、ret 风控分类、队列/存储、商品仓储、发布前策略校验、限流熔断、凭据、配置、脱敏日志 |
 | `packages/daemon` | TS | core、channel-mtop、channel-cdp | HTTP 控制面 + CLI + 运行时装配 + worker + 执行器 + DaemonClient |
-| `packages/plugin-ops` | JS(ESM) | 无（含自带 HTTP client） | 14 个 `xy_*` 工具 + 写操作审批门禁 + 侧边栏面板（面板内 6 个模块 tab：自动发布 / 账号 / 文案 / 采集 / 概览 / 诊断） |
+| `packages/plugin-ops` | JS(ESM) | 无（含自带 HTTP client） | 15 个 `xy_*` 工具 + 写操作审批门禁 + 侧边栏面板（面板内 6 个模块 tab：概览 / 账号 / 采集 / 文案 / 发布 / 商品） |
 | `packages/ops-bundle` | JS | plugin-ops | 只声明 `dsh.bundle.patch`，把插件塞进 profile |
 | `packages/channel-mtop` | TS | core | mtop 通道：签名、信封、cookie 归一、ret 分类、读接口与发布接口的 data 构造（**纯函数，无状态**） |
 | `packages/channel-cdp` | TS | core | CDP 会话：启动/attach 真 Chrome、页面操作、拦截 XHR JSON、发布步骤状态机、cookie 读取与登录态校验 |
@@ -78,7 +78,7 @@ openStore({path: config.dbPath})
 - 单轮 `tick()` 按 `concurrency`（默认 1）领租约；**同一 `payload.accountId` 串行**，冲突任务立即 `release` 并记 `skipped`。
 - `stop()` 幂等：停止领取，并 abort 在飞任务的 `AbortSignal`；被 abort 的任务 `release` 而不是 `fail`。
 - 日志一任务一行：`taskId/kind/state/durationMs`。
-- 错误分类：不可重试集合 = `VALIDATION | AUTH_EXPIRED | UNSUPPORTED | INTERNAL | UNAUTHORIZED | UNKNOWN`；`RISK_CONTROL` 额外 `circuits.trip(accountId, message)` 并把 `retryAfterMs` 传回队列。
+- 错误分类：不可重试集合 = `VALIDATION | AUTH_EXPIRED | UNSUPPORTED | INTERNAL | UNAUTHORIZED | UNKNOWN`（`packages/daemon/src/worker.ts` 的 `NON_RETRYABLE_CODES`）；`RISK_CONTROL` 额外 `circuits.trip(accountId, message)` 并把 `retryAfterMs` 传回队列。（`NOT_FOUND`/`METHOD_NOT_ALLOWED` 只在 HTTP 层产出，不会进队列，所以不在此表里。）
 - 没有租约续约：超过 `leaseTtlMs`（默认 60s）的长任务可能被第二个 worker 重复领取，**执行器必须幂等**（发布用 `uniqueCode` 防重，见 AGENTS §1）。
 
 ## 6. 执行器能力矩阵（`packages/daemon/src/executors.ts`）
@@ -100,7 +100,7 @@ openStore({path: config.dbPath})
 - 路线决策见 [ADR 0003](adr/0003-publish-automation-path.md)：确定性 CDP 步骤机是唯一写路径，LLM 不进热路径（只做校准、异常归因、人工兜底）；mtop 发布接口保留为将来加速通道；DSH 内置浏览器（bsk）只作兜底演示。
 - 步骤机在 `packages/channel-cdp/src/publish.ts`：打开发布页 → 上传图片（`DOM.setFileInputFiles`，等价用户选文件）→ 文案（contenteditable 富文本走 `Input.insertText`，普通 input 走原生 setter + `input` 事件）→ [选择分类（草稿给 `category` 时才跑）] → 计价方式 → 价格/包邮 → 地址（真实键入触发联想，按候选匹配点选并回读表单）→ 必填项预检（分类/所在地非空）→ 提交并验证（URL 含 item id 或页面出现「发布成功」，超时按失败处理且**不自动重试**）。dry-run 在提交前收尾。
 - 装配在 `packages/daemon/src/cdp-publish.ts`：先读浏览器 `unb` 与期望账号比对（防发错号）→ 开空白页跑步骤机 → 返回 `{accountId,dryRun,itemId?,href,durationMs}`。
-- 安全默认：`submit=false` 只填表不点提交；CLI `npm run daemon:publish -- --draft <草稿.json> [--account-id X] [--chrome-port 9222] [--screenshots dir] [--submit]`，daemon 队列发布要 `BF_PUBLISH_SUBMIT=1`（另支持 `BF_CHROME_PORT`、`BF_PUBLISH_SCREENSHOTS`，截图默认 `<data-dir>/publish-shots`）。
+- 安全默认：`submit=false` 只填表不点提交；CLI `pnpm daemon:publish -- --draft <草稿.json> [--account-id X] [--chrome-port 9222] [--screenshots dir] [--submit]`，daemon 队列发布要 `BF_PUBLISH_SUBMIT=1`（另支持 `BF_CHROME_PORT`、`BF_PUBLISH_SCREENSHOTS`，截图默认 `<data-dir>/publish-shots`）。
 - IM 长连（P2.1）默认**不连**：`BF_IM=1` 才起 wss（mtop 取 accessToken → `/reg` → 1s 后 ackDiff → 15s 心跳；下行先 ACK 再落库；`sendReply` 走 `/r/MessageSend/sendByReceiverScope`）。实现入口 `packages/daemon/src/im-runtime.ts`，已知缺口见 [STATUS.md](STATUS.md) §4.2。
 - 选择器与填写方式已在真机（Edge 155 + CDP 9222，用户大号 `2206569289277`）校准；选择器表、填写原理、**地址搜索限制**、**类目支持矩阵**与**真发布记录**见 §13。2026-10-21 起已用该账号完成端到端真发布（首次 itemId `1093817229436`），见 §13.5。**注意：这个账号不是测试小号**（AGENTS §5），真发必须一次一件、用户点头。
 
@@ -109,7 +109,7 @@ openStore({path: config.dbPath})
 - 传输：`http://127.0.0.1:<port>`，默认 47001；只允许回环地址（`127.0.0.1` / `localhost` / `::1`）。
 - 鉴权：除 `GET /health` 外全部要求 `Authorization: Bearer <token>`；token 文件默认 `<dataDir>/daemon.token`，不存在则生成 32 字节 hex、权限 0600；比较用 `timingSafeEqual`。鉴权先于路由匹配。
 - 信封：成功 `{ok:true,data}`；失败 `{ok:false,error:{code,message,retryable,details?}}`。**业务错误不借用 HTTP 状态码**（只有 400/401/404/405/409/413 这类协议层状态）。
-- 错误码：`AUTH_EXPIRED | RISK_CONTROL | RATE_LIMITED | VALIDATION | NETWORK | BUS_STATE | UNAUTHORIZED | NOT_FOUND | CONFLICT | INTERNAL | UNSUPPORTED`（`packages/core/src/errors.ts`）。
+- 错误码（唯一事实源是 `packages/core/src/errors.ts` 的 `ERROR_CODES`）：`VALIDATION | AUTH_EXPIRED | RISK_CONTROL | RATE_LIMITED | CIRCUIT_OPEN | NETWORK | STORAGE | UNSUPPORTED | INTERNAL | UNAUTHORIZED | NOT_FOUND | METHOD_NOT_ALLOWED | UNKNOWN`。其中 `NOT_FOUND`/`METHOD_NOT_ALLOWED` 只由 HTTP 层产出（404/405），业务代码不要自己造；`BUS_STATE`、`CONFLICT` 是早期设计稿里的名字，**已废弃，代码里不存在**。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -153,7 +153,7 @@ queued ──lease──► leased ──ack──► done
 
 不变量：`dedupeKey` 唯一；`ack/fail/release` 必须传 owner 且与租约持有者一致；`needs_review` 只能人工处理，不自动重试；失败不退还限流预算。
 
-## 9. 工具清单（14 个）
+## 9. 工具清单（15 个）
 
 | 工具 | 参数 | 用途 |
 | --- | --- | --- |
@@ -171,6 +171,7 @@ queued ──lease──► leased ──ack──► done
 | `xy_publish_batch` | `drafts?, draftPaths?, accountId?(enqueue 必填), mode?(dry-run/enqueue), maxItems?(1..20)` | 批量发布：逐条校验 + 内容哈希幂等 + 批内去重，dry-run 出计划 / enqueue 逐条入队（**写类**，仅 enqueue 需审批；单条非法不拖垮整批，`NETWORK/UNAUTHORIZED` 中止剩余条目） |
 | `xy_copy_plan` | `styleId?(5 档), productName, condition, priceYuan\|priceCents, shipping?, categoryHint?, specs?, flaws?, accessories?, imagePaths?, variantCount?, usedAiImages?` | 按语言风格把事实注入成文案生成提示词（**只读**：不调模型、不写文件、不碰 daemon） |
 | `xy_reference_collect` | `accountId, itemIds?(≤20) \| sellerId?` | 参考分析只读统计（价格带 / 标题长度 / 类目分布 / 高频卖点词 / 图片数 / 商家量级）；不下载图片、不产出草稿（**只读**，不挂门禁，超时 100s） |
+| `xy_market_brief` | `categoryId?, sellerId?, condition?, limit?(≤500, 默认 200)` | 市场简报：把已入库的他人商品快照聚合价格带（p25/p50/p75）、成色建议价、标题/描述结构、主图规格与高频词（**只读**：不触达闲鱼、不下载图片、不含他人原句，不挂门禁） |
 
 所有工具输出统一为 `{ text }` 对象（`additionalProperties:false`），文本里带 emoji 状态前缀；`DaemonError` 转成 `❌ [CODE] message`，不抛给模型当异常。
 
@@ -195,8 +196,8 @@ queued ──lease──► leased ──ack──► done
 - **publish 真提交跑通过 3 次、都是单件（用户大号 `2206569289277`，均已下架）**：步骤机与 daemon 通道都在（§6.1），2026-10-21 首次成功（§13.5，`1093817229436`），随后 itemId `1091938715735` 在分类选择修复后又跑通一次（CLI 直发）；另有一次走队列路径（`POST /tasks` → worker → `1091940243200`）。3 次都只验证了「学习笔记」这一条类目路径，真提交需 `--submit` / `BF_PUBLISH_SUBMIT=1` 且必须由用户点头。**别把「单件跑通」当成「可以批量发」。**
 - **发布页地址搜索在 CDP 下不可用**：联想请求能发出、响应正常，但候选列表 UI 不回显，只能从「常用地址/附近地址」里匹配（§13.3）。类目：页面 AI 自动识别，草稿可用 `category` 覆盖；**网页端只支持部分类目**，不支持时立即失败（§13.5）。
 - **发货未实现、IM 已接线（P2.1）**：`deliver` 仍是 `UNSUPPORTED`；`reply` 已接 IM 长连（`packages/daemon/src/im-runtime.ts` + `im-client.ts` / `im-transport.ts` / `im-token.ts`，消息落 `im_messages`），**`BF_IM=1` 才连、默认关**；真机未验收，缺口（重连不按 pts 补拉历史、无收包静默判死、只文本消息、单账号无代理）见 [STATUS.md](STATUS.md) §4.2；协议与规则见 [im-protocol.md](im-protocol.md)、[delivery-rules.md](delivery-rules.md)。
-- **登录态导入与扫码登录均已实现**：导入走 `npm run daemon:import-account`（或 `POST /accounts/import`、插件 `xy_import_account`），从带 `--remote-debugging-port=9222` 的浏览器读 cookie；扫码走 `npm run daemon:login` / `POST /accounts/login`，轮询到 `unb` + `_m_h5_tk` 齐备才算成功（默认超时 180s）。两者都写 `CredentialStore`（AES-256-GCM），accountId 默认取 cookie 里的 `unb`。
-- **侧边栏面板内的模块 tab（2026-10-21 纠正）**：插件只注册 `sidebar.panellist` + `main` 两个插槽；主面板内部用 `PANEL_TABS` 切 6 个分区——自动发布（默认）/ 账号 / 文案 / 采集 / 概览 / 诊断（见 `plugin-ops/client.js` 的 `PANEL_TABS` 与 `PanelBody` 分发）。**不注册会话顶部 tab**（`conversation.view` 与「点侧边栏进面板」互斥，试过后已移除）。面板不读凭据、不调模型，需要执行的动作交给 agent 调工具或 daemon；但**状态是真实数据**：走 host rpc 通道 `/bigfish`（ADR 0004）每 3 秒轮询 `health`/`status`/`accounts`/`settings.get`/`tasks.list`/`batches.get` 六个只读端点（任一失败整块降级成「未连接后台」），另有 `events.list` 独立驱动「工作流树」：把 `task.state`/`task.step` 事件聚合成「批次 → 任务 → 步骤」，直接回答「现在在干嘛」（3 秒增量拉取，`since` 游标，失败只降级这一块）。DSH 宿主没有「面板按钮调 host 工具」的公开 API，但 rpc 桥可以直接调 daemon 只读端点：**账号 tab 已是动态表格**（账号 / 登录状态 / 最近检测 / 凭据更新 / 字段数 / 操作），进 tab 自动跑一次 `accounts.verify`（模块级 60s 缓存，手动「检测」无视缓存），失败只落该行徽标不降级整页；「重新导入」「扫码登录」是写类，点两次才发 `confirm:true`（第一次只上膛改文案）。发布批量 tab 仍只产出参数 JSON（执行交给 agent 调 `xy_publish_batch`），顶部「操作入口」两个按钮仍 disabled。⚠️ 该通道直连在 DSH 0.1.5-rc.2 上**注册必失败**（宿主 `connection` 插件用自己 ctx 注册 `webServer`，`rpc-host.ts:80`/`:178-181`，inject 只有 `['credentials']`）；插件已自动回退到自建 `webServer` 兼容路由（`plugin-ops/src/host-route.js`，信封/状态码与宿主一致、鉴权 fail-closed），宿主修好后自动优先走官方通道。详见 [adr/0004-client-host-rpc.md](adr/0004-client-host-rpc.md) §已知阻塞。另有**异常唤醒**（2026-10-23）：插件侧 `setTimeout` 链每 10s 增量拉 `events.list`（启动先翻页定基线，不把历史失败当新告警），命中 `task.state` 的 `failed`/`needs_review` 时按事件 id 去重、多条合并成一条中文 notice，用宿主公开扩展点 `agent.followup()` 注入最近创建的顶层会话；不调 LLM、不写外部系统，配置 `enableAlerts` 可关，无 agent 时不 arm（`plugin-ops/src/alerts.js` + `src/alert-watch.js`）。
+- **登录态导入与扫码登录均已实现**：导入走 `pnpm daemon:import-account`（或 `POST /accounts/import`、插件 `xy_import_account`），从带 `--remote-debugging-port=9222` 的浏览器读 cookie；扫码走 `pnpm daemon:login` / `POST /accounts/login`，轮询到 `unb` + `_m_h5_tk` 齐备才算成功（默认超时 180s）。两者都写 `CredentialStore`（AES-256-GCM），accountId 默认取 cookie 里的 `unb`。
+- **侧边栏面板内的模块 tab（2026-10-21 纠正）**：插件只注册 `sidebar.panellist` + `main` 两个插槽；主面板内部用 `PANEL_TABS` 切 6 个分区——概览（默认）/ 账号 / 采集 / 文案 / 发布 / 商品（见 `plugin-ops/client.js` 的 `PANEL_TABS` 与 `PanelBody` 分发）。**不注册会话顶部 tab**（`conversation.view` 与「点侧边栏进面板」互斥，试过后已移除）。面板不读凭据、不调模型，需要执行的动作交给 agent 调工具或 daemon；但**状态是真实数据**：走 host rpc 通道 `/bigfish`（ADR 0004）每 3 秒轮询 `health`/`status`/`accounts`/`settings.get`/`tasks.list`/`batches.get` 六个只读端点（**只有 `health` 失败才整块判「未连接后台」**，其余端点各自降级并在界面列出「这一轮有 N 项没拉到」），另有 `events.list` 独立驱动「工作流树」：把 `task.state`/`task.step` 事件聚合成「批次 → 任务 → 步骤」，直接回答「现在在干嘛」（3 秒增量拉取，`since` 游标，失败只降级这一块）。DSH 宿主没有「面板按钮调 host 工具」的公开 API，但 rpc 桥可以直接调 daemon 只读端点：**账号 tab 已是动态表格**（账号 / 登录状态 / 最近检测 / 凭据更新 / 字段数 / 操作），进 tab 自动跑一次 `accounts.verify`（模块级 60s 缓存，手动「检测」无视缓存），失败只落该行徽标不降级整页；「重新导入」「扫码登录」是写类，点两次才发 `confirm:true`（第一次只上膛；上膛态 5 秒自动过期）。发布批量 tab 仍只产出参数 JSON（执行交给 agent 调 `xy_publish_batch`），顶部「操作入口」两个按钮仍 disabled。⚠️ 该通道直连在 DSH 0.1.5-rc.2 上**注册必失败**（宿主 `connection` 插件用自己 ctx 注册 `webServer`，`rpc-host.ts:80`/`:178-181`，inject 只有 `['credentials']`）；插件已自动回退到自建 `webServer` 兼容路由（`plugin-ops/src/host-route.js`，信封/状态码与宿主一致、鉴权 fail-closed），宿主修好后自动优先走官方通道。详见 [adr/0004-client-host-rpc.md](adr/0004-client-host-rpc.md) §已知阻塞。另有**异常唤醒**（2026-10-23）：插件侧 `setTimeout` 链每 10s 增量拉 `events.list`（启动先翻页定基线，不把历史失败当新告警），命中 `task.state` 的 `failed`/`needs_review` 时按事件 id 去重、多条合并成一条中文 notice，用宿主公开扩展点 `agent.followup()` 注入最近创建的顶层会话；不调 LLM、不写外部系统，配置 `enableAlerts` 可关，无 agent 时不 arm（`plugin-ops/src/alerts.js` + `src/alert-watch.js`）。
 - **没有打包**：Electron/headless 分发形态待用户决策。
 - **没有真实联调**：所有测试都不发真实网络（AGENTS §5），首次真机验证需小号。
 
@@ -204,16 +205,16 @@ queued ──lease──► leased ──ack──► done
 
 | 层 | 数量 | 说明 |
 | --- | --- | --- |
-| 全仓 | 956 tests / 956 pass（40 suites / 88 个测试文件） | `node scripts/test-all.mjs`，约 18s |
-| core | 171 | 队列（含 batchId/批次统计/requeue）、仓储、策略、限流熔断与账号级 pacing、凭据、脱敏、配置、settings 存储、发货规则引擎（P2）、参考分析统计 |
-| daemon | 235 | HTTP、CLI、客户端、执行器、worker、路由、账号导入/扫码登录/登录态校验（`account-verify.ts`）、settings 与批次统计路由、CDP 发布通道（含 5 条 `runtime.test.ts` 全链路集成：真 HTTP + 真 SQLite + 假 mtop transport）、发布 dry-run 开关、参考采集、失败重排 |
-| channel-mtop / channel-cdp / channel-guanjia / channel-im | 95 / 102 / 62 / 32 | 纯函数、假连接与假页面（channel-mtop 含参考解析；channel-cdp 含富文本/地址/预检假页面回放与发布侧风控探测；channel-im 帧解析/会话状态机，未接 daemon） |
-| plugin-ops | 226 | 插件契约、工具注册中间件（specs 校验/重名/门禁等价性）、草稿校验、批量入队与 pacing、host rpc 桥（16 端点）、异常唤醒（去重/合并/基线/降级）、client bundle（6 个模块 tab、账号表自动检测 + 两次确认导入/扫码、rpc 轮询降级、工作流树增量轮询） |
-| scripts | 31 | daemon 常驻服务（参数/状态机/日志尾）16 + 发布真机验收脚本（参数/草稿/批次判定/PNG 生成）15 |
-| integration | 2 | 插件 client ↔ 真 daemon 的跨层端到端 |
+| 全仓 | 1283 tests / 1283 pass（69 suites / 115 个测试文件） | `node scripts/test-all.mjs`，约 25s |
+| core | 197 | 队列（含 batchId/批次统计/requeue）、仓储、策略、限流熔断与账号级 pacing、凭据、脱敏、配置、settings 存储、发货规则引擎（P2）、参考分析统计 |
+| daemon | 397 | HTTP、CLI、客户端、执行器、worker、路由、账号导入/扫码登录/登录态校验（`account-verify.ts`）、settings 与批次统计路由、CDP 发布通道（含 5 条 `runtime.test.ts` 全链路集成：真 HTTP + 真 SQLite + 假 mtop transport）、发布 dry-run 开关、参考采集、失败重排、**入队期载荷校验** |
+| channel-mtop / channel-cdp / channel-guanjia / channel-im | 110 / 108 / 62 / 50 | 纯函数、假连接与假页面（channel-mtop 含参考解析；channel-cdp 含富文本/地址/预检假页面回放与发布侧风控探测；channel-im 帧解析/会话状态机/下行 MessagePack，已接 daemon） |
+| plugin-ops | 298 | 插件契约、工具注册中间件（specs 校验/重名/门禁等价性）、草稿校验、批量入队与 pacing、host rpc 桥（19 端点）、异常唤醒（去重/合并/基线/降级）、client bundle（6 个模块 tab、账号表自动检测 + 两次确认导入/扫码、rpc 轮询按端点降级、工作流树增量轮询） |
+| scripts | 58 | daemon 常驻服务（参数/状态机/日志尾/pid 与日志轮转）+ 发布真机验收脚本（参数/草稿/批次判定/PNG 生成）+ `pnpm doctor` 诊断（参数/快照判定/报告渲染） |
+| integration | 3 | 插件 client ↔ 真 daemon 的跨层端到端 |
 | 类型检查 | 6 个 TS 包 0 错误 | 借 DSH checkout 的 `tsc --noEmit`；`plugin-ops` / `ops-bundle` 是纯 ESM JS（无 tsconfig，靠 JSDoc + 单测），**不在类型检查覆盖内** |
 
-> 口径：`node:test` 的 `suites 40` 与 88 个测试文件不矛盾（一个文件可含多个 suite）；`ops-bundle` 只声明 bundle patch，无测试。**真实能力边界比测试数重要**：失败重排、发布侧风控识别、账号级 pacing 目前都只有单测（未真机验证）；采集只有单件真机 200。
+> 口径：`node:test` 的 `suites 69` 与 115 个测试文件不矛盾（一个文件可含多个 suite）；`ops-bundle` 只声明 bundle patch，无测试。**真实能力边界比测试数重要**：失败重排、发布侧风控识别、账号级 pacing 目前都只有单测（未真机验证）；采集只有单件真机 200。
 
 集成测试覆盖的关键链路：入队 → worker 领租约 → 解凭据 → 假 mtop → `items.upsert` → ack → `/items` 与 `/status.worker` 可查；无凭据时**不调用通道**且直接 `failed`；`publish` 因 `UNSUPPORTED` 进 `failed`；`dedupeKey` 不产生第二个任务；close 后端口不可达。
 
@@ -253,7 +254,7 @@ queued ──lease──► leased ──ack──► done
 ### 13.4 校准记录（dry-run 全绿）
 
 ```sh
-npm run daemon:publish -- --draft '.scratch/pubtest/draft-addr.json' \
+pnpm daemon:publish -- --draft '.scratch/pubtest/draft-addr.json' \
   --screenshots '.scratch/pubtest/shots-addr3' --account-id 2206569289277
 ```
 

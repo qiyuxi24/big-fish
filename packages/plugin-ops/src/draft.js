@@ -81,7 +81,12 @@ export async function loadPublishDraft(path, readFileImpl = readFile) {
   try {
     text = await readFileImpl(path, 'utf8')
   } catch (cause) {
-    throw new DaemonError('VALIDATION', '读不到草稿文件：' + path + '（检查路径是否存在、是否有读权限）', { cause })
+    // 实测最常见的失败原因是传了相对路径：插件进程的 cwd 不是仓库根目录，
+    // 原先只说「检查路径是否存在」会让人反复确认文件明明在那儿。
+    const hint = /^([A-Za-z]:[\\/]|\/)/.test(path)
+      ? '检查路径是否存在、是否有读权限'
+      : '这条是相对路径，插件进程的工作目录不是仓库根目录——请改传绝对路径'
+    throw new DaemonError('VALIDATION', '读不到草稿文件：' + path + '（' + hint + '）', { cause })
   }
   let raw
   try {
@@ -116,9 +121,19 @@ function fnv1a(text) {
   return (hash >>> 0).toString(16).padStart(8, '0')
 }
 
-/** 按草稿内容生成发布幂等键：同一份草稿重复入队只会留一条任务。 */
-export function draftDedupeKey(draft) {
+/**
+ * 按草稿内容生成发布幂等键：同一份草稿重复入队只会留一条任务。
+ *
+ * accountId 必须进 canonical：daemon 的 `dedupe_key` 是**全局唯一**的
+ * （`packages/core/src/store.ts:38`），不带账号时「A 号发过这个商品」会把
+ * 「B 号也想发同样的商品」判成重复而静默丢弃——多账号场景下这是数据丢失。
+ *
+ * @param {object} draft - validatePublishDraft 的结果。
+ * @param {string} [accountId] - 发布用的账号 id；缺省时按 null 参与哈希（向后兼容旧键）。
+ */
+export function draftDedupeKey(draft, accountId) {
   const canonical = JSON.stringify([
+    accountId ?? null,
     draft.title,
     draft.desc,
     draft.priceCents,
@@ -139,7 +154,7 @@ function quoteCliArg(value) {
 
 /** 拼 daemon 发布 CLI 命令；本函数只产文本，不执行任何东西。 */
 export function buildPublishCommand(input) {
-  const parts = ['npm run daemon:publish', '--', '--draft', quoteCliArg(input.draftPath)]
+  const parts = ['pnpm daemon:publish', '--', '--draft', quoteCliArg(input.draftPath)]
   if (input.submit === true) parts.push('--submit')
   if (input.accountId !== undefined) parts.push('--account-id', quoteCliArg(input.accountId))
   if (input.chromePort !== undefined) parts.push('--chrome-port', String(input.chromePort))

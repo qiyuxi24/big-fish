@@ -253,17 +253,134 @@ export function toCopyMarketHints(brief) {
     keywords: brief.keywords.map(k => k.word),
   }
 }
-/** 人类可读的任务一行摘要。 */
+/** daemon 返回的任务至少要有 id/kind/state 三个身份字段才算「任务详情」。 */
+function hasTaskIdentity(task) {
+  return task !== null && typeof task === 'object' && !Array.isArray(task)
+    && typeof task.id === 'string' && task.id !== ''
+    && typeof task.kind === 'string' && task.kind !== ''
+    && typeof task.state === 'string' && task.state !== ''
+}
+
+/** 人类可读的任务一行摘要。
+ *
+ * id 必须给全长：用户要拿它调 xy_task_retry、或者去日志里 grep，
+ * 截断成 8 位就再也对不上了（面板侧也一样，见 09-publish.part.js）。
+ * 拿到的不是任务对象时给一句人话，而不是四个空竖线（审计 §1.3）。
+ */
 export function formatTaskLine(task) {
-  const parts = [
-    `${task.id.slice(0, 8)}…`,
-    task.kind,
-    task.state,
-    `attempt ${task.attempts}/${task.maxAttempts}`,
-  ]
+  if (!hasTaskIdentity(task)) return '(未返回任务详情)'
+  const attemptText = typeof task.attempts === 'number' && typeof task.maxAttempts === 'number'
+    ? `attempt ${task.attempts}/${task.maxAttempts}`
+    : 'attempt ?'
+  const parts = [task.id, task.kind, task.state, attemptText]
   if (task.dedupeKey) parts.push(`key=${task.dedupeKey}`)
   if (task.lastError) parts.push(`last=${String(task.lastError).slice(0, 80)}`)
   return parts.join(' | ')
+}
+
+/**
+ * 列表末尾按需给「至多一行」汇总导航，取代原来每条任务都挂一句 taskNextStep。
+ *
+ * 为什么收成一行：failed/leased 的指路文本随每次 xy_tasks_list 常驻进上下文，
+ * 20 条里 7 条 failed 就重复 7 次；具体 id 本就在 formatTaskLine 里全长给出，
+ * 模型照着拼参数即可，不需要逐条喂命令（2026-11-05 审计 §二.B / §四.2）。
+ *
+ * @param {unknown[]} tasks - 本轮取回的任务数组。
+ * @returns {string} 空串表示没有需要提示的状态。
+ */
+export function formatTaskListNextSteps(tasks) {
+  const list = Array.isArray(tasks) ? tasks : []
+  const replayable = list.some(task => task?.state === 'failed' || task?.state === 'needs_review')
+  const stuck = list.some(task => task?.state === 'leased' && typeof task?.availableAt === 'number' && task.availableAt <= Date.now())
+  const bits = []
+  if (replayable) bits.push('failed/needs_review 用 xy_task_retry 重放')
+  if (stuck) bits.push('卡住的 leased 用 xy_task_action release')
+  return bits.length === 0 ? '' : '\n提示：' + bits.join('；') + '。'
+}
+
+/**
+ * 一行结论：把「4 行原始计数」翻译成「现在能不能开工」。
+ *
+ * 为什么需要：四个读工具（health/status/accounts/tasks）里只有 xy_status 是「我该干什么」的入口，
+ * 但它原先只有 4 行裸计数，用户还得自己判断。结论行放在第一行——先给判断，再给证据。
+ */
+export function statusVerdict(status) {
+  const queue = status.queue ?? {}
+  const worker = status.worker ?? undefined
+  const accounts = Array.isArray(status.accounts) ? status.accounts : []
+  const circuits = Object.keys(status.circuits ?? {})
+  if (accounts.length === 0) return '现在不能开工：还没有账号。先在面板「账号」tab 导入，或跑 pnpm daemon:login 扫码。'
+  // 注意：熔断表里可能有已删/未接入的账号，所以判「全熔断」要比账号 id，而不是比数量。
+  if (accounts.every(id => circuits.includes(id))) {
+    return '现在不能开工：所有账号都在熔断中（' + circuits.join(', ') + '）。等冷却，或用 xy_circuit_reset 复位后再试（写操作，要人工确认）。'
+  }
+  if (worker !== undefined && worker.errors > 0 && worker.leased === 0 && (queue.leased ?? 0) > 0) {
+    return '卡住了：有 ' + String(queue.leased) + ' 条任务在租约里，但 worker 一次都没领到（内部错误 ' + String(worker.errors) + ' 次）。先看 daemon 日志。'
+  }
+  if ((queue.needs_review ?? 0) > 0) {
+    return '需要人看一眼：' + String(queue.needs_review) + ' 条任务在待审（needs_review）。用 xy_tasks_list --state needs_review 看原因。'
+  }
+  if ((queue.failed ?? 0) > 0) {
+    return '有失败要处理：' + String(queue.failed) + ' 条任务 failed。用 xy_task_retry 重放，或 xy_tasks_list 看 lastError。'
+  }
+  if ((queue.queued ?? 0) > 0) return '现在能开工：' + String(queue.queued) + ' 条任务排队中，worker 会自己取。'
+  // 队列空时说「直接发新任务」是撒谎的前提：发布通道没开的话，发出去必然 failed。
+  const publish = status.capabilities?.publish
+  if (publish === 'off') {
+    return '队列是空的，但发布通道没开：现在只读（探详情/擦亮可试），publish 入队会直接 failed。要让发布可用先设 BF_PUBLISH_SUBMIT=1 重启 daemon。'
+  }
+  if (publish === 'dry-run') {
+    return '队列是空的：发布通道只开了 dry-run（只填表、不点提交），publish 入队仍会失败；要真发布设 BF_PUBLISH_SUBMIT=1。'
+  }
+  return '现在能开工：队列是空的，直接发新任务即可。'
+}
+
+/**
+ * 错误码 → 「下一步做什么」。
+ *
+ * 为什么需要：`tool-kit.js` 只渲染 `❌ [CODE] message`，用户看完不知道往哪走；
+ * 面板侧（`03-rpc.part.js`）连 code 都拿不到，只剩「操作失败」。
+ * 这张表是唯一的说法来源：工具文本、面板提示、文档都从这里取。
+ */
+export const ERROR_NEXT_STEPS = {
+  NETWORK: 'daemon 没起或在重启：在仓库跑 pnpm daemon:start，再用 xy_ping 确认。',
+  AUTH_EXPIRED: '登录态过期（_m_h5_tk 约 2h）：重新导入或扫码刷新，再重试。',
+  UNAUTHORIZED: 'daemon 不认这个 token：确认 <dataDir>/daemon.token 与插件配置一致（或重跑 pnpm daemon:start 让它重建）。',
+  RISK_CONTROL: '闲鱼风控：停手，等至少 30 分钟，别再重试同一件商品。',
+  RATE_LIMITED: '撞到限流：等退避窗口过去再发；不要手动连点重试。',
+  CIRCUIT_OPEN: '账号被熔断：等内容冷却，或确认无风险后用 xy_circuit_reset 复位（写操作，要人工确认）。',
+  STORAGE: '本地数据库读写失败：检查 <dataDir>/bigfish.db 是否被占用/只读，或先 pnpm daemon:stop 再启。',
+  UNSUPPORTED: '这条路径 daemon 还没实现（例如 deliver）：别重试，去看 docs/STATUS.md §4.1 的实际能力。',
+  VALIDATION: '参数不对：按上面的提示与「细节」改参数再发。',
+  NOT_FOUND: '目标不存在（id 写错或已被删）：用 xy_tasks_list / xy_items_list 拿真实 id 再试。',
+  METHOD_NOT_ALLOWED: '这是插件内部用法错误（HTTP 方法不对），不是你的操作问题；记下来报 issue。',
+  INTERNAL: 'daemon 内部错误：看 daemon 日志尾部（pnpm daemon:logs）再决定是否重试。',
+}
+
+/** 取某个错误码的下一步；未知码给一句通用建议，不返回 undefined。 */
+export function nextStepFor(code) {
+  return ERROR_NEXT_STEPS[code] ?? '未知错误码：先跑 xy_ping 确认 daemon 状态，并把上面的 message 原样贴出来。'
+}
+
+/** 把 /status.capabilities 翻成一行「这台 daemon 现在能写什么」。 */
+export function formatCapabilities(capabilities) {
+  if (capabilities === null || typeof capabilities !== 'object') return undefined
+  const publish = capabilities.publish
+  const publishText = publish === 'submit'
+    ? '真提交'
+    : publish === 'dry-run'
+      ? '仅 dry-run（只填表，不点提交）'
+      : '未开启'
+  const parts = [
+    'publish=' + publishText,
+    'polish=' + (capabilities.polish === true ? '可用' : '未开启'),
+    'reply=' + (capabilities.reply === true ? '可用' : '未开启'),
+    'deliver=' + (capabilities.deliver === true ? '可用' : '未实现'),
+  ]
+  const hint = publish === 'submit'
+    ? ''
+    : '——入队 publish 会失败：先设 BF_PUBLISH_SUBMIT=1 重启 daemon（校准用 BF_PUBLISH_DRYRUN=1）；deliver/reply 同理要先开对应开关。'
+  return '能力：' + parts.join(' / ') + hint
 }
 
 /** 人类可读的状态摘要。 */
@@ -272,12 +389,25 @@ export function formatStatus(status) {
   const queueLine = TASK_STATE_ORDER.map(state => `${state}=${queue[state] ?? 0}`).join(' ')
   const circuits = status.circuits ?? {}
   const circuitEntries = Object.entries(circuits)
+  const total = TASK_STATE_ORDER.reduce((sum, state) => sum + (typeof queue[state] === 'number' ? queue[state] : 0), 0)
   const lines = [
+    statusVerdict(status),
     `daemon v${status.version} pid=${status.pid} 已运行 ${Math.round((status.uptimeMs ?? 0) / 1000)}s`,
-    `队列：${queueLine}`,
+    `队列：共 ${total} 条（${queueLine}）`,
     `账号：${(status.accounts ?? []).length === 0 ? '（未接入）' : (status.accounts ?? []).join(', ')}`,
     `熔断：${circuitEntries.length === 0 ? '无' : circuitEntries.map(([id, reason]) => `${id}(${reason})`).join(', ')}`,
   ]
+  // 能力行：入队接口对所有 kind 都回 201，不先说清楚「现在能写什么」，
+  // 模型就会把一条必然 failed 的任务排进去，再花一轮对话去读失败原因。
+  const capabilities = formatCapabilities(status.capabilities)
+  if (capabilities !== undefined) lines.push(capabilities)
+  // worker 计数是「任务到底有没有人执行」的唯一证据，有就一定要显示。
+  const worker = status.worker
+  if (worker !== undefined && worker !== null) {
+    const parts = [`领到 ${worker.leased}`, `完成 ${worker.done}`, `失败 ${worker.failed}`, `内部错误 ${worker.errors}`]
+    if (typeof worker.lastError === 'string' && worker.lastError !== '') parts.push(`最近错误 ${worker.lastError.slice(0, 120)}`)
+    lines.push(`worker：${parts.join(' / ')}`)
+  }
   return lines.join('\n')
 }
 

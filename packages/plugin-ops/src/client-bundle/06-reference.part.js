@@ -167,7 +167,7 @@
             h('button', {
               type: 'button', 'data-role': 'reference-collect', disabled: !collectValid, onClick: collect,
               title: collectValid ? '写入本地库（点两次确认）' : '先解析出商家 id 并选一个账号',
-              style: collectValid ? S.primary : S.offButton,
+              style: collectValid ? (writes.state.armed === 'collect' ? S.armedButton : S.primary) : S.offButton,
             }, writes.state.armed === 'collect' ? '确认采集' : busy ? '采集中…' : '采集并入库')),
           resultLine(board.notice ?? writes.state.result, 'reference-notice')),
         h('div', { style: S.section, 'data-role': 'reference-sellers' },

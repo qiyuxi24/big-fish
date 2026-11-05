@@ -13,6 +13,18 @@ import type { CredentialRecord, CredentialSaveInput, ItemState } from '@bigfish/
 
 import type { ExecuteContext, ExecutorTable, TaskExecutor } from './executor.ts'
 import { emitTaskStep } from './event-emit.ts'
+import {
+  requireAccountId,
+  requireDeliver,
+  requireDraft,
+  requireField,
+  requireReply,
+} from './task-payload.ts'
+import type { DeliverRequest, PublishDraft, ReplyRequest } from './task-payload.ts'
+
+// 载荷形状规则住在 task-payload.ts（入队期与执行期共用一份）；这里转出类型，
+// 免得 cdp-publish / im-client / operations 的 import 路径全改一遍。
+export type { DeliverRequest, PublishDraft, ReplyRequest } from './task-payload.ts'
 
 /** 一次通道调用使用的登录态。 */
 export interface Session {
@@ -32,35 +44,6 @@ export interface DetailSnapshot {
   title: string
   priceCents: number
   state: ItemState
-}
-
-/** 发布草稿：字段与 xy_task_enqueue 的 publish 载荷对齐。 */
-export interface PublishDraft {
-  title: string
-  desc: string
-  priceCents: number
-  images: string[]
-  quantity?: number
-  /** 闲鱼类目名（如「电子资料」）；不给就走页面 AI 识别结果。 */
-  category?: string
-  /** 包邮开关；不给就沿用页面默认（包邮）。 */
-  shipping?: 'free' | 'none'
-  /** 宝贝所在地文字（如「西北工业大学长安校区星天苑」）；不给就不改地址。 */
-  address?: string
-}
-
-/** 发货请求：规格双键（itemId+specId）用于卡密匹配。 */
-export interface DeliverRequest {
-  orderId: string
-  itemId?: string
-  specId?: string
-  content: string
-}
-
-/** IM 回消息请求。 */
-export interface ReplyRequest {
-  cid: string
-  text: string
 }
 
 /** 通道能力集合；真实实现见 cli.ts 的装配，测试用 fake。 */
@@ -241,57 +224,6 @@ function sessionWriter(
   }
 }
 
-function requireAccountId(payload: Record<string, unknown>): string {
-  return requireField(payload, 'accountId')
-}
-
-function requireField(payload: Record<string, unknown>, key: string): string {
-  const value = payload[key]
-  if (typeof value !== 'string' || value.length === 0) fail('VALIDATION', '任务载荷缺少非空字符串字段 ' + key)
-  return value
-}
-
-function requireDraft(payload: Record<string, unknown>): PublishDraft {
-  const title = requireField(payload, 'title')
-  const desc = requireField(payload, 'desc')
-  const priceCents = payload['priceCents']
-  if (typeof priceCents !== 'number' || !Number.isSafeInteger(priceCents) || priceCents < 0) {
-    fail('VALIDATION', '任务载荷的 priceCents 必须是非负整数（分）')
-  }
-  const images = payload['images']
-  if (!Array.isArray(images) || images.some(entry => typeof entry !== 'string')) {
-    fail('VALIDATION', '任务载荷的 images 必须是字符串数组')
-  }
-  const quantity = payload['quantity']
-  if (quantity !== undefined && (typeof quantity !== 'number' || !Number.isSafeInteger(quantity) || quantity < 1)) {
-    fail('VALIDATION', '任务载荷的 quantity 必须是正整数')
-  }
-  // 分类决定网页端能不能发：选错类目会被判「网页版暂不支持发布此分类」。
-  const category = payload['category']
-  if (category !== undefined && typeof category !== 'string') {
-    fail('VALIDATION', '任务载荷的 category 必须是字符串')
-  }
-  // 地址决定「必填项预检」能不能过：队列任务不带地址时，网页端「宝贝所在地」为空会被拦下（VALIDATION，不假装成功）。
-  const address = payload['address']
-  if (address !== undefined && typeof address !== 'string') {
-    fail('VALIDATION', '任务载荷的 address 必须是字符串')
-  }
-  const shipping = payload['shipping']
-  if (shipping !== undefined && shipping !== 'free' && shipping !== 'none') {
-    fail('VALIDATION', '任务载荷的 shipping 只能是 free 或 none')
-  }
-  return {
-    title,
-    desc,
-    priceCents,
-    images: images as string[],
-    ...(quantity === undefined ? {} : { quantity }),
-    ...(category === undefined ? {} : { category }),
-    ...(shipping === undefined ? {} : { shipping }),
-    ...(address === undefined ? {} : { address }),
-  }
-}
-
 /** 本地策略校验：把能在本地判定的违规挡在通道调用之前（error 级直接拒绝）。 */
 function requirePolicy(draft: PublishDraft): void {
   const result = checkListing({
@@ -303,28 +235,4 @@ function requirePolicy(draft: PublishDraft): void {
   if (result.ok) return
   const errors = result.issues.filter(issue => issue.severity === 'error').map(issue => issue.code + ':' + issue.message)
   fail('VALIDATION', '发布草稿未通过本地策略校验：' + errors.join('；'), { details: { issues: result.issues } })
-}
-
-function requireDeliver(payload: Record<string, unknown>): DeliverRequest {
-  const orderId = requireField(payload, 'orderId')
-  const content = requireField(payload, 'content')
-  const itemId = optionalField(payload, 'itemId')
-  const specId = optionalField(payload, 'specId')
-  return {
-    orderId,
-    content,
-    ...(itemId === undefined ? {} : { itemId }),
-    ...(specId === undefined ? {} : { specId }),
-  }
-}
-
-function requireReply(payload: Record<string, unknown>): ReplyRequest {
-  return { cid: requireField(payload, 'cid'), text: requireField(payload, 'text') }
-}
-
-function optionalField(payload: Record<string, unknown>, key: string): string | undefined {
-  const value = payload[key]
-  if (value === undefined) return undefined
-  if (typeof value !== 'string' || value.length === 0) fail('VALIDATION', '任务载荷字段 ' + key + ' 必须是非空字符串')
-  return value
 }

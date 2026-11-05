@@ -36,17 +36,27 @@ export function requireState(value: string): TaskState {
   fail('STORAGE', `tasks.state 非法：${value}`)
 }
 
+/**
+ * 值域断言。
+ *
+ * 文案规则：缺字段时说「缺少 X」，写错值时回显值本身——绝不把 `undefined` 这个
+ * JavaScript 内部值拼进面向用户的文案里（2026-11-03 审计实测 `POST /tasks {}`
+ * 返回「kind 非法：undefined」，读起来像 daemon 内部漏了变量）。
+ */
 export function assertKind(value: unknown): TaskKind {
+  if (value === undefined) fail('VALIDATION', '缺少 kind 字段：可选 publish / deliver / polish / reply / probe')
   if (isTaskKind(value)) return value
   fail('VALIDATION', `kind 非法：${String(value)}`)
 }
 
 export function assertState(value: unknown): TaskState {
+  if (value === undefined) fail('VALIDATION', '缺少 state 字段：可选 queued / leased / done / failed / needs_review')
   if (isTaskState(value)) return value
   fail('VALIDATION', `state 非法：${String(value)}`)
 }
 
 export function assertText(value: unknown, field: string): string {
+  if (value === undefined) fail('VALIDATION', `${field} 是必填字段，但请求里没有`)
   if (typeof value !== 'string') fail('VALIDATION', `${field} 必须是字符串`)
   if (value.trim().length === 0) fail('VALIDATION', `${field} 不能为空`)
   return value

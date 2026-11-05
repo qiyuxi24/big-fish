@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { DEFAULT_HOST, DEFAULT_PORT, defaultDataRoot, loadDaemonConfig } from '../src/config.ts'
+import { DEFAULT_HOST, DEFAULT_PORT, defaultBrowserProfileDir, defaultDataRoot, loadDaemonConfig } from '../src/config.ts'
 import { XianyuError } from '../src/errors.ts'
 
 function validationError(keyLabel: string): (error: unknown) => boolean {
@@ -27,6 +27,13 @@ test('默认值与数据根路径派生正确', () => {
   assert.equal(config.tokenPath, join(root, 'daemon.token'))
   assert.equal(config.credentialsDir, join(root, 'credentials'))
   assert.equal(config.circuitPath, join(root, 'circuits.json'))
+  // 浏览器 profile 必须跟着数据根走（过去登录默认 ~/.bigfish/chrome-profile，与 daemon 分裂成两份）。
+  assert.equal(defaultBrowserProfileDir({}), join(root, 'chrome-profile'))
+})
+
+test('浏览器 profile 目录跟着 BF_DATA_DIR 走，不跟着 home', () => {
+  const root = join('tmp', 'bf-data')
+  assert.equal(defaultBrowserProfileDir({ BF_DATA_DIR: root }), join(root, 'chrome-profile'))
 })
 
 test('环境变量覆盖每个可调项', () => {

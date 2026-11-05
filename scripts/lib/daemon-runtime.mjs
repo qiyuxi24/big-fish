@@ -6,10 +6,21 @@
  * 本文件不做单测（会起进程/连端口），可测的决定性逻辑一律放回纯函数层。
  */
 import { spawn, spawnSync } from 'node:child_process'
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { connect } from 'node:net'
 import { dirname } from 'node:path'
-import { daemonArgs, formatPidFile, healthUrl, parsePidFile, tailLines } from './daemon-service.mjs'
+import { daemonArgs, formatPidFile, healthUrl, parsePidFile, tailLines, MAX_LOG_READ_BYTES, MAX_LOG_BYTES } from './daemon-service.mjs'
 
 const isWindows = process.platform === 'win32'
 
@@ -272,6 +283,9 @@ export async function waitForReady(input) {
 
 /**
  * 读日志尾部 N 行；文件不存在返回 undefined（区别于「文件在但为空」）。
+ *
+ * 只读文件末尾 MAX_LOG_READ_BYTES 字节：日志是 direct-append、无轮转，过夜跑能到几百 MB，
+ * 整读会让 `pnpm daemon:status` 自己先卡住。tail N 行只需要最后一段，多读的只会是浪费。
  * @param {string} logPath
  * @param {number} count
  * @returns {string[] | undefined}
@@ -280,11 +294,50 @@ export function logTail(logPath, count) {
   if (!existsSync(logPath)) return undefined
   let text
   try {
-    text = readFileSync(logPath, 'utf8')
+    const size = statSync(logPath).size
+    const start = Math.max(0, size - MAX_LOG_READ_BYTES)
+    const bytes = start + MAX_LOG_READ_BYTES
+    const buffer = Buffer.alloc(bytes - start)
+    const fd = openSync(logPath, 'r')
+    try {
+      readSync(fd, buffer, 0, buffer.length, start)
+    } finally {
+      closeSync(fd)
+    }
+    text = buffer.toString('utf8')
+    // 从中间切进来时首行大概率是半行，丢掉它免得出现半截 JSON 日志。
+    if (start > 0 && text.includes('\n')) text = text.slice(text.indexOf('\n') + 1)
   } catch {
     return undefined
   }
   return tailLines(text, count)
+}
+
+/**
+ * 日志超过 MAX_LOG_BYTES 就滚成 `.1`（只留一份历史）。
+ *
+ * 为什么在 start 时轮转而不是运行中：轮转要 rename，Windows 上正被 daemon 以 'a' 打开的文件
+ * 改名会失败；start 的时刻恰好没有新进程持有它。运行中涨到多大就多大，下次 start 收拾。
+ * @param {string} logPath
+ * @returns {{rotated: boolean, size: number}}
+ */
+export function rotateLogIfNeeded(logPath) {
+  if (!existsSync(logPath)) return { rotated: false, size: 0 }
+  let size = 0
+  try {
+    size = statSync(logPath).size
+  } catch {
+    return { rotated: false, size: 0 }
+  }
+  if (size <= MAX_LOG_BYTES) return { rotated: false, size }
+  try {
+    rmSync(logPath + '.1', { force: true })
+    renameSync(logPath, logPath + '.1')
+    return { rotated: true, size }
+  } catch {
+    // 轮转失败不该挡住启动：留一条提示，日志继续追加。
+    return { rotated: false, size }
+  }
 }
 
 /**

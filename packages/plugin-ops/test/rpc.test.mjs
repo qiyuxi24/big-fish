@@ -89,10 +89,69 @@ test('未知 endpoint 返回 UNSUPPORTED，不触发任何 daemon 调用', async
 
 test('写类端点缺 confirm 一律拒绝（面板误触/模型幻觉的第一道闸）', async () => {
   const { client, bridge } = bridgeWith({ request: { task: { id: 't1' } }, enqueue: { id: 't1' } })
-  for (const endpoint of ['tasks.retry', 'accounts.import', 'accounts.login', 'accounts.logout', 'batch.enqueue', 'settings.put']) {
+  for (const endpoint of ['tasks.retry', 'accounts.import', 'accounts.login', 'accounts.logout', 'settings.put']) {
     assertError(await bridge.handle(endpoint, {}), 'VALIDATION', /需要 confirm:true/)
   }
   assert.equal(client.calls.length, 0)
+})
+
+test('batch.enqueue 按 kind 判定门禁：probe 免确认，其余对外动作都要确认', async () => {
+  const { client, bridge } = bridgeWith({ enqueue: { id: 't1' } })
+  const item = (kind, itemId) => ({ kind, dedupeKey: kind + ':' + itemId, payload: { accountId: 'acc', itemId } })
+  // 纯读的探测：不该让用户点两次（这是自用时最刺眼的门禁不一致）。
+  const probe = await bridge.handle('batch.enqueue', { items: [item('probe', '123')] })
+  assert.equal(probe.ok, true)
+  assert.equal(client.calls.length, 1)
+  // reply 也算对外动作：它会把一条消息真的发给买家，不能因为「不写商品数据」就免确认。
+  for (const kind of ['publish', 'deliver', 'polish', 'reply']) {
+    assertError(
+      await bridge.handle('batch.enqueue', { items: [item(kind, '123')] }),
+      'VALIDATION',
+      /需要 confirm:true/,
+    )
+  }
+  // 一批里混了一件要写闲鱼的，整批都得确认（不能靠「我只点了 probe」蒙过去）。
+  assertError(
+    await bridge.handle('batch.enqueue', { items: [item('probe', '1'), item('polish', '2')] }),
+    'VALIDATION',
+    /需要 confirm:true/,
+  )
+  // items 形态不对时保守要求确认，不因为「看不出 kind」就放行。
+  assertError(await bridge.handle('batch.enqueue', { items: 'nope' }), 'VALIDATION', /需要 confirm:true/)
+  assert.equal(client.calls.length, 1)
+})
+
+test('tasks.action 转调 taskAction（ack/fail/release），只带白名单字段且不需要 confirm', async () => {
+  const { client, bridge } = bridgeWith({ taskAction: { id: 't1', state: 'done' } })
+  const result = await bridge.handle('tasks.action', { id: 't1', action: 'ack', error: '人工确认', nonRetryable: true, evil: 1 })
+  assert.deepEqual(result, { ok: true, value: { id: 't1', state: 'done' } })
+  const action = client.calls.find((call) => call.method === 'taskAction')
+  assert.deepEqual(action.args, ['t1', 'ack', { error: '人工确认', nonRetryable: true }])
+  // 非法 action 一律 VALIDATION，不把任意字符串透给 daemon。
+  assertError(await bridge.handle('tasks.action', { id: 't1', action: 'delete' }), 'VALIDATION', /action/)
+})
+
+test('tasks.action 不传 owner 时先读任务拿真实 leaseOwner（daemon 用 daemon-<pid>，面板猜不到）', async () => {
+  const { client, bridge } = bridgeWith({
+    getTask: { id: 't1', state: 'leased', leaseOwner: 'daemon-4242' },
+    taskAction: { id: 't1', state: 'queued' },
+  })
+  const result = await bridge.handle('tasks.action', { id: 't1', action: 'release' })
+  assert.equal(result.ok, true)
+  assert.deepEqual(client.calls.map((call) => call.method), ['getTask', 'taskAction'])
+  assert.deepEqual(client.calls[1].args, ['t1', 'release', { owner: 'daemon-4242' }])
+})
+
+test('circuits.reset 需要 confirm:true（解除熔断等于放开后续所有写），带 accountId 调 resetCircuit', async () => {
+  const { client, bridge } = bridgeWith({ resetCircuit: { accountId: 'acc-1', reset: true } })
+  assertError(await bridge.handle('circuits.reset', { accountId: 'acc-1' }), 'VALIDATION', /需要 confirm:true/)
+  assert.equal(client.calls.length, 0)
+  assert.deepEqual(await bridge.handle('circuits.reset', { accountId: 'acc-1', confirm: true }), {
+    ok: true,
+    value: { accountId: 'acc-1', reset: true },
+  })
+  assert.deepEqual(client.calls[0], { method: 'resetCircuit', args: ['acc-1'] })
+  assertError(await bridge.handle('circuits.reset', { confirm: true }), 'VALIDATION', /accountId/)
 })
 
 test('tasks.retry 带 confirm 后走客户端缺失方法时的通用 request（POST /tasks/:id/retry）', async () => {
@@ -475,7 +534,7 @@ test('宿主没有 connection 时 apply 不抛错、工具照常注册、日志�
   } finally {
     console.log = original
   }
-  assert.equal(tools.length, 15)
+  assert.equal(tools.length, 16)
   assert.equal(logs.length, 1)
   assert.equal(JSON.parse(logs[0]).rpcChannel, 'skipped')
 })
@@ -561,7 +620,8 @@ test('命中宿主 bug 时改用插件自己的 webServer 兼容路由，面板�
   }
 
   // 先官方后兼容：官方失败不再单独告警（能绕开时不该出现「面板不可用」的误导信息）。
-  assert.deepEqual(host.injected, [['connection'], ['webServer', 'connection']])
+  // 末尾的 ['settings'] 是 ADR 0007 的可选设置页注入：这里没有 settings 服务，守卫式跳过、零副作用。
+  assert.deepEqual(host.injected, [['connection'], ['webServer', 'connection'], ['settings']])
   assert.equal(host.registered.length, 0)
   assert.equal(routes.length, 1)
   assert.equal(routes[0].kind, 'prefix')

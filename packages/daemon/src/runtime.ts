@@ -19,6 +19,7 @@ import {
   openStore,
 } from '@bigfish/core'
 import type {
+  DaemonCapabilities,
   DaemonConfig,
   ItemRepository,
   Logger,
@@ -323,6 +324,25 @@ export async function startDaemonRuntime(options: DaemonRuntimeOptions): Promise
         worker: () => worker.stats(),
         // 面板要知道托管浏览器在不在：GET /browser（与 /status 分开，因为它要真探一次端口）。
         browser: () => browser.status(),
+        // 「这台 daemon 现在到底能写什么」——入队接口对所有 kind 都回 201，能力不足是执行时才失败；
+        // 把这个快照放进 /status，agent 才能在入队前就选对路径，而不是先造一条必然 failed 的任务。
+        capabilities: (): DaemonCapabilities => ({
+          publish: options.publish === undefined
+            ? 'off'
+            : options.publish.dryRun === true
+              ? 'dry-run'
+              : options.publish.submit
+                ? 'submit'
+                : 'off',
+          // polish 走 mtop 写接口，只要有凭据就能用（无额外开关）。
+          polish: true,
+          // deliverOrder 恒 UNSUPPORTED（见 operations.ts 的 '自动发货通道尚未接入'）。
+          deliver: false,
+          // reply 需要 BF_IM=1 且至少一个账号连上 wss。
+          reply: imRuntime.enabled,
+        }),
+        // IM 连接状态与人工回复入口：GET /im/status、POST /im/reply（默认关闭时状态里 enabled:false）。
+        im: imRuntime,
         // 账号摘要/导入/扫码/校验/切换/退出：见 runtime-account-handlers.ts。
         ...accountHandlers,
         // 人工收尾：requeue 成功后必须立刻唤醒 worker，否则要等下一个 pollIntervalMs，

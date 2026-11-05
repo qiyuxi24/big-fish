@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { parseImMessage, parsePushMessages } from '../src/messages.ts'
 import { decodePushItems } from '../src/messages.ts'
+import { encodeMsgpack } from './msgpack-codec.ts'
 
 const NOW = 1_700_000_000_123
 
@@ -48,6 +49,18 @@ function pushFrame(payloads: unknown[]): Record<string, unknown> {
         data: payloads.map((payload) => ({
           data: Buffer.from(JSON.stringify(payload), 'utf8').toString('base64'),
         })),
+      },
+    },
+  }
+}
+
+/** 把若干消息对象包成 syncPushPackage 推送帧（每项 data 是 base64(MessagePack)，真机聊天推送形态）。 */
+function msgpackFrame(payloads: unknown[]): Record<string, unknown> {
+  return {
+    lwp: 'sync',
+    body: {
+      syncPushPackage: {
+        data: payloads.map((payload) => ({ data: Buffer.from(encodeMsgpack(payload)).toString('base64') })),
       },
     },
   }
@@ -132,4 +145,65 @@ test('非推送帧返回空列表，parseImMessage 面对垃圾输入返回 unde
     assert.equal(parseImMessage(bad), undefined)
   }
   assert.equal(parseImMessage({ '1': { '2': 'cid' } }), undefined, '缺 messageId/时间戳视为未知帧')
+})
+test('真机形态的 MessagePack 卡片消息：kind card、摘要文本、tradeStatus 取 main["10"].redReminder', () => {
+  const payload = {
+    '1': {
+      '1': { '1': '3149637063@goofish' },
+      '2': '47983389096@goofish',
+      '3': '3416565274542.PNM',
+      '5': 1_742_458_817_389,
+      '6': {
+        '1': 101,
+        '3': { '1': '', '2': '[我已拍下，待付款]', '3': '', '4': 26, '5': JSON.stringify({ contentType: 26, dxCard: {} }) },
+      },
+      '10': { senderUserId: '3149637063', redReminder: '等待买家付款', reminderContent: '[我已拍下，待付款]' },
+    },
+    '3': { needPush: 'true' },
+  }
+  const messages = parsePushMessages(msgpackFrame([payload]))
+  assert.equal(messages.length, 1)
+  const message = messages[0]
+  assert.ok(message !== undefined)
+  assert.equal(message.kind, 'card')
+  assert.equal(message.cid, '47983389096')
+  assert.equal(message.messageId, '3416565274542.PNM')
+  assert.equal(message.senderId, '3149637063')
+  assert.equal(message.text, '[我已拍下，待付款]', '卡片取 ["6"]["3"]["2"] 摘要，不是 dxCard JSON')
+  assert.equal(message.chatTimeMs, 1_742_458_817_389)
+  assert.equal(message.tradeStatus, 'awaiting_payment')
+})
+
+test('MessagePack 文本消息：内层类型 1 → kind text，正文取 ["6"]["3"]["5"]', () => {
+  const payload = {
+    '1': {
+      '2': 'cid-9@goofish',
+      '3': 'msg-9',
+      '5': NOW,
+      '6': { '1': 101, '3': { '4': 1, '5': JSON.stringify({ contentType: 1, text: { text: '在吗，还能便宜点吗' } }) } },
+      '10': { senderUserId: 'buyer-9', reminderContent: '在吗，还能便宜点吗' },
+    },
+  }
+  const messages = parsePushMessages(msgpackFrame([payload]))
+  assert.equal(messages.length, 1)
+  assert.equal(messages[0]?.kind, 'text')
+  assert.equal(messages[0]?.text, '在吗，还能便宜点吗')
+  assert.equal(messages[0]?.senderId, 'buyer-9')
+  assert.deepEqual(messages[0]?.raw, payload, 'raw 保留 MessagePack 解出的对象')
+})
+
+test('同一帧里 base64(JSON) 与 base64(MessagePack) 混排保持顺序', () => {
+  const frame = {
+    lwp: 'sync',
+    body: {
+      syncPushPackage: {
+        data: [
+          { data: Buffer.from(JSON.stringify(textPayload()), 'utf8').toString('base64') },
+          { data: Buffer.from(encodeMsgpack(cardPayload())).toString('base64') },
+        ],
+      },
+    },
+  }
+  const messages = parsePushMessages(frame)
+  assert.deepEqual(messages.map((message) => message.messageId), ['msg-1', 'msg-2'])
 })

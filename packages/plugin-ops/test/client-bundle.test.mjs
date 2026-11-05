@@ -124,6 +124,16 @@ function loadBundle() {
     },
   }
   let react
+  // 假 setTimeout：客户的「二次确认 5 秒过期」用它，与 interval 分开计（clock.size 只数 interval）。
+  // 不挂 window 上，也不进 clock.size——轮询数量的断言不该被一次性定时器搅乱。
+  const timeouts = new Map()
+  let timeoutSeq = 0
+  const fakeSetTimeout = (fn, ms) => {
+    timeoutSeq += 1
+    timeouts.set(timeoutSeq, { fn, ms })
+    return timeoutSeq
+  }
+  const fakeClearTimeout = (id) => { timeouts.delete(id) }
   const require = (id) => {
     requested.push(id)
     if (id !== 'react') throw new Error('client bundle 只允许 require react，实际请求了 ' + id)
@@ -139,8 +149,18 @@ function loadBundle() {
     console,
     setInterval: clock.setInterval,
     clearInterval: clock.clearInterval,
+    setTimeout: fakeSetTimeout,
+    clearTimeout: fakeClearTimeout,
   }, { filename: bundlePath })
-  return { registrations, require, requested, clock, get react() { return react } }
+  const oneShots = {
+    get size() { return timeouts.size },
+    /** 推进所有挂起的一次性定时器（不 sleep，纯同步触发）。 */
+    fireAll() {
+      for (const timer of [...timeouts.values()]) timer.fn()
+      timeouts.clear()
+    },
+  }
+  return { registrations, require, requested, clock, timers: oneShots, get react() { return react } }
 }
 
 /** 排空微任务：rpc 的 Promise 链在下一轮微任务里落定，不依赖真实定时器。 */
@@ -799,10 +819,22 @@ test('面板 tab 与内容区双向 aria 关联（tabpanel 跟随当前 tab）',
 
 test('概览页：驾驶舱 + 系统区（不再是登录说明占位）', () => {
   const { openTab } = mountPanel()
-  const text = toText(openTab('概览'))
+  const tree = openTab('概览')
+  const text = toText(tree)
   assert.match(text, /待办提醒/)
   assert.match(text, /工具与命令/)
-  assert.match(text, /npm run daemon:import-account/)
+  // 命令必须是 pnpm（仓库用 pnpm）且是可复制的，不能给 npm run daemon 这种前台阻塞的写法。
+  assert.match(text, /pnpm daemon:import-account/)
+  assert.equal(text.includes('npm run daemon'), false)
+  const copyCommands = roleElements(tree, 'overview-command-copy')
+  assert.equal(copyCommands.length, 5)
+  assert.deepEqual(copyCommands.map((node) => node.props['data-command']), [
+    'pnpm daemon:start',
+    'pnpm daemon:status',
+    'pnpm daemon:logs',
+    'pnpm daemon:import-account',
+    'pnpm dsh:dev -- --fresh',
+  ])
   assert.equal(text.includes('登录态导入：xy_import_account'), false)
 })
 
@@ -967,7 +999,8 @@ test('「发布」tab：流水线、草稿集与类目矩阵都在', () => {
   }
   const textarea = collectByType(tree, 'textarea')[0]
   assert.equal(textarea.props['data-role'], 'draft-input')
-  assert.match(toText(tree), /price（分）/)
+  // 价格字段以 daemon 协议名 priceCents 为准，同时兼容旧写法 price。
+  assert.match(toText(tree), /priceCents（分，也收 price）/)
 })
 
 test('草稿集逐行解析：非法 JSON、缺字段、非 .json 路径都报出来', () => {
@@ -996,7 +1029,7 @@ test('草稿集逐行解析：非法 JSON、缺字段、非 .json 路径都报�
   assert.deepEqual(rows.map((node) => node.props['data-ok']), [true, false, false, true, false])
 })
 
-test('至少 2 条合法草稿才启用「生成批量发布请求」，产出 xy_publish_batch 参数', () => {
+test('1 条合法草稿即可启用「生成批量发布请求」，产出 xy_publish_batch 参数', () => {
   const { render, openTab } = mountPanel()
   let tree = openTab('发布')
   const submit = () => collectByType(tree, 'button').find((node) => node.props['data-role'] === 'publish-batch-submit')
@@ -1006,15 +1039,18 @@ test('至少 2 条合法草稿才启用「生成批量发布请求」，产出 x
   }
 
   assert.equal(submit().props.disabled, true)
-  assert.match(submit().props.title, /先粘贴至少 2 条合法草稿/)
+  assert.match(submit().props.title, /先粘贴至少 1 条合法草稿/)
 
+  // 真机验证过的路径就是单件：一条合法草稿就该能生成。
   typeDrafts('{"title":"A","price":100,"images":["D:/a.jpg"]}')
-  assert.equal(submit().props.disabled, true)
-  assert.match(submit().props.title, /至少 2 条合法草稿才能生成（现在 1 条）/)
+  assert.equal(submit().props.disabled, false)
+  submit().props.onClick()
+  tree = render()
+  assert.equal(JSON.parse(toText(collectByType(tree, 'pre')[0])).drafts.length, 1)
 
   typeDrafts([
     '{"title":"A","price":100,"images":["D:/a.jpg"]}',
-    '{"title":"B","price":200,"images":["D:/b.jpg"]}',
+    '{"title":"B","priceCents":200,"images":["D:/b.jpg"]}',
     'D:/drafts/C.json',
   ].join('\n'))
   assert.equal(submit().props.disabled, false)
@@ -1024,7 +1060,11 @@ test('至少 2 条合法草稿才启用「生成批量发布请求」，产出 x
   assert.equal(request.mode, 'dry-run')
   assert.deepEqual(request.draftPaths, ['D:/drafts/C.json'])
   assert.deepEqual(request.drafts.map((draft) => draft.title), ['A', 'B'])
+  // priceCents 与旧写法 price 都要被认出来（字段名分裂曾经吃掉价格）：
+  // 校验阶段两个键都收，入队阶段由 buildPublishItems 归一成 payload.priceCents。
+  assert.deepEqual(request.drafts.map((draft) => draft.priceCents ?? draft.price), [100, 200])
   assert.equal(Object.prototype.hasOwnProperty.call(request, 'accountId'), false)
+  assert.match(toText(tree), /1 条通过就能生成/)
 
   // 任何输入变化都撤销已生成的 JSON，避免拿着旧参数去执行。
   collectByType(tree, 'button').find((node) => node.props['data-role'] === 'publish-mode' && toText(node) === 'enqueue 入队').props.onClick()
@@ -1231,19 +1271,22 @@ test('rpc 在线：health / 账号就绪 / 队列计数 / 最近批次 / 设置�
   assert.equal(calls.filter((call) => call.endpoint === 'batches.get')[0].payload.id, 'batch-new')
 })
 
-test('rpc 返回 error 信封：整块降级成一行，不发批次查询', async () => {
+test('rpc 返回 error 信封：只有 health 失败才算离线；status 失败降级成「这轮没拉到」', async () => {
   const replies = daemonReplies()
   replies.status = { ok: false, error: { code: 'INTERNAL', message: 'boom' } }
   const { connection, calls } = createFakeConnection(replies)
   const mounted = mountPanel({ connection })
   const text = await snapshotText(mounted)
 
-  assert.match(text, /未连接后台（daemon 未启动）/)
-  assert.equal(text.includes('daemon 实时状态'), false)
-  assert.equal(calls.some((call) => call.endpoint === 'batches.get'), false)
+  // daemon 明明活着（health 通了），不能因为 status 这一个端点失败就报「daemon 未启动」。
+  assert.equal(text.includes('未连接后台（daemon 未启动）'), false)
+  assert.match(text, /daemon 在线，但这一轮有 1 项没拉到：status/)
+  assert.match(text, /这轮没读到队列计数/)
+  // tasks.list 正常 → 批次反查照旧发生（只有 status 挂了，不该连累批次）。
+  assert.equal(calls.some((call) => call.endpoint === 'batches.get'), true)
 })
 
-test('rpc 抛异常（同步 throw / reject）也不冒泡，只降级成一行', async () => {
+test('rpc 抛异常（同步 throw / reject）也不冒泡：health 挂→离线，别的端点挂→降级', async () => {
   const syncThrow = daemonReplies()
   syncThrow.health = () => { throw new Error('transport down') }
   const first = mountPanel({ connection: createFakeConnection(syncThrow).connection })
@@ -1254,8 +1297,10 @@ test('rpc 抛异常（同步 throw / reject）也不冒泡，只降级成一行'
   rejected.accounts = () => Promise.reject(new Error('rpc timeout'))
   const second = mountPanel({ connection: createFakeConnection(rejected).connection })
   const secondText = await snapshotText(second)
-  assert.match(secondText, /未连接后台（daemon 未启动）/)
-  assert.equal(secondText.includes('在线 ·'), false)
+  // accounts 挂了不代表 daemon 没启动。
+  assert.equal(secondText.includes('未连接后台（daemon 未启动）'), false)
+  assert.match(secondText, /daemon 在线，但这一轮有 1 项没拉到：accounts/)
+  assert.match(secondText, /这轮没读到（不是 0 个/)
 })
 
 test('宿主没有 connection 服务：渲染不抛错，同样显示降级文案', async () => {
@@ -1290,6 +1335,32 @@ test('轮询周期 3 秒；卸载时清定时器，之后不再发起 rpc', asyn
   mounted.loaded.clock.advance()
   await settle()
   assert.equal(calls.length, afterUnmount)
+})
+
+test('轮询不叠请求、失败会退避：在途那轮没回来就不开下一轮，连续失败后节奏放慢', async () => {
+  // ①在途未回：某一轮卡住（status 永不 resolve）时，后续 tick 不该再发一轮新的 rpc。
+  const hanging = daemonReplies()
+  hanging.status = () => new Promise(() => {})
+  const first = createFakeConnection(hanging)
+  const hangingMount = mountPanel({ connection: first.connection })
+  await snapshotText(hangingMount, hangingMount.openTab('发布'))
+  const healthAfterFirst = first.calls.filter((call) => call.endpoint === 'health').length
+  for (let index = 0; index < 5; index += 1) { hangingMount.loaded.clock.advance(); await settle() }
+  assert.equal(first.calls.filter((call) => call.endpoint === 'health').length, healthAfterFirst)
+
+  // ②连续失败：daemon 不在时不该还以 3 秒一次的节奏敲，退避后同一段时间里轮次明显变少。
+  const down = daemonReplies()
+  down.health = { ok: false, error: { code: 'NETWORK', message: '连不上' } }
+  const failing = createFakeConnection(down)
+  const downMount = mountPanel({ connection: failing.connection })
+  await snapshotText(downMount, downMount.openTab('发布'))
+  assert.match(toText(downMount.render()), /后台未连接/)
+  const roundsAtStart = failing.calls.filter((call) => call.endpoint === 'health').length
+  const ticks = 12
+  for (let index = 0; index < ticks; index += 1) { downMount.loaded.clock.advance(); await settle() }
+  const extraRounds = failing.calls.filter((call) => call.endpoint === 'health').length - roundsAtStart
+  assert.ok(extraRounds > 0, '退避不该退到完全不打')
+  assert.ok(extraRounds < ticks, '退避后轮次必须少于 tick 数，实际 ' + String(extraRounds))
 })
 
 test('工作流树：事件流按任务聚成「任务 → 步骤」，失败步骤用红字', async () => {
@@ -1380,9 +1451,60 @@ test('概览页驾驶舱：worker 计数与熔断/待审都进待办提醒（只
   assert.match(text, /领取 1 · 完成 5 · 失败 0 · 错误 0/)
   // 熔断与待审进待办提醒；重置端点还没进 rpc，所以文案只提示等冷却。
   assert.match(text, /熔断中（RGV587 风控）/)
+  // 熔断不再是「只能等」：概览给了复位入口，且要人点两次（解除刹车后下一次写就真打闲鱼）。
+  assert.match(text, /复位熔断 2206569289277/)
   assert.match(text, /待审 1 条/)
   assert.equal(mounted.loaded.clock.size, 2)
   assert.ok(calls.length >= 5)
+})
+
+test('熔断复位要两次确认：第一次只上膛，第二次带 confirm:true 发 circuits.reset', async () => {
+  const replies = daemonReplies()
+  replies.status.value.circuits = { '2206569289277': 'RGV587 风控' }
+  replies['circuits.reset'] = { ok: true, value: { accountId: '2206569289277', reset: true } }
+  const { connection, calls } = createFakeConnection(replies)
+  const mounted = mountPanel({ connection })
+  await snapshotText(mounted)
+
+  const button = () => roleElements(mounted.render(), 'circuit-reset')[0]
+  assert.match(toText(button()), /复位熔断 2206569289277/)
+  button().props.onClick()
+  assert.match(toText(button()), /确认复位 2206569289277/)
+  assert.equal(calls.some((call) => call.endpoint === 'circuits.reset'), false)
+
+  roleElements(mounted.render(), 'circuit-reset')[0].props.onClick()
+  await settle()
+  const resets = calls.filter((call) => call.endpoint === 'circuits.reset')
+  assert.equal(resets.length, 1)
+  assert.equal(resets[0].payload.confirm, true)
+  assert.equal(resets[0].payload.accountId, '2206569289277')
+  assert.match(toText(mounted.render()), /已复位 2206569289277/)
+})
+
+test('卡在 leased 的任务有「放回队列」入口（ack/fail/release 以前只能去敲工具）', async () => {
+  const replies = daemonReplies()
+  replies['tasks.list'] = {
+    ok: true,
+    value: [{ id: 't-leased', kind: 'publish', state: 'leased', attempts: 1, maxAttempts: 3, updatedAt: 100, leaseOwner: 'daemon-77' }],
+  }
+  replies['tasks.action'] = { ok: true, value: { id: 't-leased', kind: 'publish', state: 'queued', attempts: 0, maxAttempts: 3, updatedAt: 200 } }
+  const { connection, calls } = createFakeConnection(replies)
+  const mounted = mountPanel({ connection })
+  await snapshotText(mounted, mounted.openTab('发布'))
+
+  const release = () => roleElements(mounted.render(), 'task-release')[0]
+  release().props.onClick()
+  assert.match(toText(release()), /确认放回/)
+  assert.equal(calls.some((call) => call.endpoint === 'tasks.action'), false)
+
+  roleElements(mounted.render(), 'task-release')[0].props.onClick()
+  await settle()
+  const actions = calls.filter((call) => call.endpoint === 'tasks.action')
+  assert.equal(actions.length, 1)
+  assert.equal(actions[0].payload.id, 't-leased')
+  assert.equal(actions[0].payload.action, 'release')
+  // release 只流转本地队列，不算写外部系统：不需要 confirm。
+  assert.equal(actions[0].payload.confirm, undefined)
 })
 
 test('概览页：一切正常时不编造提醒，只给一行「没有待办」', async () => {
@@ -1414,6 +1536,13 @@ const TWO_DRAFTS = [
   '{"title":"笔记 B","desc":"全新未拆","price":1200,"images":["D:/b.jpg"]}',
 ].join('\n')
 
+/** 把「发布」tab 的模式芯片切到 enqueue（默认是 dry-run，dry-run 下入队按钮必须禁用）。 */
+function switchToEnqueueMode(mounted) {
+  const chip = collectByType(mounted.render(), 'button')
+    .find((node) => node.props['data-role'] === 'publish-mode' && toText(node) === 'enqueue 入队')
+  chip.props.onClick()
+}
+
 test('校验并入队：两次确认，第二次带 confirm:true 发 batch.enqueue，显示批次与每条初始状态', async () => {
   const replies = daemonReplies()
   replies['batch.enqueue'] = (payload) => ({
@@ -1424,6 +1553,7 @@ test('校验并入队：两次确认，第二次带 confirm:true 发 batch.enque
   const mounted = mountPanel({ connection })
   await snapshotText(mounted, mounted.openTab('发布'))
   typeDrafts(mounted, TWO_DRAFTS)
+  switchToEnqueueMode(mounted)
 
   let tree = mounted.render()
   assert.equal(roleElements(tree, 'batch-enqueue')[0].props.disabled, false)
@@ -1463,6 +1593,7 @@ test('校验并入队失败：batch-result 显示 host 错误，任务表与整�
   const mounted = mountPanel({ connection })
   await snapshotText(mounted, mounted.openTab('发布'))
   typeDrafts(mounted, TWO_DRAFTS)
+  switchToEnqueueMode(mounted)
 
   roleElements(mounted.render(), 'batch-enqueue')[0].props.onClick()
   await settle()
@@ -1473,6 +1604,30 @@ test('校验并入队失败：batch-result 显示 host 错误，任务表与整�
   assert.equal(roleNodes(mounted.render(), 'batch-result').length, 1)
   assert.equal(roleNodes(mounted.render(), 'tasks-table').length, 1)
   assert.equal(text.includes('未连接后台（daemon 未启动）'), false)
+})
+
+test('模式芯片真管事：dry-run 下「校验并入队」禁用并说明原因，切到 enqueue 才放行', async () => {
+  const replies = daemonReplies()
+  replies['batch.enqueue'] = (payload) => ({ ok: true, value: { batchId: payload.batchId, tasks: [], created: [] } })
+  const { connection, calls } = createFakeConnection(replies)
+  const mounted = mountPanel({ connection })
+  await snapshotText(mounted, mounted.openTab('发布'))
+  typeDrafts(mounted, TWO_DRAFTS)
+
+  // 默认 dry-run：写着「只填表、不点提交」，就不该能一键写进队列。
+  const dryRunButton = roleElements(mounted.render(), 'batch-enqueue')[0]
+  assert.equal(dryRunButton.props.disabled, true)
+  assert.match(dryRunButton.props.title, /dry-run/)
+  assert.equal(calls.some((call) => call.endpoint === 'batch.enqueue'), false)
+
+  switchToEnqueueMode(mounted)
+  const enqueueButton = roleElements(mounted.render(), 'batch-enqueue')[0]
+  assert.equal(enqueueButton.props.disabled, false)
+  enqueueButton.props.onClick()
+  await settle()
+  roleElements(mounted.render(), 'batch-enqueue')[0].props.onClick()
+  await settle()
+  assert.equal(calls.filter((call) => call.endpoint === 'batch.enqueue').length, 1)
 })
 
 test('任务区：tasks.list(limit 20)；failed 行有重试、queued 行没有；重试也要点两次带 confirm', async () => {
@@ -1547,10 +1702,10 @@ test('设置保存：点两次才带 confirm 发 settings.put，保存后重新�
   assert.equal(interval.props.value, '300')
 })
 
-/** 离线回放：status 报错 → 面板整块降级；启停端点仍可按。 */
+/** 离线回放：health 报错 → 面板整块降级；启停端点仍可按。 */
 function offlineManageReplies() {
   const replies = manageReplies()
-  replies.status = { ok: false, error: { code: 'NETWORK', message: 'daemon down' } }
+  replies.health = { ok: false, error: { code: 'NETWORK', message: 'daemon down' } }
   return replies
 }
 
@@ -1676,9 +1831,38 @@ test('任务筛选：state / kind 交给 daemon 过滤，发货与客服置灰�
   assert.equal(withKind[0].payload.state, 'failed')
 
   // 未接线：按钮 disabled，且 title 说明卡在哪，不给假入口。
+  // deliver 的执行器确实还是 UNSUPPORTED；reply 已接 IM 长连（BF_IM=1 才开），文案不能再说「未接线」。
   assert.equal(chip('deliver').props.disabled, true)
   assert.equal(chip('reply').props.disabled, true)
-  assert.match(chip('deliver').props.title, /未接线/)
+  assert.match(chip('deliver').props.title, /UNSUPPORTED/)
+  assert.match(chip('reply').props.title, /BF_IM=1/)
+  assert.equal(/未接线/.test(chip('reply').props.title), false)
+})
+
+test('「商品」tab：探测是只读，一次点击就入队且不带 confirm（不让纯读动作点两次）', async () => {
+  const replies = daemonReplies()
+  replies['items.list'] = {
+    ok: true,
+    value: [{ itemId: '50023914', accountId: '2206569289277', title: '学习笔记', priceCents: 12900, state: 'online', updatedAt: Date.now() - 60000 }],
+  }
+  replies['batch.enqueue'] = (payload) => ({
+    ok: true,
+    value: { batchId: payload.batchId ?? 'b-x', tasks: payload.items.map(() => ({ id: 'q', state: 'queued' })), created: payload.items.map(() => true) },
+  })
+  const { connection, calls } = createFakeConnection(replies)
+  const mounted = mountPanel({ connection })
+  await snapshotText(mounted, mounted.openTab('商品'))
+
+  roleNodes(mounted.render(), 'item-pick')[0].props.onChange({ target: { checked: true } })
+  mounted.render()
+  roleElements(mounted.render(), 'items-probe')[0].props.onClick()
+  await settle()
+
+  const enqueues = calls.filter((call) => call.endpoint === 'batch.enqueue')
+  assert.equal(enqueues.length, 1, 'probe 应该一次点击就发出，不该先上膛')
+  assert.equal(enqueues[0].payload.items[0].kind, 'probe')
+  // 关键：不带 confirm —— host 侧按 kind 判定（needsConfirm），带 confirm 说明面板还在瞎加门禁。
+  assert.equal('confirm' in enqueues[0].payload, false)
 })
 
 test('「商品」tab：items.list 渲染快照，勾选后擦亮入队（两次确认，kind=polish）', async () => {
@@ -1767,4 +1951,191 @@ test('采集行情简报：选中商家后按 sellerId 拉 market.brief，价格
   assert.match(text, /1\.50 元 ~ 3\.50 元（建议 2 元）/)
   assert.match(text, /笔记\(3\)/)
   assert.match(text, /定价依据：condition=like-new/)
+})
+
+test('文案「生成请求」：给复制按钮 + 只读 textarea，剪贴板不可用时降级提示手动复制', async () => {
+  const { render, openTab } = mountPanel()
+  let tree = openTab('文案')
+  const inputs = collectByType(tree, 'input')
+  inputs[0].props.onChange({ target: { value: '索尼 WH-1000XM4' } })
+  tree = render()
+  collectByType(tree, 'input')[1].props.onChange({ target: { value: '650' } })
+  tree = render()
+  roleElements(tree, 'copy-submit')[0].props.onClick()
+  tree = render()
+
+  // 以前这里只有一个 <pre>：长 JSON 一拖选就跳，请求根本出不去。
+  assert.equal(roleElements(tree, 'copy-json').length, 1)
+  const textarea = roleNodes(tree, 'copy-json-text')[0]
+  assert.ok(textarea, '缺少只读 textarea')
+  assert.equal(textarea.props.readOnly, true)
+  assert.match(textarea.props.value, /"tool": "xy_copy_plan"/)
+  // 只读框里的内容与 <pre> 完全一致：两个入口看到的是同一份请求。
+  assert.equal(textarea.props.value, toText(collectByType(tree, 'pre')[0]))
+
+  // 测试沙箱里没有 navigator.clipboard：点复制不能抛错，要给手动兜底提示。
+  roleElements(tree, 'copy-json')[0].props.onClick()
+  await settle()
+  tree = render()
+  assert.match(toText(roleNodes(tree, 'copy-json-hint')[0]), /手动选中下面的文本框内容复制/)
+})
+
+test('二次确认 5 秒自动撤销：只点一次不会留下永久上膛态（重试 / 停 daemon 都一样）', async () => {
+  const replies = daemonReplies()
+  const now = Date.now()
+  replies['tasks.list'] = {
+    ok: true,
+    value: [{ id: 't-failed', kind: 'publish', dedupeKey: 'k1', payload: {}, state: 'failed', attempts: 2, maxAttempts: 3, availableAt: 0, createdAt: now - 60000, updatedAt: now - 60000 }],
+  }
+  const { connection } = createFakeConnection(replies)
+  const mounted = mountPanel({ connection })
+  await snapshotText(mounted, mounted.openTab('发布'))
+
+  roleElements(mounted.render(), 'task-retry')[0].props.onClick()
+  assert.match(toText(mounted.render()), /确认重试/)
+  // 上膛后挂了一个一次性定时器（不是 interval，所以不影响轮询计数）。
+  mounted.flush()
+  assert.equal(mounted.loaded.timers.size, 1)
+  mounted.loaded.timers.fireAll()
+  const expired = toText(mounted.render())
+  assert.match(expired, /确认已过期/)
+  assert.match(expired, /重新点两次/)
+  assert.equal(toText(roleElements(mounted.render(), 'task-retry')[0]), '重试')
+})
+
+test('进程管理：supervisor 回 ok:true 但 status=failed 时，把 daemon.log 路径与尾部日志摊出来', async () => {
+  const replies = offlineManageReplies()
+  replies['daemon.start'] = {
+    ok: true,
+    value: {
+      status: 'failed',
+      message: 'daemon 起来了但没就绪（进程已退出 code=1）',
+      detail: { exitCode: 1, daemonLog: 'C:/data/logs/daemon.log', tail: 'Error: listen EADDRINUSE 47001' },
+    },
+  }
+  const mounted = mountPanel({ connection: createFakeConnection(replies).connection })
+  await snapshotText(mounted)
+
+  roleElements(mounted.render(), 'daemon-start')[0].props.onClick()
+  await settle()
+  const text = toText(mounted.render())
+
+  // 「没起来」的三种证据都要能看见：supervisor 的 message、日志路径、日志尾。
+  assert.match(text, /daemon 起来了但没就绪（进程已退出 code=1）/)
+  assert.match(text, /C:\/data\/logs\/daemon\.log/)
+  assert.match(text, /EADDRINUSE 47001/)
+  assert.match(text, /退出码 1/)
+  assert.equal(roleNodes(mounted.render(), 'daemon-failure').length, 1)
+  const body = toText(roleNodes(mounted.render(), 'daemon-logtail')[0])
+  assert.match(body, /EADDRINUSE/)
+})
+
+test('任务区：任务 id 显示全长并可复制（曾经截成 16 位，复制出来是残缺的）', async () => {
+  const longId = 't-2026-10-28-0123456789abcdef0123456789abcdef'
+  const replies = daemonReplies()
+  replies['tasks.list'] = {
+    ok: true,
+    value: [
+      { id: longId, kind: 'publish', dedupeKey: 'k1', payload: {}, state: 'queued', attempts: 0, maxAttempts: 3, availableAt: 0, createdAt: 1, updatedAt: 1 },
+      { id: 't-2', kind: 'publish', dedupeKey: 'k2', payload: {}, state: 'done', attempts: 1, maxAttempts: 3, availableAt: 0, createdAt: 2, updatedAt: 2 },
+    ],
+  }
+  const mounted = mountPanel({ connection: createFakeConnection(replies).connection })
+  await snapshotText(mounted, mounted.openTab('发布'))
+
+  const cells = roleNodes(mounted.render(), 'task-id')
+  assert.equal(cells.length, 2)
+  // 单元里是「id 文本 + 复制按钮」；id 本身必须是全长（截断的是显示，不是数据）。
+  const idText = cells[0].children[0]
+  assert.equal(toText(idText), longId)
+  assert.equal(idText.props.title, longId)
+  assert.match(toText(cells[0]), /^t-2026-10-28-0123456789abcdef0123456789abcdef复制$/)
+  assert.equal(roleElements(mounted.render(), 'task-id-copy').length, 2)
+
+  roleElements(mounted.render(), 'task-id-copy')[0].props.onClick()
+  await settle()
+  // 沙箱没有剪贴板：按钮要变成失败态，而不是静默无反应。
+  assert.match(toText(roleElements(mounted.render(), 'task-id-copy')[0]), /复制失败/)
+})
+
+test('账号表：写操作只锁那一行，别的行照常可点（以前一个 busy 布尔锁整表）', async () => {
+  const replies = daemonReplies()
+  replies.accounts = { ok: true, value: [
+    { accountId: 'acc-a', updatedAt: Date.now(), savedFieldCount: 3, ready: true },
+    { accountId: 'acc-b', updatedAt: Date.now(), savedFieldCount: 3, ready: true },
+  ] }
+  replies['accounts.verify'] = (payload) => ({ ok: true, value: { accountId: payload.accountId, online: true, checkedAt: Date.now() } })
+  replies['accounts.import'] = (payload) => ({ ok: true, value: { accountId: payload.accountId } })
+  const { mounted } = await openAccountTab(replies)
+  const rows = () => roleNodes(mounted.render(), 'account-row')
+  const roleIn = (rowIndex, role) => roleElements(rows()[rowIndex], role)[0]
+
+  // 第一行点两次导入 → 第一次上膛，第二次进入 busy。
+  roleIn(0, 'account-import').props.onClick()
+  assert.match(toText(rows()[0]), /确认导入/)
+  roleIn(0, 'account-import').props.onClick()
+
+  const busyRow = rows()[0], idleRow = rows()[1]
+  assert.equal(toText(roleElements(busyRow, 'account-import')[0]), '导入中…')
+  assert.equal(roleElements(busyRow, 'account-import')[0].props.disabled, true)
+  // 关键：另一行不被牵连。
+  assert.equal(roleElements(idleRow, 'account-import')[0].props.disabled, false)
+  assert.equal(roleElements(idleRow, 'account-login')[0].props.disabled, false)
+  assert.equal(roleElements(idleRow, 'account-switch')[0].props.disabled, false)
+  await settle()
+})
+
+test('账号表：上膛态（点了没反应的那一下）按钮要换样式，光换文案不够', async () => {
+  const replies = daemonReplies()
+  replies.accounts = { ok: true, value: [
+    { accountId: 'acc-a', updatedAt: Date.now(), savedFieldCount: 3, ready: true },
+  ] }
+  replies['accounts.verify'] = (payload) => ({ ok: true, value: { accountId: payload.accountId, online: true, checkedAt: Date.now() } })
+  const { tree } = await openAccountTab(replies)
+  const idle = roleElements(tree(), 'account-import')[0]
+  assert.equal(String(idle.props.style.border), '1px solid var(--dsw-alias-border-l2)')
+  // 第一次点：只上膛，不发请求。
+  idle.props.onClick()
+  const armed = roleElements(tree(), 'account-import')[0]
+  assert.equal(toText(armed), '确认导入')
+  assert.match(String(armed.props.style.border), /dashed/)
+  assert.equal(String(armed.props.style.color), 'var(--dsw-alias-label-warning, #9a6700)')
+})
+
+test('账号表：网格列宽合计不超出内容区 860px（以前 968px，直接溢出）', () => {
+  const start = source.indexOf('const ACCOUNT_GRID =')
+  assert.ok(start > 0, 'client.js 里找不到 ACCOUNT_GRID')
+  const literal = source.slice(start, source.indexOf('\n', start))
+  const columns = [...literal.matchAll(/(\d+)px/g)].map((match) => Number(match[1]))
+  assert.equal(columns.length, 7)
+  // 7 列之间有 6 个 8px 间距（见 src/client-bundle 的 gridRow）。
+  const total = columns.reduce((sum, width) => sum + width, 0) + 6 * 8
+  assert.ok(total <= 860, '账号表格子合计 ' + total + 'px，会撑破 860px 内容区')
+})
+
+test('商品 tab：擦亮幂等键用本地日期（UTC 写法在北京时间 00:00–08:00 会算成前一天）', async () => {
+  const replies = daemonReplies()
+  replies['items.list'] = {
+    ok: true,
+    value: [{ itemId: '50023914', accountId: '2206569289277', title: '学习笔记', priceCents: 12900, state: 'online', updatedAt: Date.now() - 60000 }],
+  }
+  replies['batch.enqueue'] = (payload) => ({
+    ok: true,
+    value: { batchId: payload.batchId ?? 'b-x', tasks: payload.items.map(() => ({ id: 'q', state: 'queued' })), created: payload.items.map(() => true) },
+  })
+  const { connection, calls } = createFakeConnection(replies)
+  const mounted = mountPanel({ connection })
+  await snapshotText(mounted, mounted.openTab('商品'))
+
+  roleNodes(mounted.render(), 'item-pick')[0].props.onChange({ target: { checked: true } })
+  mounted.render()
+  roleElements(mounted.render(), 'items-polish')[0].props.onClick()
+  roleElements(mounted.render(), 'items-polish')[0].props.onClick()
+  await settle()
+
+  const enqueue = calls.filter((call) => call.endpoint === 'batch.enqueue')[0]
+  const now = new Date()
+  const pad = (value) => String(value).padStart(2, '0')
+  const localDay = String(now.getFullYear()) + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate())
+  assert.equal(enqueue.payload.items[0].dedupeKey, 'polish:50023914:' + localDay)
 })

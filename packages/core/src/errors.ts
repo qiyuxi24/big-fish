@@ -16,6 +16,10 @@ export type ErrorCode =
   | 'UNSUPPORTED'
   | 'INTERNAL'
   | 'UNAUTHORIZED'
+  /** 路径/资源不存在（404）。与 VALIDATION 分开：客户端据此可判断「是不是这个 daemon 版本没这条路由」。 */
+  | 'NOT_FOUND'
+  /** 路径存在但方法不对（405）。 */
+  | 'METHOD_NOT_ALLOWED'
   /** 平台返回了我们没归类的 ret；保留原文进 message，重试无意义。 */
   | 'UNKNOWN'
 
@@ -31,6 +35,8 @@ export const ERROR_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
   'UNSUPPORTED',
   'INTERNAL',
   'UNAUTHORIZED',
+  'NOT_FOUND',
+  'METHOD_NOT_ALLOWED',
   'UNKNOWN',
 ])
 
@@ -47,6 +53,9 @@ const RETRYABLE: Record<ErrorCode, boolean> = {
   INTERNAL: false,
   // 401：daemon token 缺失/不匹配。凭据本身可重配，但重试同一请求无意义。
   UNAUTHORIZED: false,
+  // 404/405：路由不存在/方法不对，是「代码或版本问题」，重试不会变。
+  NOT_FOUND: false,
+  METHOD_NOT_ALLOWED: false,
   UNKNOWN: false,
 }
 
@@ -75,9 +84,16 @@ export class XianyuError extends Error {
     this.details = options.details ?? {}
   }
 
-  /** 映射为 IPC 错误体。 */
-  toApiError(): { code: string; message: string; retryable: boolean } {
-    return { code: this.code, message: this.message, retryable: this.retryable }
+  /**
+   * 映射为 IPC 错误体。
+   *
+   * details 必须一起透出：错误体是 agent/面板唯一能看到的失败信息，
+   * 少了 details 就只剩一句话（「发布步骤『填价格』失败」），
+   * 调用方无法从结构上知道该改哪个字段、该等多久、该找谁。
+   * 调用方（daemon 的 sendJson）已经统一过 redact，这里不做二次脱敏。
+   */
+  toApiError(): { code: string; message: string; retryable: boolean; details: Record<string, unknown> } {
+    return { code: this.code, message: this.message, retryable: this.retryable, details: this.details }
   }
 }
 

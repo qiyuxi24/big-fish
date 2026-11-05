@@ -113,10 +113,14 @@ export async function publishViaCdp(
     }
     const result = await runSteps(page, cdpDraft, ctx, options)
     if (!result.ok) {
+      // 保留步骤机带回来的 code：风控命中是 RISK_CONTROL，不是 INTERNAL。
+      // 一律压成 INTERNAL 会让上层丢掉「这是风控、要停手冷却」这个唯一有用的信息，
+      // 熔断不会 trip，人工还会当成选择器坏了反复重试。
       throw new XianyuError({
-        code: 'INTERNAL',
+        code: result.code ?? 'INTERNAL',
         message:
           '发布步骤「' + result.step + '」失败：' + result.error + '（不自动重试，请人工确认页面状态）',
+        details: { step: result.step, stepCode: result.code ?? 'INTERNAL' },
       })
     }
     itemId = result.itemId

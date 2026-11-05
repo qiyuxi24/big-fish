@@ -5,7 +5,7 @@
  * 跟任务 / 账号的写路由放在一起会让最热的文件持续变大。
  * @module @bigfish/daemon/routes-status
  */
-import type { CircuitBreaker, DaemonStatus, TaskQueue } from '@bigfish/core'
+import type { CircuitBreaker, DaemonCapabilities, DaemonStatus, TaskQueue } from '@bigfish/core'
 import { ok, sendJson } from './http.ts'
 import type { BrowserStatus } from './managed-browser.ts'
 import type { Route, RouteContext } from './routes.ts'
@@ -29,9 +29,11 @@ interface StatusSource {
   circuits?: CircuitBreaker | undefined
   /** worker 计数；缺省或 undefined 时不带 worker 字段。 */
   worker?: (() => WorkerCounts) | undefined
+  /** 写能力快照；缺省时不带 capabilities 字段（老测试/最小装配）。 */
+  capabilities?: (() => DaemonCapabilities) | undefined
 }
 
-/** 组装 DaemonStatus：queue 统计 + 账号列表 + 仍在冷却中的熔断原因。 */
+/** 组装 DaemonStatus：queue 统计 + 账号列表 + 仍在冷却中的熔断原因 + 写能力。 */
 export function buildStatus(source: StatusSource): DaemonStatus {
   const circuits: Record<string, string> = {}
   for (const state of source.circuits?.list() ?? []) circuits[state.accountId] = state.reason
@@ -43,6 +45,7 @@ export function buildStatus(source: StatusSource): DaemonStatus {
     accounts: source.accounts?.() ?? [],
     circuits,
     ...(source.worker === undefined ? {} : { worker: source.worker() }),
+    ...(source.capabilities === undefined ? {} : { capabilities: source.capabilities() }),
   }
 }
 

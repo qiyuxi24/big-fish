@@ -91,13 +91,26 @@ export function parseImToken(raw: unknown): string {
   return token
 }
 
+/**
+ * 从 cookie 的 _m_h5_tk 里取 smToken。
+ * 形态是 `<token>_<expireMs>`，签名只用前半段；取不到就不带该参数（页面自己也是这个行为）。
+ */
+function readSmToken(cookies: Record<string, string>): string | undefined {
+  const raw = cookies['_m_h5_tk']
+  if (typeof raw !== 'string') return undefined
+  const token = raw.split('_')[0]?.trim() ?? ''
+  return token === '' ? undefined : token
+}
+
 /** 取 IM accessToken；网络/签名/风控错误原样上抛，不在这一层重试（重连由 im-client 管）。 */
 export async function fetchImAccessToken(
   session: ImTokenSession,
   options: ImTokenOptions,
 ): Promise<ImTokenResult> {
   const deviceId = stableImDeviceId(session.accountId, session.deviceId)
-  const request = buildImTokenRequest({ deviceId })
+  // smToken 与 sessionOption 一起决定这个接口是不是被当正常页面请求：少了就是 RGV587 风控。
+  const smToken = readSmToken(session.cookies)
+  const request = buildImTokenRequest({ deviceId, ...(smToken === undefined ? {} : { smToken }) })
   const raw = await callMtop(options.transport, {
     api: request.api,
     version: request.version,

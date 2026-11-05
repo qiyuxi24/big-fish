@@ -19,6 +19,7 @@ import { withDaemonWatch } from './src/daemon-watch.js'
 import { createPanelRoute } from './src/host-route.js'
 import { RPC_CHANNEL, createRpcBridge } from './src/rpc.js'
 import { createToolMiddleware } from './src/tool-middleware.js'
+import { registerSettingsHost } from './src/settings-host.js'
 import { buildTools } from './src/tools.js'
 
 /** Cordis 插件名，loader 诊断与 cordis.patch.yml 的 id 都靠它定位。 */
@@ -42,11 +43,28 @@ export const inject = ['tools']
  */
 export function apply(ctx, config = {}) {
   const resolved = normalizeConfig(config, ctx)
+  // 设置卡片里的「是否启用」为 false：整插件零副作用（不注册工具、不挂门禁/rpc、不拉 daemon、
+  // 不启轮询）。日志仍留一条，便于确认「关掉了」而不是「加载失败」。
+  if (resolved.enabled === false) {
+    console.log(JSON.stringify({ level: 'info', plugin: name, msg: 'bigfish-ops 已禁用（enabled=false）', enabled: false }))
+    return
+  }
   const client = createDaemonClient(resolved)
   const specs = buildTools({ client, config: resolved, version })
-  // 注册 + 门禁走同一个中间件：规格是单一事实源，插件卸载时工具由宿主 effect 自动解绑。
-  const registry = createToolMiddleware({ gate: resolved.writeGate }).register(ctx, specs)
-  const tools = registry.names
+  const middleware = createToolMiddleware({ gate: resolved.writeGate })
+  // 模型可见面（16 个 xy_* 工具 + 写操作门禁）做成可撤销/重注册的控制器：设置页「是否启用」
+  // 关掉时 dispose 真的把工具从宿主撤下来，省掉模型每轮的工具 schema 固定税；后台 daemon
+  // 桥接（supervisor / rpc / alerts）不占模型 token 也不直接暴露给模型，保持常驻不随开关拆。
+  let registry
+  const setEnabled = (enabled) => {
+    if (enabled && registry === undefined) registry = middleware.register(ctx, specs)
+    if (!enabled && registry !== undefined) {
+      registry.dispose()
+      registry = undefined
+    }
+  }
+  setEnabled(true) // 装配层 config.enabled 已由上面的 early-return 确认不是 false。
+  const tools = registry === undefined ? [] : registry.names
   // 面板实时数据/写动作走宿主 rpc 通道；通道不存在时工具照常可用，面板退回静态说明（不阻断加载）。
   // 面板连不上 daemon（NETWORK）时由宿主自动拉起一个：用户不必先手动 pnpm daemon:start。
   const supervisor = createDaemonSupervisor({
@@ -65,19 +83,24 @@ export function apply(ctx, config = {}) {
   // 没有活着的 agent 时只注册监听、不轮询，等 agent/created 再开——避免拉起一堆空转定时器。
   const alerts = startAlerts(ctx, client, resolved)
   // 加载日志保持一条：面板 rpc 状态作为字段带出，便于按行 grep 且不打断 apply.test 的断言。
+  const counts = registry === undefined ? { read: 0, confirm: 0 } : registry.counts
   console.log(JSON.stringify({
     level: 'info',
     plugin: name,
     msg: 'bigfish-ops 已加载',
     tools,
-    readTools: registry.counts.read,
-    confirmTools: registry.counts.confirm,
+    readTools: counts.read,
+    confirmTools: counts.confirm,
     daemonUrl: resolved.daemonUrl,
     writeGate: resolved.writeGate,
     autoStartDaemon: resolved.autoStartDaemon,
     rpcChannel,
     alerts: describeAlerts(alerts),
   }))
+  // 宿主设置页的「是否启用」卡片：注册 bigfish-ops 命名空间并把值投影回 setEnabled。
+  // 放在加载日志之后，且用守卫式注入——没有 settings 服务（CLI/测试替身）时零额外副作用，
+  // 保证上面的单条加载日志断言成立。settings.yaml 里存过 false 时，project() 会随即把工具撤销。
+  registerSettingsHost(ctx, { defaultValue: resolved.enabled, onEnabledChange: setEnabled })
 }
 
 /**

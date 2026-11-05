@@ -2,6 +2,17 @@
      * 片段 02：草稿集解析与发布参数组装（纯数据：不联网、不碰 daemon、只组 JSON）。
      * 拼接顺序由文件名决定；单独打开不是合法模块，见 scripts/build-client.mjs。
      */
+    /**
+     * 草稿价格（单位：分）。协议字段是 `priceCents`（core 与 daemon 都只认它），
+     * 但面板早期文案与示例写的是 `price`——两个都收，避免用户按示例粘贴却被判「缺 priceCents」。
+     * 返回 NaN 表示两个都没给，交给调用方报错。
+     */
+    function draftPriceCents(draft) {
+      const raw = draft.priceCents !== undefined && draft.priceCents !== null ? draft.priceCents : draft.price
+      if (typeof raw === 'number') return raw
+      if (typeof raw === 'string' && raw.trim() !== '') return Number(raw.trim())
+      return Number.NaN
+    }
     /** 逐行解析草稿集（内联 JSON 对象或 .json 路径）：路径条目交给 host 侧读取，这里只认形状。 */
     function parseDraftLines(text) {
       return text.split('\n').map(line => line.trim()).filter(line => line !== '').map((line, index) => {
@@ -13,7 +24,9 @@
         let draft
         try { draft = JSON.parse(line) } catch { return { index, kind: 'inline', ok: false, message: 'JSON 错误' } }
         if (typeof draft !== 'object' || draft === null || Array.isArray(draft)) return { index, kind: 'inline', ok: false, message: 'JSON 不是对象' }
-        const missing = ['title', 'price', 'images'].filter(key => draft[key] === undefined || draft[key] === null || draft[key] === '' || (Array.isArray(draft[key]) && draft[key].length === 0))
+        // 价格单独判：字段名两个都收，但报错统一说协议名 priceCents（否则用户不知道该改哪个键）。
+        const missing = ['title', 'images'].filter(key => draft[key] === undefined || draft[key] === null || draft[key] === '' || (Array.isArray(draft[key]) && draft[key].length === 0))
+        if (!Number.isSafeInteger(draftPriceCents(draft)) || draftPriceCents(draft) <= 0) missing.push('priceCents')
         return missing.length === 0
           ? { index, kind: 'inline', ok: true, draft, message: '通过' }
           : { index, kind: 'inline', ok: false, draft, message: '缺 ' + missing.join(' / ') }
@@ -113,22 +126,39 @@
       if (Object.keys(specs).length > 0) args.specs = specs
       return { tool: 'xy_copy_plan', arguments: args }
     }
-    /** 内联草稿 → publish 任务（面板的 price 是分）；daemon 执行时 title/desc/priceCents/images 必填，缺了在这里拦下。 */
-    function buildPublishItems(results, accountId) {
+    /**
+     * 内联草稿 → publish 任务（面板的价格一律按「分」理解）；daemon 执行时 title/desc/priceCents/images 必填。
+     *
+     * shipping / address 必须带上：队列任务执行时 daemon 读不到草稿文件，
+     * 少了 address「必填项预检」必然 VALIDATION（宝贝所在地为空），任务只会 failed。
+     * 取值优先级：草稿里显式给了 > daemon 设置里的 defaultAddress / shipping。
+     * 与 host 侧 publish-flow.js 的 buildPublishEnqueueInput 保持同一口径。
+     */
+    function buildPublishItems(results, accountId, defaults) {
       const items = [], problems = []
+      const fallback = defaults === undefined || defaults === null ? {} : defaults
       for (const result of results) {
-        const draft = result.draft ?? {}, priceCents = Number(draft.price), desc = typeof draft.desc === 'string' ? draft.desc.trim() : ''
+        const draft = result.draft ?? {}, priceCents = draftPriceCents(draft), desc = typeof draft.desc === 'string' ? draft.desc.trim() : ''
         const invalid = typeof draft.title !== 'string' || draft.title.trim() === '' || desc === '' || !Number.isSafeInteger(priceCents) || priceCents <= 0 || !Array.isArray(draft.images) || draft.images.length === 0
-        if (invalid) { problems.push('第 ' + String(result.index + 1) + ' 行缺 title / desc / price / images'); continue }
+        if (invalid) { problems.push('第 ' + String(result.index + 1) + ' 行缺 title / desc / priceCents / images'); continue }
         const payload = { accountId, title: draft.title.trim(), desc, priceCents, images: draft.images }
         if (typeof draft.category === 'string' && draft.category.trim() !== '') payload.category = draft.category.trim()
-        items.push({ kind: 'publish', dedupeKey: 'publish:' + JSON.stringify([payload.title, payload.desc, priceCents, draft.images, payload.category ?? null]), payload })
+        const shipping = draft.shipping === 'free' || draft.shipping === 'none' ? draft.shipping : fallback.shipping
+        if (shipping === 'free' || shipping === 'none') payload.shipping = shipping
+        const address = typeof draft.address === 'string' && draft.address.trim() !== '' ? draft.address.trim() : fallback.address
+        if (typeof address === 'string' && address.trim() !== '') payload.address = address.trim()
+        // 幂等键带上账号：daemon 的 dedupe_key 是全局唯一，不带账号会让 B 号发同款被判成重复丢单。
+        items.push({ kind: 'publish', dedupeKey: 'publish:' + JSON.stringify([accountId, payload.title, payload.desc, priceCents, draft.images, payload.shipping ?? null, payload.address ?? null, payload.category ?? null]), payload })
       }
       return { items, problems }
     }
     /** settings 对象 → 表单初值（发布间隔按秒展示）。 */
     function settingsForm(settings) { return { interval: String(Math.round(Number(settings.publishMinIntervalMs ?? 0) / 1000)), category: String(settings.defaultCategory ?? ''), style: String(settings.copyStyle ?? COPY_STYLE_OPTIONS[0].id) } }
-    const resultLine = (result, role) => result === null ? null : h('div', { style: result.kind === 'bad' ? S.badText : result.kind === 'ok' ? S.goodText : S.small, 'data-role': role }, result.text)
+    /**
+     * 动作结果行：所有「点两次写操作」的提示都走这里。
+     * `role=status` + aria-live 让读屏把「再点一次」「已过期」「失败原因」播报出来——上膛态原本只有颜色差别。
+     */
+    const resultLine = (result, role) => result === null ? null : h('div', { style: result.kind === 'bad' ? S.badText : result.kind === 'ok' ? S.goodText : S.small, 'data-role': role, role: 'status', 'aria-live': 'polite' }, result.text)
     function gridRow(columns, head) { return { display: 'grid', gridTemplateColumns: columns, gap: '8px', alignItems: 'center', padding: '7px 0', borderBottom: '1px solid var(--dsw-alias-border-l2)', fontSize: head ? '12px' : '13px', color: head ? 'var(--dsw-alias-label-secondary)' : 'var(--dsw-alias-label-primary)' } }
     const TASK_GRID = 'minmax(110px, 1.2fr) 70px 84px 64px 92px 78px'
 

@@ -10,11 +10,14 @@ import { fileURLToPath } from 'node:url'
 import {
   DEFAULT_LOG_TAIL,
   DEFAULT_PORT,
+  MAX_LOG_BYTES,
+  MAX_LOG_READ_BYTES,
   MAX_LOG_TAIL,
   PID_FILE_NAME,
   SERVICE_COMMANDS,
   daemonArgs,
   evaluateServiceState,
+  formatBytes,
   formatPidFile,
   formatUptime,
   healthUrl,
@@ -181,6 +184,18 @@ test('evaluateServiceState：五态矩阵', () => {
     pid: 100,
     port: 47001,
   })
+  // 最常见的坏组合：pid 文件指向的进程早没了，但端口上有另一个实例在应答。
+  // 必须报 unmanaged（带健康响应里的真实 pid），否则 stop 会以为「没东西可停」并 exit 0。
+  assert.deepEqual(evaluateServiceState({ pidRecord: record, processAlive: false, health: { ok: true, pid: 200, port: 47002 } }), {
+    state: 'unmanaged',
+    pid: 200,
+    port: 47002,
+  })
+  // 健康响应里没有 pid（旧版 daemon）时不要退回 pid 文件里那个已死的 pid，只报端口。
+  assert.deepEqual(evaluateServiceState({ pidRecord: record, processAlive: false, health: { ok: true } }), {
+    state: 'unmanaged',
+    port: 47001,
+  })
   assert.deepEqual(evaluateServiceState({ pidRecord: undefined, processAlive: false, health: { ok: true, pid: 200, port: 47002 } }), {
     state: 'unmanaged',
     pid: 200,
@@ -211,6 +226,22 @@ test('formatUptime：秒 / 分 / 时 / 天 边界', () => {
   assert.equal(formatUptime(86_399_000), '23h 59m')
   assert.equal(formatUptime(86_400_000), '1d 0h')
   assert.equal(formatUptime(-5), '0s')
+})
+
+test('formatBytes：B / KB / MB 边界', () => {
+  assert.equal(formatBytes(0), '0B')
+  assert.equal(formatBytes(1023), '1023B')
+  assert.equal(formatBytes(1024), '1.0KB')
+  assert.equal(formatBytes(1536), '1.5KB')
+  assert.equal(formatBytes(8 * 1024 * 1024), '8.0MB')
+  assert.equal(formatBytes(-5), '0B')
+})
+
+test('日志上限常量：读侧 64KB、轮转阈值 8MB，且轮转阈值远大于读窗口', () => {
+  assert.equal(MAX_LOG_READ_BYTES, 64 * 1024)
+  assert.equal(MAX_LOG_BYTES, 8 * 1024 * 1024)
+  // 读窗口必须远小于轮转阈值，否则「只读末尾」省不下什么。
+  assert.ok(MAX_LOG_READ_BYTES * 8 <= MAX_LOG_BYTES)
 })
 
 test('常量：DEFAULT_PORT 与 packages/core/src/config.ts 一致', () => {

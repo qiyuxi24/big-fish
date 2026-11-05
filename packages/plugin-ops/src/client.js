@@ -9,9 +9,13 @@
 import { readFile } from 'node:fs/promises'
 
 /** 与 @bigfish/core 的 ErrorCode 保持同构；未知 code 收敛为 INTERNAL。 */
-const KNOWN_CODES = new Set([
+export const KNOWN_CODES = new Set([
   'VALIDATION', 'AUTH_EXPIRED', 'RISK_CONTROL', 'RATE_LIMITED', 'CIRCUIT_OPEN',
   'NETWORK', 'STORAGE', 'UNSUPPORTED', 'INTERNAL', 'UNAUTHORIZED',
+  'NOT_FOUND', 'METHOD_NOT_ALLOWED',
+  // core 的 ErrorCode 一直有 UNKNOWN（兜底码），这里漏了它会让 daemon 明确抛的
+  // UNKNOWN 被降级成 INTERNAL，工具层随即给出「内部错误，看日志」这种错误指引。
+  'UNKNOWN',
 ])
 
 /** daemon 调用失败。code 可以直接展示给模型/用户。 */
@@ -19,13 +23,15 @@ export class DaemonError extends Error {
   /**
    * @param {string} code - 稳定错误码。
    * @param {string} message - 面向用户的中文说明。
-   * @param {{retryable?: boolean, cause?: unknown}} [options] - 重试语义与底层原因。
+   * @param {{retryable?: boolean, cause?: unknown, details?: Record<string, unknown>}} [options]
+   *   重试语义、底层原因与结构化上下文（details 会原样带给工具层，用于补充可执行的提示）。
    */
   constructor(code, message, options = {}) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause })
     this.name = 'DaemonError'
     this.code = code
     this.retryable = options.retryable ?? false
+    this.details = options.details ?? {}
   }
 }
 
@@ -93,10 +99,26 @@ export function createDaemonClient(options) {
     if (payload.ok === false) {
       const error = payload.error ?? {}
       const code = KNOWN_CODES.has(error.code) ? error.code : 'INTERNAL'
-      throw new DaemonError(code, String(error.message ?? 'daemon 返回错误'), { retryable: Boolean(error.retryable) })
+      // details 必须透传：它是 host/daemon 唯一能告诉模型「哪个字段错了、还差多少、谁占着」的通道。
+      // 曾经这里只留 code+message，于是「发布步骤失败」永远无法自我修复。
+      const details = error.details !== null && typeof error.details === 'object' && !Array.isArray(error.details)
+        ? error.details
+        : {}
+      throw new DaemonError(code, String(error.message ?? 'daemon 返回错误'), {
+        retryable: Boolean(error.retryable),
+        details,
+      })
     }
     if (!response.ok) {
       throw new DaemonError('INTERNAL', `daemon 返回 HTTP ${response.status}：${pathname}`)
+    }
+    // PUT /settings 会把「被夹到合法区间」的字段放进 clamped（daemon 侧 routes-settings.ts 的设计是
+    // 明确告知、不要静默）。以前这里只 return payload.data，夹取信息在链路中间蒸发，
+    // 用户把间隔填成 5 秒、面板回「已保存」而实际生效 60 秒——等于撒谎。
+    const clamped = payload.clamped
+    if (clamped !== null && typeof clamped === 'object' && !Array.isArray(clamped) && Object.keys(clamped).length > 0) {
+      const data = payload.data
+      return data !== null && typeof data === 'object' && !Array.isArray(data) ? { ...data, clamped } : { clamped }
     }
     return payload.data
   }
@@ -135,7 +157,16 @@ export function createDaemonClient(options) {
     // 设置落在 daemon 的 settings.json；PUT 只接受补丁（缺省字段保持不变）。
     getSettings: () => request('/settings'),
     putSettings: (patch) => request('/settings', { method: 'PUT', body: patch }),
-    listItems: () => request('/items'),
+    // 商品列表支持按账号/状态过滤：多账号下「选中账号 B 却列出 A 的商品」会导致
+    // 擦亮任务带上 itemId(A)+accountId(B)，真机上就是一次错账号写操作。
+    listItems: (filter = {}) => {
+      const query = new URLSearchParams()
+      if (filter.state) query.set('state', String(filter.state))
+      if (filter.accountId) query.set('accountId', String(filter.accountId))
+      if (filter.limit !== undefined) query.set('limit', String(filter.limit))
+      const suffix = query.size > 0 ? `?${query.toString()}` : ''
+      return request(`/items${suffix}`)
+    },
     // 只读摘要：账号 id / 更新时间 / 字段数 / 是否可用，不含任何 cookie 值。
     listAccounts: () => request('/accounts'),
     // 登录态探测是只读动作（一次 mtop head），但可能触发 _m_h5_tk 刷新并回写凭据，故放宽超时。
@@ -152,6 +183,12 @@ export function createDaemonClient(options) {
     // 采集会翻页 + 逐件详情（最多 60 件串行），是 daemon 侧最慢的读接口，超时要盖住它。
     collectSeller: (input = {}) => request('/sellers/collect', { method: 'POST', body: input, timeoutMs: 170_000 }),
     listSellers: () => request('/sellers'),
+    // 熔断复位：把账号从熔断表里摘掉（只在本地状态，不触达闲鱼）。
+    resetCircuit: (accountId) => request('/circuits/reset', { method: 'POST', body: { accountId } }),
+    // 策略预检：合规规则（标题字数/违禁词/图片数/价格）只有 core 的 checkListing 一份实现，
+    // 插件按 AGENTS §2 不能 import core，所以让 daemon 代跑。纯函数、无副作用、不联网，
+    // 因此 dry-run 阶段也能安全调用——这是「本地就把能判定的错误拦下来」的前提。
+    checkPolicy: (draft) => request('/policy/check', { method: 'POST', body: draft, timeoutMs: 10_000 }),
     listSellerItems: (sellerId, limit) => {
       const query = limit === undefined ? '' : `?limit=${String(limit)}`
       return request(`/sellers/${encodeURIComponent(String(sellerId))}/items${query}`)

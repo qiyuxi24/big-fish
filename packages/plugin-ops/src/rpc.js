@@ -15,13 +15,15 @@ import { listCategoryTemplates } from './category-templates.js'
 import { startDaemon, stopDaemon } from './daemon-control.js'
 import {
   ID_RE,
-  WRITE_ENDPOINTS,
+  ACCOUNT_ID_RE,
   isRecord,
   failEnvelope,
+  needsConfirm,
   errorEnvelope,
   readRequiredString,
   readIntegerValue,
   readTaskFilter,
+  readItemsFilter,
   readEventFilter,
   readReferenceInput,
   readMarketBriefInput,
@@ -34,6 +36,8 @@ import {
   readSettingsEndpoint,
   writeSettingsEndpoint,
   retryTaskEndpoint,
+  taskActionEndpoint,
+  resetCircuitEndpoint,
   getBatchEndpoint,
   browserStatusEndpoint,
   importAccountEndpoint,
@@ -61,17 +65,25 @@ function createDefaultHandlers(options) {
     // 托管浏览器状态：只读，不挂 confirm（面板进账号 tab 就能看到窗口在不在）。
     'browser.status': () => browserStatusEndpoint(client),
     accounts: () => client.listAccounts(),
-    'items.list': () => client.listItems(),
+    // 快照过滤必须透传：daemon 的 GET /items 一直支持 state/accountId/limit，
+    // 但以前这里固定调 client.listItems()，面板拿不到「只属于当前账号」的商品。
+    'items.list': (body) => client.listItems(readItemsFilter(body)),
     // 面板「文案」tab 的品类模板：纯常量、不碰 daemon，也不写任何状态。
     'copy.templates': () => listCategoryTemplates(),
     'tasks.list': (body) => client.listTasks(readTaskFilter(body)),
     // 面板工作流树：只读增量拉取，since 游标由客户端持有（daemon 不记面板状态）。
     'events.list': (body) => client.listEvents(readEventFilter(body)),
     'tasks.retry': (body) => retryTaskEndpoint(client, readRequiredString(body, 'id', ID_RE)),
+    // ack/fail/release 只流转本地队列（不触达闲鱼），但它们是「人在收尾」的动作：
+    // 面板以前完全没有入口，只能让用户去敲 xy_task_action——侧边栏里读得到失败、却处理不了。
+    'tasks.action': (body) => taskActionEndpoint(client, body),
+    // 熔断复位：daemon 一直有这个端点（POST /circuits/reset），但 rpc 没接，
+    // 于是「账号被熔断」只能等 10 分钟冷却，面板还写着「手动重置待 rpc 补」。
+    'circuits.reset': (body) => resetCircuitEndpoint(client, readRequiredString(body, 'accountId', ACCOUNT_ID_RE)),
     'batches.get': (body) => getBatchEndpoint(client, readRequiredString(body, 'id', ID_RE)),
     'reference.collect': (body) => client.collectReferences(readReferenceInput(body)),
-  // 市场简报：只读统计（已入库的他人商品），面板/工具用来定结构与定价。
-  'market.brief': (body) => client.marketBrief(readMarketBriefInput(body)),
+    // 市场简报：只读统计（已入库的他人商品），面板/工具用来定结构与定价。
+    'market.brief': (body) => client.marketBrief(readMarketBriefInput(body)),
     // 采集模块：先解析链接（只读），再决定采谁 —— 面板两步走，用户能看清要采的是哪家店。
     'reference.parseLink': (body) => client.resolveLink(readLinkInput(body)),
     // 会写本地库：在 WRITE_ENDPOINTS 里，等 confirm:true。
@@ -134,7 +146,9 @@ export function createRpcBridge(options = {}) {
       if (handler === undefined) return failEnvelope('UNSUPPORTED', '不支持的 rpc endpoint：' + String(endpoint).slice(0, 80))
       const body = payload === undefined || payload === null ? {} : payload
       if (!isRecord(body)) return failEnvelope('VALIDATION', 'rpc payload 必须是对象')
-      if (WRITE_ENDPOINTS.has(endpoint) && body.confirm !== true) return failEnvelope('VALIDATION', '需要 confirm:true')
+      // 门禁按「这次调用到底写不写外部系统」判，而不是按端点名：
+      // batch.enqueue 里 probe 是纯读，不该让它也点两次（见 rpc-schema.js 的 needsConfirm）。
+      if (needsConfirm(endpoint, body) && body.confirm !== true) return failEnvelope('VALIDATION', '需要 confirm:true')
       return { ok: true, value: await handler(body, { signal }) }
     } catch (error) {
       return errorEnvelope(error)

@@ -61,6 +61,7 @@ test('取 IM token 请求：紧凑 JSON data + mtop 额外参数', () => {
   const data: unknown = JSON.parse(request.data)
   assert.deepEqual(data, { appKey: IM_APP_KEY, deviceId: 'device-9' })
   assert.deepEqual(request.extraParams, {
+    sessionOption: 'AutoLoginOnly',
     accountSite: 'xianyu',
     queryToken: 'sm',
     sm: 'sm',

@@ -13,7 +13,7 @@ import type { AddressInfo } from 'node:net'
 import { dirname } from 'node:path'
 
 import { XianyuError, fail, toXianyuError } from '@bigfish/core'
-import type { CircuitBreaker, DaemonStatus, ItemRepository, SellerRepository, TaskEventSink, TaskQueue } from '@bigfish/core'
+import type { CircuitBreaker, DaemonCapabilities, DaemonStatus, ItemRepository, SellerRepository, TaskEventSink, TaskQueue } from '@bigfish/core'
 import { isLoopbackHost } from './config.ts'
 import type { DaemonConfig } from './config.ts'
 import { extractBearer, loadRedact, sendError, sendMappedError, tokenMatches } from './http.ts'
@@ -32,6 +32,7 @@ import type {
 } from './routes.ts'
 import type { AccountSummary } from './account-list.ts'
 import type { BrowserStatus } from './managed-browser.ts'
+import type { ImRuntime } from './im-runtime.ts'
 import type { SellerCollectHandler } from './seller-routes.ts'
 import type { SettingsStore } from './settings.ts'
 
@@ -56,6 +57,8 @@ export interface StartDaemonOptions {
   circuits?: CircuitBreaker
   /** worker 计数；缺省时 status 不带 worker 字段。 */
   worker?: () => WorkerCounts
+  /** 写能力快照；缺省时 status 不带 capabilities 字段。 */
+  capabilities?: () => DaemonCapabilities
   /** 账号导入能力；缺省时 POST /accounts/import 返回 UNSUPPORTED。 */
   importAccount?: ImportAccountHandler
   /** 扫码登录能力；缺省时 POST /accounts/login 返回 UNSUPPORTED。 */
@@ -84,6 +87,8 @@ export interface StartDaemonOptions {
   events?: TaskEventSink
   /** 托管浏览器状态提供者；缺省时 GET /browser 返回 enabled:false。 */
   browser?: () => Promise<BrowserStatus>
+  /** IM 运行时；缺省时 GET /im/status 返回 enabled:false、POST /im/reply 返回 UNSUPPORTED。 */
+  im?: ImRuntime
   /** 可注入时钟（整数毫秒），测试用假时钟断言 uptime。 */
   now?: () => number
   version?: string
@@ -105,6 +110,7 @@ interface ServerContext {
   accounts: (() => string[]) | undefined
   circuits: CircuitBreaker | undefined
   worker: (() => WorkerCounts) | undefined
+  capabilities: (() => DaemonCapabilities) | undefined
   importAccount: ImportAccountHandler | undefined
   loginAccount: LoginAccountHandler | undefined
   verifyAccount: VerifyAccountHandler | undefined
@@ -119,6 +125,7 @@ interface ServerContext {
   settings: SettingsStore | undefined
   events: TaskEventSink | undefined
   browser: (() => Promise<BrowserStatus>) | undefined
+  im: ImRuntime | undefined
   now: () => number
   startedAt: number
   version: string
@@ -144,6 +151,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
     accounts: options.accounts,
     circuits: options.circuits,
     worker: options.worker,
+    capabilities: options.capabilities,
     importAccount: options.importAccount,
     loginAccount: options.loginAccount,
     verifyAccount: options.verifyAccount,
@@ -158,6 +166,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
     settings: options.settings,
     events: options.events,
     browser: options.browser,
+    im: options.im,
     now,
     startedAt,
     version,
@@ -193,6 +202,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<Daemon> 
         ...(options.accounts === undefined ? {} : { accounts: options.accounts }),
         ...(options.circuits === undefined ? {} : { circuits: options.circuits }),
         ...(options.worker === undefined ? {} : { worker: options.worker }),
+        ...(options.capabilities === undefined ? {} : { capabilities: options.capabilities }),
       }),
   }
 }
@@ -209,12 +219,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, context:
       await sendError(res, 401, new XianyuError({ code: 'UNAUTHORIZED', message: '缺少或无效的 daemon token' }), context.redact)
       return
     }
+    // 404/405 用独立 code（不再复用 VALIDATION）：插件与面板据此能把「我打错路径/方法」和
+    // 「参数不合法」分开——前者是版本不匹配，后者要用户改输入。鉴权仍在它们之前。
     if (matched === undefined) {
-      await sendError(res, 404, new XianyuError({ code: 'VALIDATION', message: '未知路由：' + method + ' ' + url.pathname }), context.redact)
+      await sendError(res, 404, new XianyuError({ code: 'NOT_FOUND', message: '未知路由：' + method + ' ' + url.pathname }), context.redact)
       return
     }
     if ('methodNotAllowed' in matched) {
-      await sendError(res, 405, new XianyuError({ code: 'VALIDATION', message: '方法不允许：' + method + ' ' + url.pathname }), context.redact)
+      await sendError(res, 405, new XianyuError({ code: 'METHOD_NOT_ALLOWED', message: '方法不允许：' + method + ' ' + url.pathname }), context.redact)
       return
     }
     await matched.route.handler({
@@ -223,6 +235,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, context:
       accounts: context.accounts,
       circuits: context.circuits,
       worker: context.worker,
+      capabilities: context.capabilities,
       importAccount: context.importAccount,
       loginAccount: context.loginAccount,
       verifyAccount: context.verifyAccount,
@@ -237,6 +250,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, context:
       settings: context.settings,
       events: context.events,
       browser: context.browser,
+      im: context.im,
       now: context.now,
       startedAt: context.startedAt,
       version: context.version,

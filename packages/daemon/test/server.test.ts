@@ -81,15 +81,15 @@ describe('daemon HTTP 外壳', () => {
     assert.deepEqual(dataOf(await without.rawRequest({ method: 'GET', path: '/browser' })), { enabled: false })
   })
 
-  it('未知路由 404、方法不匹配 405，都是 VALIDATION 信封', async (t) => {
+  it('未知路由 404 → NOT_FOUND、方法不匹配 405 → METHOD_NOT_ALLOWED（与 VALIDATION 分开）', async (t) => {
     const h = await createHarness(t)
     const missing = await h.rawRequest({ method: 'GET', path: '/nope' })
     assert.equal(missing.status, 404)
-    assert.equal(errorOf(missing).code, 'VALIDATION')
+    assert.equal(errorOf(missing).code, 'NOT_FOUND')
 
     const badMethod = await h.rawRequest({ method: 'DELETE', path: '/status' })
     assert.equal(badMethod.status, 405)
-    assert.equal(errorOf(badMethod).code, 'VALIDATION')
+    assert.equal(errorOf(badMethod).code, 'METHOD_NOT_ALLOWED')
     assert.equal(badMethod.contentType, JSON_TYPE)
   })
 

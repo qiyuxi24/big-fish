@@ -5,5 +5,7 @@
       name: "@bigfish/plugin-ops"
       config:
         # 显式写出产品默认值：daemon 默认监听本机 47001，token 由 daemon 首次启动生成。
+        # enabled 是装配层硬开关（默认开）；宿主设置页的「是否启用」是运行时软开关，两层互不覆盖。
         daemonUrl: "http://127.0.0.1:47001"
         writeGate: true
+        enabled: true

@@ -86,7 +86,7 @@
 | 能力 | 状态 | 证据 |
 | --- | --- | --- |
 | mtop 读接口（probe/擦亮） | ✅ 真机通 | `packages/daemon/src/operations.ts`，执行器矩阵见 `docs/architecture.md` §6 |
-| 登录态导入 + 扫码登录 | ✅ 真机通 | 导入：Edge 155 + CDP 9222；扫码：`npm run daemon:login` / `POST /accounts/login`（`77e9c9f`，轮询 `unb` + `_m_h5_tk`） |
+| 登录态导入 + 扫码登录 | ✅ 真机通 | 导入：Edge 155 + CDP 9222；扫码：`pnpm daemon:login` / `POST /accounts/login`（`77e9c9f`，轮询 `unb` + `_m_h5_tk`） |
 | 令牌自动刷新 | ✅ 已落地 | `channel-mtop/src/call.ts`（`aa5aec1`）：`FAIL_SYS_TOKEN_EXOIRED` 时合并 Set-Cookie 重签重试一次并回写 |
 | CDP 发布填表（dry-run） | ✅ 全绿 | 默认只填表不提交；步骤机与选择器表见 `docs/architecture.md` §13 |
 | CDP 发布真提交 | 🟡 真机单件跑通多次（首次 2026-10-21） | 首次 `itemId 1093817229436`（已下架留档；账号 `2206569289277` 是用户大号、非测试小号）；受网页端类目支持矩阵限制，**不等于可批量发布**；需 `--submit` / `BF_PUBLISH_SUBMIT=1`；次数与证据以 STATUS.md 为准 |

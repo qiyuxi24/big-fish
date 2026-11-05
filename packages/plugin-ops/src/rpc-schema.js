@@ -11,10 +11,14 @@ import { CONDITIONS } from './copy.js'
 const KNOWN_CODES = new Set([
   'VALIDATION', 'AUTH_EXPIRED', 'RISK_CONTROL', 'RATE_LIMITED', 'CIRCUIT_OPEN',
   'NETWORK', 'STORAGE', 'UNSUPPORTED', 'INTERNAL', 'UNAUTHORIZED',
+  'NOT_FOUND', 'METHOD_NOT_ALLOWED', 'UNKNOWN',
 ])
 
 const TASK_STATES = new Set(['queued', 'leased', 'done', 'failed', 'needs_review'])
 const TASK_KINDS = new Set(['publish', 'deliver', 'polish', 'reply', 'probe'])
+/** 商品状态与 core 的 ITEM_STATES 一致；上限与 core 的 MAX_LIST_LIMIT 一致（500）。 */
+const ITEM_STATES = new Set(['online', 'offline', 'unknown'])
+const MAX_ITEM_LIMIT = 500
 export const ID_RE = /^[A-Za-z0-9._:-]{1,128}$/
 export const ACCOUNT_ID_RE = /^[A-Za-z0-9._-]{1,64}$/
 export const BATCH_ID_RE = /^[A-Za-z0-9._-]{1,64}$/
@@ -53,18 +57,62 @@ const KEEP_ALIVE_INTERVAL_MIN_MS = 60_000
 const KEEP_ALIVE_INTERVAL_MAX_MS = 3_600_000
 
 /**
+ * 入队里「会写外部系统」的任务种类：publish/deliver/polish 会真去动闲鱼商品，
+ * reply（回消息）**会真的发一条消息给买家**，同样是对外动作；
+ * 只有 probe（读详情）是纯读。
+ * 工具侧（tool-kit.js）与本文件共用这一份，避免两处枚举漂移。
+ */
+export const CONFIRM_TASK_KINDS = new Set(['publish', 'deliver', 'polish', 'reply'])
+
+/**
  * 写类端点：必须 payload.confirm === true 才放行。
  * 面板误触/模型幻觉都可能带上写参数；confirm 是 host 侧唯一能确认「人真的点了」的信号。
+ *
+ * 注意 `batch.enqueue` **不在这里**：一次入队是「写闲鱼」还是「只读探测」取决于
+ * items[].kind，整体挂闸会让「探测详情」这个纯读动作也要点两次（2026-10-27 自用时实测）。
+ * 它的判定下沉到 needsConfirm()，按 kind 决定。
  */
 export const WRITE_ENDPOINTS = new Set([
-  'tasks.retry', 'accounts.import', 'accounts.login', 'batch.enqueue', 'settings.put',
+  'tasks.retry', 'accounts.import', 'accounts.login', 'settings.put',
   // 商家商品采集会写本地库（seller_items/sellers），属于写磁盘：必须人工确认。
   'seller.collect',
   // 退出登录只删本地凭据（不注销网页会话），但也是不可逆的本地状态变更，要求 confirm:true。
   'accounts.logout',
   // 停 daemon 会中断正在执行的任务：和写闲鱼一样要求 confirm:true。
   'daemon.stop',
+  // 复位熔断＝解除「账号暂停写」的刹车，下一次写就会真的打到闲鱼。
+  // 它不触达平台，但决定了后续所有写操作是否放行，所以要人确认一次。
+  'circuits.reset',
 ])
+
+/**
+ * 这次 rpc 调用要不要 `confirm:true`。
+ *
+ * 为什么不能只看端点名：`batch.enqueue` 同时承载「擦亮/发布（写闲鱼）」与「探测详情（只读）」，
+ * 端点级挂闸会把纯读动作也变成两次点击；反过来 `daemon.start` 是纯本地拉起、不碰闲鱼，
+ * 端点级免确认是合理的（它拉起的 daemon 默认 dry-run）。
+ *
+ * 判定顺序（保守优先）：
+ * 1. 未知端点 → 交给 handle() 报 UNSUPPORTED，这里返回 false 不影响；
+ * 2. 在 WRITE_ENDPOINTS 里 → true；
+ * 3. batch.enqueue → 任一 item 的 kind 属于写种类就要确认；items 形态异常也返回 true。
+ *
+ * @param {string} endpoint - rpc 端点名。
+ * @param {unknown} payload - 原始 payload（未校验，必须自己窄化）。
+ * @returns {boolean} true 表示必须带 confirm:true 才放行。
+ */
+export function needsConfirm(endpoint, payload) {
+  if (WRITE_ENDPOINTS.has(endpoint)) return true
+  if (endpoint !== 'batch.enqueue') return false
+  if (!isRecord(payload)) return true
+  const items = payload.items
+  if (!Array.isArray(items) || items.length === 0) return true
+  for (const item of items) {
+    if (!isRecord(item)) return true
+    if (typeof item.kind !== 'string' || CONFIRM_TASK_KINDS.has(item.kind)) return true
+  }
+  return false
+}
 
 
 /** 字段校验失败：只在 host 内部抛，handle() 会翻译成 VALIDATION 信封。 */
@@ -144,6 +192,22 @@ export function readTaskFilter(body) {
     filter.kind = body.kind
   }
   if (body.limit !== undefined) filter.limit = readIntegerValue(body.limit, 'limit', 1, 200)
+  return filter
+}
+
+/**
+ * 商品快照的过滤参数：daemon 的 GET /items 一直支持 state / accountId / limit，
+ * 但面板以前不发、rpc 也不透传——多账号时「选中账号 B 却勾到 A 的商品」，
+ * 擦亮入队就是 itemId(A) + accountId(B) 的错账号写操作。limit 上限与 core 的 MAX_LIST_LIMIT 一致。
+ */
+export function readItemsFilter(body) {
+  const filter = {}
+  if (body.state !== undefined) {
+    if (typeof body.state !== 'string' || !ITEM_STATES.has(body.state)) bad('item state 非法：' + String(body.state).slice(0, 40))
+    filter.state = body.state
+  }
+  if (body.accountId !== undefined) filter.accountId = readRequiredString(body, 'accountId', ACCOUNT_ID_RE)
+  if (body.limit !== undefined) filter.limit = readIntegerValue(body.limit, 'limit', 1, MAX_ITEM_LIMIT)
   return filter
 }
 

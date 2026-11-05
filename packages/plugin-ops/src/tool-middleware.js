@@ -5,7 +5,8 @@
  * 和工具定义（tools.js 的 textTool）三处各维护一份写工具名单，加工具时容易漏挂审批。
  * 现在 tools.js 产出 specs，本模块统一做三件事：
  *   1. 校验定义（名字 / 描述 / 参数 / execute / output.schema / timeoutMs / 重名）；
- *   2. 逐个 ctx.tools.register（依赖宿主 effect 在插件卸载时自动解绑）；
+ *   2. 逐个 ctx.tools.register，并收好它返回的反注册器（设置页关掉「是否启用」时要真的
+ *      把 16 个工具从宿主撤销，否则模型每轮仍要付一遍工具 schema 的固定 token）；
  *   3. 由同一份 specs 注册唯一一个 tools/pre-execute 监听，按 access/reason/writeWhen 判定审批。
  *
  * 只用 DSH 公开扩展点：ctx.tools.register、ctx.on('tools/pre-execute')。
@@ -123,7 +124,7 @@ export function buildWritePolicy(specs) {
  * 创建工具注册中间件。
  *
  * @param {{logger?: (line: string) => void, gate?: boolean}} [options] - logger 给一条注册摘要；gate=false 时不挂审批监听（沿用 writeGate 配置）。
- * @returns {{register: (ctx: object, specs: unknown) => {names: string[], counts: {read: number, confirm: number}, dispose: () => void}}} 中间件。
+ * @returns {{register: (ctx: object, specs: unknown) => {names: string[], counts: {read: number, confirm: number}, dispose: () => void}}} 中间件；dispose 同时解绑门禁监听与全部工具反注册器。
  */
 export function createToolMiddleware({ logger, gate = true } = {}) {
   return {
@@ -134,7 +135,7 @@ export function createToolMiddleware({ logger, gate = true } = {}) {
      *
      * @param {object} ctx - Cordis 插件上下文（测试里用假 ctx）。
      * @param {unknown} specs - 工具规格数组。
-     * @returns {{names: string[], counts: {read: number, confirm: number}, dispose: () => void}} 注册结果；dispose 只解绑门禁监听（工具由宿主 effect 自动解绑）。
+     * @returns {{names: string[], counts: {read: number, confirm: number}, dispose: () => void}} 注册结果；dispose 解绑门禁监听并撤销全部工具。
      */
     register(ctx, specs) {
       const normalized = normalizeSpecs(specs)
@@ -148,29 +149,40 @@ export function createToolMiddleware({ logger, gate = true } = {}) {
 
       const names = []
       const counts = { read: 0, confirm: 0 }
+      // 收好每个工具的反注册器：宿主 register() 返回一个精确 disposer（core/tools/src/index.ts:1027）。
+      // 设置页关掉「是否启用」时用它把工具真的撤下来，省掉模型每轮的工具 schema 固定税。
+      const toolDisposers = []
       for (const spec of normalized) {
-        // register 的实现内部用 ctx 的 effect 登记，插件卸载时会自动解绑。
-        ctx.tools.register(spec.definition)
+        const unregister = ctx.tools.register(spec.definition)
+        if (typeof unregister === 'function') toolDisposers.push(unregister)
         names.push(spec.definition.name)
         counts[spec.access] += 1
       }
 
-      let dispose = () => {}
+      let gateDispose = () => {}
       if (gate) {
         const isWriteCall = buildWritePolicy(normalized)
         const byName = new Map(normalized.map((spec) => [spec.definition.name, spec]))
-        dispose = ctx.on('tools/pre-execute', (exec, next) => {
+        gateDispose = ctx.on('tools/pre-execute', (exec, next) => {
           if (!isRecord(exec)) return next()
           if (!isWriteCall(exec.name, exec.arguments)) return next()
           const spec = byName.get(exec.name)
           return { kind: 'ask', reason: spec?.reason ?? defaultReason(exec.name) }
         })
         // 测试替换的 on() 可能返回 undefined：dispose 仍要是函数。
-        if (typeof dispose !== 'function') dispose = () => {}
+        if (typeof gateDispose !== 'function') gateDispose = () => {}
       }
 
       if (typeof logger === 'function') {
         logger(`工具注册完成：共 ${names.length} 个（read=${counts.read} / confirm=${counts.confirm}）`)
+      }
+      // 幂等：重复 dispose 不重复调用反注册器（真实宿主 disposer 多调一次通常无害，测试替身会 splice 到别的元素）。
+      let disposed = false
+      const dispose = () => {
+        if (disposed) return
+        disposed = true
+        gateDispose()
+        for (const unregister of toolDisposers) unregister()
       }
       return { names, counts, dispose }
     },

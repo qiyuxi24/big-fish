@@ -9,13 +9,11 @@
  * 返回值、日志、onTick 都不带 cookie 值。
  * @module @bigfish/daemon/login
  */
-import { homedir } from 'node:os'
-import { join } from 'node:path'
-
-import { XianyuError, fail, toXianyuError } from '@bigfish/core'
+import { XianyuError, defaultBrowserProfileDir, fail, toXianyuError } from '@bigfish/core'
 import type { CredentialStore } from '@bigfish/core'
 import { CdpConnection, CdpCookieSource, DEFAULT_PORT, attachChrome, launchChrome } from '@bigfish/channel-cdp'
 import type { CookieJar } from '@bigfish/channel-cdp'
+import { buildMtopRequest, parseMtopResponse } from '@bigfish/channel-mtop'
 
 import { saveImportedAccount } from './accounts.ts'
 import type { ImportedAccount } from './accounts.ts'
@@ -68,6 +66,12 @@ export interface LoginRuntimeDeps {
   now?: () => number
   /** 睡眠；必须响应 signal 中止（默认实现用 setTimeout + abort 监听）。 */
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
+  /**
+   * 服务端校验登录态；默认调闲鱼自己的登录态接口。
+   * 为什么需要：cookie 里残留的 unb 会让「读到 unb 就算登录成功」误判，
+   * 真实表现是随后所有 mtop 调用都返回 FAIL_SYS_SESSION_EXPIRED（2026-10 真机踩过）。
+   */
+  verifySession?: (cookies: Record<string, string>, signal?: AbortSignal) => Promise<boolean>
 }
 
 /** 扫码登录 + 落库的输入。 */
@@ -79,7 +83,10 @@ export interface LoginInput extends WaitForLoginOptions {
 /** loginAndSave 的依赖：凭据库 + 可注入的浏览器操作。 */
 export interface LoginDeps extends LoginRuntimeDeps {
   credentials: CredentialStore
-  /** 自起浏览器时的独立 profile 目录（默认 ~/.bigfish/chrome-profile）：留着可复用已登录态。 */
+  /**
+   * 自起浏览器时的 profile 目录，默认 `defaultBrowserProfileDir()`（= `<dataDir>/chrome-profile`）。
+   * 必须与发布/托管浏览器用同一个目录，否则「扫码登录进去的态」和「发布复用的浏览器」不是同一个。
+   */
   browserProfileDir?: string
   /** 收尾失败（关不掉自起浏览器）时的告警出口；不传就只留在内部，不掩盖登录结果。 */
   onWarn?: (message: string) => void
@@ -129,7 +136,7 @@ export async function waitForLogin(
     options.onTick?.({ attempt, elapsedMs })
     if (elapsedMs >= timeoutMs) throw timeoutError(port, timeoutMs, lastProblem)
     throwIfAborted(options.signal)
-    const outcome = await readOnce(deps, port).catch((error: unknown): ReadOutcome => {
+    const outcome = await readOnce(deps, port, options.signal).catch((error: unknown): ReadOutcome => {
       const normalized = toXianyuError(error)
       // 只有「还没登录」可以继续等；连不上 CDP、协议不兼容等真故障必须立刻上报。
       if (normalized.code !== 'UNAUTHORIZED') throw normalized
@@ -146,10 +153,60 @@ export async function waitForLogin(
 /** 一次读取的结果：就绪给 jar，否则给「为什么还没就绪」（用来拼超时文案）。 */
 type ReadOutcome = { ready: true; jar: CookieJar } | { ready: false; problem: string }
 
+/** 登录态校验接口：闲鱼网页自己就用它判断「已登录 / 未登录」。 */
+const LOGIN_STATE_API = 'mtop.taobao.idlemessage.pc.loginuser.get'
+
+/**
+ * 服务端校验登录态：cookie 里有 unb 不代表会话有效（旧会话的 unb 会一直留着）。
+ * 返回 false = 服务端不认这个会话；网络/解析类真故障照原样抛，不伪装成「还没扫码」。
+ */
+export async function verifySessionOnServer(
+  cookies: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (Object.keys(cookies).length === 0) return false
+  const request = buildMtopRequest({
+    api: LOGIN_STATE_API,
+    version: '1.0',
+    data: {},
+    extraParams: { accountSite: 'xianyu', sessionOption: 'AutoLoginOnly', spm_cnt: 'a21ybx.im.0.0' },
+    session: { cookies },
+    t: Date.now(),
+  })
+  let text: string
+  try {
+    const response = await fetch(request.url, {
+      method: request.method,
+      headers: request.headers,
+      body: request.body,
+      ...(signal === undefined ? {} : { signal }),
+    })
+    text = await response.text()
+  } catch (error) {
+    throw toXianyuError(error)
+  }
+  try {
+    parseMtopResponse(LOGIN_STATE_API, text)
+    return true
+  } catch (error) {
+    const normalized = toXianyuError(error)
+    if (normalized.code === 'AUTH_EXPIRED') return false
+    throw normalized
+  }
+}
+
 /** 读一次并判断登录是否完成；不打印、不写库，纯读。 */
-async function readOnce(deps: LoginRuntimeDeps, port: number): Promise<ReadOutcome> {
+async function readOnce(deps: LoginRuntimeDeps, port: number, signal?: AbortSignal): Promise<ReadOutcome> {
   const jar = await (deps.readLoginJar ?? readLoginJarFromChrome)(port)
   if (!isLoginReady(jar)) return { ready: false, problem: '登录态未就绪：cookie 里还没有非空的 unb' }
+  const verify = deps.verifySession ?? verifySessionOnServer
+  const alive = await verify(jar.goofish, signal)
+  if (!alive) {
+    return {
+      ready: false,
+      problem: 'cookie 里已有 unb，但服务端不认这个会话（FAIL_SYS_SESSION_EXPIRED）——请在浏览器里重新扫码',
+    }
+  }
   return { ready: true, jar }
 }
 
@@ -252,13 +309,30 @@ function sleepMs(ms: number, signal?: AbortSignal): Promise<void> {
  * 没有就自己起一个带窗口的 Chrome（独立 profile，避免和用户正在用的浏览器抢锁）。
  */
 async function ensureLoginBrowser(port: number, profileDir: string | undefined): Promise<() => Promise<void>> {
+  // 单测里没注入 ensureBrowser 时，这里会真的去 launchChrome（还用真人 profile）：Chrome 起不来就
+  // 白等 DEFAULT_LAUNCH_TIMEOUT_MS(30s) 再报 NETWORK，让「测试红绿」取决于本机有没有浏览器。
+  // scripts/test-all.mjs 会设 BF_TEST_ALL=1，此时直接失败，把 30s 的静默挂起换成一行可读断言。
+  if (isRunningUnderTestAll()) {
+    throw new XianyuError({
+      code: 'INTERNAL',
+      message:
+        '单测里没注入 ensureBrowser，默认实现会真起一个 Chrome（profile 还是真人目录）。' +
+        '请在该用例的 deps 里传 ensureBrowser: noBrowser（见 packages/daemon/test/login.test.ts）。',
+    })
+  }
   if (await browserReachable(port)) return async (): Promise<void> => {}
   const launched = await launchChrome({
     port,
     headless: false,
-    userDataDir: profileDir ?? join(homedir(), '.bigfish', 'chrome-profile'),
+    // profile 目录必须和 daemon 的托管浏览器/发布用同一个（见 defaultBrowserProfileDir 的注释）。
+    userDataDir: profileDir ?? defaultBrowserProfileDir(),
   })
   return launched.close
+}
+
+/** 是否跑在 scripts/test-all.mjs 里（该脚本会设 BF_TEST_ALL=1）。 */
+function isRunningUnderTestAll(): boolean {
+  return process.env.BF_TEST_ALL === '1'
 }
 
 /** 探一下端口上有没有可用的 DevTools；没有就返回 false（由调用方决定是否自起浏览器）。 */

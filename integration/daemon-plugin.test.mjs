@@ -44,14 +44,16 @@ test('daemon ↔ 插件客户端：健康检查、入队幂等、敏感字段被
   assert.equal(status.queue.queued, 0)
 
   // 2) 入队落库 + 出口 redact；同一 dedupeKey 再来一次必须返回同一条。
+  // 载荷在入队那一刻就要合法（缺字段直接 400，不落库）——这里给全 publish 必填字段。
+  const publishPayload = { accountId: 'acc-1', title: '测试商品', desc: '测试描述', priceCents: 990, images: ['C:/tmp/a.jpg'], cookies: 'SESSION=secret' }
   const first = await client.enqueue({
     kind: 'publish',
     dedupeKey: 'publish:item-1',
-    payload: { title: '测试商品', cookies: 'SESSION=secret' },
+    payload: publishPayload,
   })
   assert.equal(first.state, 'queued')
   assert.notEqual(first.payload.cookies, 'SESSION=secret')
-  const again = await client.enqueue({ kind: 'publish', dedupeKey: 'publish:item-1', payload: {} })
+  const again = await client.enqueue({ kind: 'publish', dedupeKey: 'publish:item-1', payload: publishPayload })
   assert.equal(again.id, first.id)
   assert.equal((await client.listTasks()).length, 1)
 
@@ -69,9 +71,10 @@ test('daemon ↔ 插件客户端：健康检查、入队幂等、敏感字段被
   const listText = await byName.get('xy_tasks_list').execute({}, {})
   assert.match(listText.text, /publish \| queued/)
 
-  // 4) 写类工具的审批门禁判定（publish 必须问人）。
+  // 4) 写类工具的审批门禁判定（publish / reply 都会对外产生动作，必须问人）。
   assert.equal(isWriteCall('xy_task_enqueue', { kind: 'publish' }), true)
-  assert.equal(isWriteCall('xy_task_enqueue', { kind: 'reply' }), false)
+  assert.equal(isWriteCall('xy_task_enqueue', { kind: 'reply' }), true)
+  assert.equal(isWriteCall('xy_task_enqueue', { kind: 'probe' }), false)
 })
 
 test('daemon 无 token 文件时插件客户端报 UNAUTHORIZED 而不是 NETWORK', async (t) => {

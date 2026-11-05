@@ -72,6 +72,35 @@ export function retryTaskEndpoint(client, id) {
   return client.request('/tasks/' + encodeURIComponent(id) + '/retry', { method: 'POST' })
 }
 
+/**
+ * 人工收尾（ack / fail / release）。
+ *
+ * owner 的坑：daemon 的 worker 用 `daemon-<pid>` 当租约持有者（runtime.ts），重启就变；
+ * 面板猜不到。所以不传 owner 时先读一次任务拿真实 leaseOwner——读不到才交给 daemon 报冲突。
+ * 这条逻辑与工具层 xy_task_action 一致，否则「面板能收尾、工具不能」会再次分裂。
+ */
+export async function taskActionEndpoint(client, body) {
+  const id = readRequiredString(body, 'id', /^[A-Za-z0-9._:-]{1,128}$/)
+  const action = readRequiredString(body, 'action', /^(ack|fail|release)$/)
+  let owner = typeof body.owner === 'string' && body.owner !== '' ? body.owner : undefined
+  if (owner === undefined && typeof client.getTask === 'function') {
+    const current = await client.getTask(id).catch(() => undefined)
+    if (isRecord(current) && typeof current.leaseOwner === 'string' && current.leaseOwner !== '') owner = current.leaseOwner
+  }
+  const payload = {
+    ...(owner === undefined ? {} : { owner }),
+    ...(typeof body.error === 'string' ? { error: body.error } : {}),
+    ...(body.nonRetryable === true ? { nonRetryable: true } : {}),
+  }
+  return client.taskAction(id, action, payload)
+}
+
+/** 熔断复位：daemon 侧 POST /circuits/reset；客户端没有专用方法时走通用 request。 */
+export function resetCircuitEndpoint(client, accountId) {
+  if (typeof client.resetCircuit === 'function') return client.resetCircuit(accountId)
+  return client.request('/circuits/reset', { method: 'POST', body: { accountId } })
+}
+
 export function getBatchEndpoint(client, id) {
   if (typeof client.getBatch === 'function') return client.getBatch(id)
   return client.request('/batches/' + encodeURIComponent(id))

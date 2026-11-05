@@ -88,16 +88,44 @@ export const DEFAULT_SETTINGS: Settings = {
   imageProvider: { endpointUrl: '', model: '', enabled: false },
 }
 
+/** 设置补丁允许的字段名（拼错一个字母时用它回菜单，别让用户猜）。 */
+export const SETTINGS_PATCH_KEYS: readonly string[] = [
+  'copyStyle',
+  'defaultCategory',
+  'defaultAddress',
+  'shipping',
+  'publishMinIntervalMs',
+  'maxBatchItems',
+  'activeAccountId',
+  'keepAliveEnabled',
+  'keepAliveIntervalMs',
+  'imageProvider',
+]
+
+/** parseSettingsPatch 的选项。 */
+export interface ParseSettingsPatchOptions {
+  /**
+   * 未知字段直接报 VALIDATION（列出可接受字段名）。
+   * 默认 false：读盘/写盘归一化时未知字段必须被安静丢掉——手改坏的 settings.json
+   * 不该让整个 daemon 起不来；只有 HTTP PUT 这类「用户刚敲进来的东西」才该报错。
+   */
+  strict?: boolean
+}
+
 /**
- * 窄化一个未知值成设置补丁：未知字段忽略（向前兼容新面板），类型错抛 VALIDATION。
- * 数值字段按范围**夹取**而不是报错——设置面板拖到边界外不应该让整个保存失败。
+ * 窄化一个未知值成设置补丁：未知字段默认忽略（向前兼容新面板），strict 下报错；类型错一律 VALIDATION。
+ * 数值字段按范围**夹取**而不是报错——设置面板拖到边界外不应该让整个保存失败；
+ * 夹取掉了什么由 describeClampedFields 报给调用方，不要静默。
  */
-export function parseSettingsPatch(value: unknown): SettingsPatch {
+export function parseSettingsPatch(value: unknown, options: ParseSettingsPatchOptions = {}): SettingsPatch {
   if (!isRecord(value)) fail('VALIDATION', 'settings 必须是对象')
   const patch: SettingsPatch = {}
   for (const [key, raw] of Object.entries(value)) {
     // 显式 undefined 视作「没改」，让 { ...current, field: undefined } 这种写法继续可用。
     if (raw === undefined) continue
+    if (options.strict === true && !SETTINGS_PATCH_KEYS.includes(key)) {
+      fail('VALIDATION', 'settings 不认识字段 "' + key + '"；可用字段：' + SETTINGS_PATCH_KEYS.join(', '))
+    }
     if (key === 'copyStyle') patch.copyStyle = parseEnum('settings.copyStyle', raw, COPY_STYLES)
     else if (key === 'shipping') patch.shipping = parseEnum('settings.shipping', raw, SHIPPING_MODES)
     else if (key === 'defaultCategory') patch.defaultCategory = parseText('settings.defaultCategory', raw)
@@ -115,6 +143,28 @@ export function parseSettingsPatch(value: unknown): SettingsPatch {
     } else if (key === 'imageProvider') patch.imageProvider = parseImageProvider(raw)
   }
   return patch
+}
+
+/**
+ * 报出「被夹取」的数值字段：调用方（PUT /settings）把它放进响应的 clamped 字段。
+ * 为什么要它：夹取本身是刻意的设计（面板拖到边界外不该整单失败），但用户敲 999999
+ * 却拿回 3600000 而不被告知，等于静默改数据。
+ */
+export function describeClampedFields(value: unknown, patch: SettingsPatch): Record<string, number> {
+  if (!isRecord(value)) return {}
+  const clamped: Record<string, number> = {}
+  const numeric: ReadonlyArray<[string, { min: number; max: number }]> = [
+    ['publishMinIntervalMs', PUBLISH_MIN_INTERVAL_RANGE],
+    ['maxBatchItems', MAX_BATCH_ITEMS_RANGE],
+    ['keepAliveIntervalMs', KEEPALIVE_INTERVAL_RANGE],
+  ]
+  for (const [key, range] of numeric) {
+    const raw = value[key]
+    const applied = patch[key as 'publishMinIntervalMs' | 'maxBatchItems' | 'keepAliveIntervalMs']
+    if (typeof raw !== 'number' || applied === undefined) continue
+    if (raw !== applied) clamped[key] = applied
+  }
+  return clamped
 }
 
 /** 把补丁合并到基线上；imageProvider 逐字段深合并，返回全新对象（不改 base）。 */
